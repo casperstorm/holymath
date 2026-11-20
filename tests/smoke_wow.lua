@@ -393,12 +393,23 @@ do
     names[i] = (c.name.text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
     values[i] = tonumber(((c.value.text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")))
   end
-  local sorted = true
-  for i = 2, #values do if not values[i] or not values[i - 1] or values[i] > values[i - 1] then sorted = false end end
-  expect(#names == 6 and sorted, "stat values: a table of 6, best first")
+  -- two groups: per point (mp5, intellect, spirit) and per 1% (crit, haste), each best first
+  local groups, sorted = { {}, {} }, true
+  for i, c in ipairs(O.weightCells) do
+    if names[i] ~= "" then table.insert(groups[c.group], { names[i], values[i] }) end
+  end
+  for _, g in ipairs(groups) do
+    for i = 2, #g do if not g[i][2] or not g[i - 1][2] or g[i][2] > g[i - 1][2] then sorted = false end end
+  end
+  local function has(g, n) for _, e in ipairs(groups[g]) do if e[1] == n then return true end end end
+  expect(#groups[1] == 3 and has(1, "Intellect") and has(1, "MP5") and has(1, "Spirit"), "stat values: per point: intellect, MP5, spirit")
+  expect(#groups[2] == 2 and has(2, "Crit") and has(2, "Haste"), "stat values: per 1%: crit and haste")
+  expect(sorted, "stat values: each group best first")
+  expect(not table.concat(names, " "):find("Healing power"), "healing power is the unit (in the heading), not a row")
+  expect(((O.result.text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) == "Worth in healing power", "stat values: heading names the unit")
   realprint("    result: " .. tostring(before) .. "  " .. (O.hpsNote.text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""))
   local row = {}
-  for i = 1, 6 do row[#row + 1] = names[i] .. " " .. tostring(values[i]) end
+  for i = 1, #names do if names[i] ~= "" then row[#row + 1] = names[i] .. " " .. tostring(values[i]) end end
   realprint("    values: " .. table.concat(row, "  |  "))
   O.controls.fight.onChange(nil, 240)
   expect(HolyMathDB.PRIEST.settings.fightLength == 240, "slider sets the fight length")
@@ -407,39 +418,43 @@ do
   expect(HolyMathDB.PRIEST.settings.overheal.RENEW == 0.4, "overheal slider sets Renew overheal")
   O.controls.pots:SetChecked(false); O.controls.pots.scripts.OnClick(O.controls.pots)
   expect(HolyMathDB.PRIEST.settings.majorManaPotions == false, "Blizzard checkbox turns mana potions off")
-  -- playstyle: our own dropdown (no Blizzard menu)
-  local box, list = O.controls.rot, O.controls.rotList
-  expect(box.label.text == "Renew filler", "dropdown box shows the playstyle's name")
-  box.scripts.OnClick(box)
-  expect(list:IsShown(), "clicking the box opens the list")
-  local shown, names = 0, {}
-  for i = 1, 8 do
-    local it = O.controls["rot:" .. i]
-    if it and it.shown then
-      shown = shown + 1
-      names[#names + 1] = ((it.text.text or "") .. "  " .. (it.hps.text or "")):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-    end
-  end
+  -- playstyle: the game's dropdown (WowStyle1), one radio per playstyle, no HPS
+  local dd = O.controls.rot
+  expect(requestedTemplates.WowStyle1DropdownTemplate and type(dd.gen) == "function", "playstyle uses the game's dropdown")
+  local radios = {}
+  local root = { CreateRadio = function(_, text, isSel, setSel, data)
+    local r = { text = text, isSel = isSel, setSel = setSel, data = data }
+    function r:SetTooltip(fn) self.tip = fn end
+    radios[#radios + 1] = r
+    return r
+  end }
+  dd.gen(dd, root)
+  local names = {}
+  for _, r in ipairs(radios) do names[#names + 1] = r.text end
   for _, n in ipairs(names) do realprint("    option: " .. n) end
-  expect(shown == 5 and table.concat(names, " "):find("%d+ HPS"), "list: the 5 playstyles you can use, with HPS")
-  expect(not table.concat(names, " "):find("Renewed Hope") and not table.concat(names, " "):find("downranked"), "list: no hidden playstyles")
-  local bests = 0
-  for i = 1, shown do
-    local it = O.controls["rot:" .. i]
-    expect(not (it.text.text or ""):find("HPS"), "option " .. i .. ": name on the left, HPS in its own column")
-    if (it.hps.text or ""):find("^|cff40ff40") then bests = bests + 1 end
-  end
-  expect(bests == 1, "list: one playstyle's HPS is green, the best")
-  local pick
-  for i = 1, shown do local it = O.controls["rot:" .. i]; if it.key == "flashFill" then pick = it end end
-  pick.scripts.OnClick(pick)
-  expect(HolyMathDB.PRIEST.rotation == "flashFill" and not list:IsShown(), "picking an option sets it and closes the list")
-  expect(box.label.text == "Flash Heal filler", "box shows the new playstyle")
-  box.scripts.OnClick(box)
-  list.scripts.OnEvent(list, "GLOBAL_MOUSE_DOWN")
-  expect(not list:IsShown(), "a click elsewhere closes the list")
+  expect(#radios == 5, "menu: the 5 playstyles you can use")
+  expect(not table.concat(names, " "):find("HPS"), "menu: names only, no HPS")
+  expect(not table.concat(names, " "):find("Renewed Hope") and not table.concat(names, " "):find("downranked"), "menu: no hidden playstyles")
+  local selected = {}
+  for _, r in ipairs(radios) do if r.isSel(r.data) then selected[#selected + 1] = r.data end end
+  expect(#selected == 1 and selected[1] == "renew", "menu: the current playstyle is the selected radio")
+  local fake = { lines = {} }
+  function fake:SetText(t) self.lines = { t } end
+  function fake:AddLine(t) self.lines[#self.lines + 1] = t end
+  radios[1].tip(fake)
+  expect(#fake.lines == 2, "menu: each playstyle explains itself on hover")
+  for _, r in ipairs(radios) do if r.data == "flashFill" then r.setSel(r.data) end end
+  expect(HolyMathDB.PRIEST.rotation == "flashFill", "menu: picking a playstyle sets it")
   HolyMathDB.PRIEST.rotation = "renew"; O.Changed(true)
-  expect(O.status.text and O.status.text:find("Matches the game"), "status line: model matches the game's tooltips")
+  expect(O.status.text == "" and not O.statusHit:IsShown(), "check line: hidden while the model matches the game")
+  -- a rank that differs: the window warns
+  local S = ns.State()
+  for _, r in ipairs(S.info.client) do if r.client then r.client = r.model + 50; r.after = nil; break end end
+  O.Refresh()
+  expect((O.status.text or ""):find("1 of %d+ spell ranks differ from the game") and O.statusHit:IsShown(), "check line: shown when a rank differs")
+  expect((O.statusHelp or ""):find("Different:"), "check line: hover names the rank")
+  O.Refresh(true)
+  expect(O.status.text == "", "check line: gone again once it matches")
   expect(not O.controls.Recalculate and not O.controls.Dump and not O.controls.Check, "only one button left (Defaults)")
   GameTooltip.lines = {}
   O.controls.Defaults.scripts.OnEnter(O.controls.Defaults)
@@ -521,7 +536,6 @@ do
   expect(next(O.expanded) == nil and #lines() == #ov, "click them again: all folded up")
   expect(not O.styleRows, "Your spells: no playstyle comparison, just your spells")
   expect(not (O.castRows or O.notesText or O.controls.useBest), "no 'how to play' instructions left")
-  expect(not requestedTemplates.WowStyle1DropdownTemplate, "never touches Blizzard's menu system (dropdown taint)")
 
   click(O.controls["tab:tooltips"])
   expect(O.panes.tooltips:IsShown(), "Tooltips tab shows its own page")

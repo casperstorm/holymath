@@ -101,7 +101,7 @@ local function Summary()
   if not S then return say("no data yet.") end
   local st, set = S.st, S.input.settings
   say("%s, %d s fight  (spell data: %s)", E.ROTATIONS[S.rotation].name, set.fightLength, E.DATA.source)
-  print(string.format("  Your stats: healing %.0f, int %.0f, spirit %.0f, crit %.1f%%, mp5 %.0f, mana %.0f, regen %.0f/%.0f per 5 s (out of / in combat)",
+  print(string.format("  Your stats: healing %.0f, int %.0f, spirit %.0f, crit %.1f%%, MP5 %.0f, mana %.0f, regen %.0f/%.0f per 5 s (out of / in combat)",
     st.healing, st.int, st.spirit, st.crit * 100, st.mp5, st.manaPool, st.oocRegen, st.combatRegen))
   if #S.info.how.missing > 0 then
     print("  |cffff5050Could not read:|r " .. table.concat(S.info.how.missing, ", "))
@@ -111,7 +111,7 @@ local function Summary()
   if not w then return print("  No model at your level yet: the rotation's filler spell isn't known.") end
   print(string.format("  Model: %.0f healing per second raw, %.0f after overheal", w.base.hps, w.base.ehps))
   local h = w.healing ~= 0 and w.healing or 1
-  print(string.format("  Stat values (healing power = 1.00): intellect %.2f, spirit %.2f, mp5 %.2f, 1%% crit %.1f, 1%% haste %.1f",
+  print(string.format("  Stat values (healing power = 1.00): intellect %.2f, spirit %.2f, MP5 %.2f, 1%% crit %.1f, 1%% haste %.1f",
     w.int / h, w.spirit / h, w.mp5 / h, w.crit / h, w.haste / h))
   print(string.format("  (+1 healing power = +%.2f healing per second after overheal)", w.healing))
 end

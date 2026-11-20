@@ -4,10 +4,9 @@
        window      PortraitFrameTemplate (title bar, portrait, close button)
        numbers     MinimalSliderWithSteppersTemplate (the slider from the game's options panel)
        on/off      UICheckButtonTemplate
-       playstyle   our own dropdown drawn with the game's dropdown art. NOT the game's
-                   dropdown template: that runs our code inside Blizzard's shared menu
-                   system, which tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
-                   on Search(), 20 Nov 2026).
+       playstyle   WowStyle1DropdownTemplate (the game's dropdown). Chosen by the user
+                   knowing it once tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
+                   on Search(), 20 Nov 2026); our look-alike is the fallback.
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
      Each was checked against addons that already use it on this client (BugSack,
      OpenMap). Where a client lacks one, that widget falls back to a plain version,
@@ -195,10 +194,6 @@ local function rotationKeys()
   return keys
 end
 
-local function planEHPS(key)
-  local S = ns.State()
-  for _, pl in ipairs(S and S.plans or {}) do if pl.key == key then return pl.ehps end end
-end
 
 local function planHelp()
   local lines = { "Which spells you mostly cast. Every playstyle uses Prayer of Mending and Penance " ..
@@ -222,9 +217,8 @@ end
 
 -- label  [ Renew filler            v ]
 -- Our own dropdown, drawn with the game's dropdown art (the same atlases
--- WhatsTraining and Polestar use on Forever), with our own pop-up list. NOT the
--- game's dropdown template or menu system: that tainted the Group Finder's
--- menu (see the header). Plain frames only.
+-- WhatsTraining and Polestar use on Forever), with our own pop-up list. Used
+-- only when the game's dropdown template is missing (see PlaystyleDropdown).
 local function hasAtlas(name)
   return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil
 end
@@ -246,16 +240,25 @@ end
 local FIELD_H, ITEM_H = 22, 20
 local LIST_IN = { 8, 8, 8, 15 }   -- left, top, right, bottom
 
-local function PlaystyleDropdown(parent, x, y)
+local function PlaystyleLookalike(parent, x, y)
   RowLabel(parent, "Playstyle", x, y, nil, planHelp)
   local W = SLIDER_W + VALUE_W - 4
 
   -- the closed field
   local box = CreateFrame("Button", nil, parent, "BackdropTemplate")
-  -- the art reaches 7 out, so the field sits 7 in: its edges then line up
-  -- with the sliders' arrows and values above and below it
-  box:SetSize(W - 14, FIELD_H)
+  -- the art reaches 7 out, so the field sits 7 in: its art then starts with the
+  -- sliders' left arrows and ends where their values end. The right edge is
+  -- anchored to the fight-length value one row up (same centre line, ROW lower),
+  -- so it follows the game's own slider layout.
+  local FIELD_W = SLIDER_W + 21
+  box:SetHeight(FIELD_H)
   box:SetPoint("LEFT", parent, "TOPLEFT", x + LABEL_W + 7, y - ROW_H / 2)
+  local above = O.controls.fight
+  local value = above and above.RightText
+  if not (value and value.GetJustifyH and value:GetJustifyH() == "RIGHT"
+          and pcall(box.SetPoint, box, "RIGHT", value, "RIGHT", -7, -ROW)) then
+    box:SetWidth(FIELD_W - 14)
+  end
   local bg, ok = atlasTexture(box, "BACKGROUND", "common-dropdown-c-button")
   if bg and ok then
     -- SetAtlas brings the art's own nine-slice; it is drawn 7 out round the field
@@ -322,7 +325,7 @@ local function PlaystyleDropdown(parent, x, y)
     local S = ns.State()
     local bestKey = S and S.plans and S.plans[1] and S.plans[1].key
     for _, it in ipairs(list.items) do it:Hide() end
-    local nameW, hpsW = 0, 0
+    local nameW = 0
     for i, k in ipairs(keys) do
       local it = list.items[i]
       if not it then
@@ -346,9 +349,6 @@ local function PlaystyleDropdown(parent, x, y)
         it.text = it:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         it.text:SetPoint("LEFT", it, "LEFT", 20, 0)
         it.text:SetJustifyH("LEFT")
-        it.hps = it:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        it.hps:SetPoint("RIGHT", it, "RIGHT", -2, 0)
-        it.hps:SetJustifyH("RIGHT")
         it:SetScript("OnClick", function(self)
           db().rotation = self.key
           if PlaySound then pcall(PlaySound, 856) end
@@ -367,19 +367,15 @@ local function PlaystyleDropdown(parent, x, y)
       it:ClearAllPoints()
       it:SetPoint("TOPLEFT", list, "TOPLEFT", LIST_IN[1], -LIST_IN[2] - (i - 1) * ITEM_H)
       it:SetPoint("TOPRIGHT", list, "TOPRIGHT", -LIST_IN[3], -LIST_IN[2] - (i - 1) * ITEM_H)
-      local hps = planEHPS(k)
       it.best = (k == bestKey)
       it.text:SetText(E.ROTATIONS[k].name)
-      -- healing per second in its own column; the best one green
-      it.hps:SetText(hps and string.format(it.best and "|cff40ff40%d HPS|r" or "|cff9d9d9d%d HPS|r", hps + 0.5) or "")
       if it.check then if k == db().rotation then it.check:Show() else it.check:Hide() end end
       it.selected = (k == db().rotation)
       nameW = math.max(nameW, width(it.text, 170))
-      hpsW = math.max(hpsW, width(it.hps, 60))
       it:Show()
     end
     -- at least as wide as the field, like the game's own lists
-    list:SetSize(math.max(W, LIST_IN[1] + 20 + nameW + 24 + hpsW + 2 + LIST_IN[3]),
+    list:SetSize(math.max(box.GetWidth and box:GetWidth() or FIELD_W - 14, LIST_IN[1] + 20 + nameW + 8 + LIST_IN[3]),
       LIST_IN[2] + #keys * ITEM_H + LIST_IN[4])
   end
 
@@ -394,6 +390,44 @@ local function PlaystyleDropdown(parent, x, y)
     text:SetText(r and r.name or "")
     if list:IsShown() then build() end
   end
+end
+
+-- label  [ Renew filler            v ]   the game's own dropdown (WowStyle1, the
+-- menu system). The user chose it on 20 Nov 2026 knowing that it once tainted the
+-- Group Finder (ADDON_ACTION_BLOCKED Search()). Its menu is only described when
+-- it opens. Without the template: our look-alike above.
+local function PlaystyleDropdown(parent, x, y)
+  local dd = try("DropdownButton", parent, "WowStyle1DropdownTemplate")
+  if not (dd and dd.SetupMenu) then return PlaystyleLookalike(parent, x, y) end
+  RowLabel(parent, "Playstyle", x, y, nil, planHelp)
+  dd:SetPoint("LEFT", parent, "TOPLEFT", x + LABEL_W, y - ROW_H / 2)
+  -- ends where the slider values above and below it end
+  local value = O.controls.fight and O.controls.fight.RightText
+  if not (value and value.GetJustifyH and value:GetJustifyH() == "RIGHT"
+          and pcall(dd.SetPoint, dd, "RIGHT", value, "RIGHT", 0, -ROW)) then
+    dd:SetWidth(SLIDER_W + 21)
+  end
+  local function isSelected(key) return db().rotation == key end
+  local function setSelected(key)
+    db().rotation = key
+    O.Changed(true)
+  end
+  dd:SetupMenu(function(_, root)
+    for _, k in ipairs(rotationKeys()) do
+      local r = E.ROTATIONS[k]
+      local radio = root:CreateRadio(r.name, isSelected, setSelected, k)
+      if radio and radio.SetTooltip then
+        radio:SetTooltip(function(tooltip)
+          tooltip:SetText(r.name, 1, 1, 1)
+          if r.help then tooltip:AddLine(r.help, nil, nil, nil, true) end
+        end)
+      end
+    end
+  end)
+  Tip(dd, "Playstyle", planHelp)
+  O.controls.rot = dd
+  -- the closed field shows the selected name; refresh it when the setting changes elsewhere
+  O.rows[#O.rows + 1] = function() if dd.GenerateMenu then pcall(dd.GenerateMenu, dd) end end
 end
 
 local OVERHEAL_ORDER = { "RENEW", "GH", "FLASH", "HEAL", "POH", "POM", "PWS", "PENANCE", "NOVA", "LESSER" }
@@ -670,7 +704,7 @@ local function Build()
   y = y - 24
   Slider(p, "fight", LEFT, y, "Fight length",
     "How long the fights you heal usually last (a typical raid boss: about 2 minutes; dungeon pulls: under 1). In long fights you run out of mana, so mana " ..
-    "(mp5, spirit, intellect) is worth more; in short fights healing power counts most.",
+    "(MP5, spirit, intellect) is worth more; in short fights healing power counts most.",
     function() return db().settings.fightLength end, function(v) db().settings.fightLength = v end,
     30, 900, 30, function(v) return v .. " s" end)
   y = y - ROW
@@ -717,33 +751,49 @@ local function Build()
     "and spells, after the overheal you expect. Updates by itself when your gear, buffs, talents " ..
     "or these settings change; item tooltips use the same settings.")
 
-  -- stat values: a small table, best first
+  -- stat values, in healing power: two groups, because gear gives intellect, MP5
+  -- and spirit by the point but crit and haste by the 1%; each group best first
+  --   Worth in healing power
+  --   Per point             Per 1%
+  --   MP5          1.39     Crit        6.84
+  --   Intellect    1.04     Haste       0.35
+  --   Spirit       0.31
   O.result = Label(p, "", "GameFontNormalSmall", LEFT, y - 50, COL_W)
-  O.result:SetText("Worth the same as 1 healing power")
+  O.result:SetText("Worth in healing power")
   local whit = CreateFrame("Frame", nil, p)
   whit:SetPoint("TOPLEFT", LEFT, y - 48)
-  whit:SetSize(COL_W, 64)
+  whit:SetSize(COL_W, 74)
   whit:EnableMouse(true)
   Tip(whit, "Stat values",
-    "How much healing one point of each stat adds, compared with one point of healing power. " ..
-    "mp5 2.44 means 1 mp5 is worth as much as 2.44 healing power to you right now. Crit and haste " ..
-    "are per 1%. They change with your gear, talents, fight length and playstyle.")
+    "What one of each stat is worth to you right now, counted in healing power: MP5 1.39 means " ..
+    "1 MP5 heals as much as 1.39 healing power.\n\nGear gives intellect, MP5 and spirit by the point, " ..
+    "but crit and haste by the 1%, so those two are listed per 1%: an item with +1% crit at 6.84 is " ..
+    "worth about +7 healing power. Item tooltips weigh a whole item for you.\n\n" ..
+    "The values change with your gear, talents, fight length and playstyle.")
+  local half = math.floor(COL_W / 2)
+  O.weightHeads = {}
+  for g, title in ipairs({ "Per point", "Per 1%" }) do
+    O.weightHeads[g] = Cell(p, LEFT + (g - 1) * half, y - 66, half - 16, "LEFT")
+    O.weightHeads[g]:SetText("|cff9d9d9d" .. title .. "|r")
+  end
   O.weightCells = {}
-  local colW = math.floor(COL_W / 3)
-  for i = 1, 6 do
-    local col, row = (i - 1) % 3, math.floor((i - 1) / 3)
-    local x, ry = LEFT + col * colW, y - 66 - row * 16
-    local name = Cell(p, x, ry, colW - 44, "LEFT")
-    local val = Cell(p, x + colW - 50, ry, 40, "RIGHT")
-    O.weightCells[i] = { name = name, value = val }
+  for g = 1, 2 do
+    for r = 1, 3 do
+      local x, ry = LEFT + (g - 1) * half, y - 80 - (r - 1) * 14
+      O.weightCells[#O.weightCells + 1] = { group = g, name = Cell(p, x, ry, 90, "LEFT"),
+                                            value = Cell(p, x + 90, ry, half - 16 - 90, "RIGHT") }
+    end
   end
 
-  O.status = Label(p, "", "GameFontHighlightSmall", LEFT, y - 22 - 82, COL_W)
+  O.status = Label(p, "", "GameFontHighlightSmall", LEFT, y - 128, COL_W)
+  -- only shown when some spell ranks differ from the game (see Status)
   local shit = CreateFrame("Frame", nil, p)
-  shit:SetPoint("TOPLEFT", LEFT, y - 22 - 78)
+  shit:SetPoint("TOPLEFT", LEFT, y - 124)
   shit:SetSize(COL_W, 20)
   shit:EnableMouse(true)
+  shit:Hide()
   Tip(shit, "Checked against the game", function() return O.statusHelp or "" end)
+  O.statusHit = shit
 
   -- Right column: overheal per spell ------------------------------------------
   y = TOP
@@ -800,9 +850,9 @@ local function Status(S)
   local help = "Every spell rank you know is compared with the game's own spell tooltip " ..
     "(which includes your healing power and talents). A match means the model heals exactly " ..
     "what the game says."
-  if read == 0 then
-    return "|cff9d9d9dSpell check: waiting for the game's spell tooltips.|r", help
-  end
+  -- The line shows only when something is off: a match is the normal case, and
+  -- /hm check prints the whole comparison.
+  if read == 0 then return nil, help end
   local function list(title, rs)
     local lines = { title }
     for _, r in ipairs(rs) do
@@ -821,10 +871,8 @@ local function Status(S)
   if #close > 0 then
     help = help .. list("Close, so the game's number is used (the model was within 5%):", close)
   end
-  if #off == 0 then
-    return string.format("|cff40ff40Matches the game:|r %d of %d spell ranks.", ok + #fixed, read), help
-  end
-  return string.format("|cffffb000%d of %d spell ranks differ from the game|r (hover for details)", #off, read),
+  if #off == 0 then return nil, help end
+  return string.format("|cffffb000%d of %d spell ranks differ from the game, so these numbers may be off|r (hover)", #off, read),
     help .. list("Different:", off) .. "\n\n/hm check prints this in chat."
 end
 
@@ -845,23 +893,28 @@ function O.Refresh(force)
   else
     O.hps:SetText(string.format("%d HPS", w.base.ehps + 0.5))
     O.hpsNote:SetText(string.format("|cff9d9d9dafter overheal  -  %d before|r", w.base.hps + 0.5))
-    O.result:SetText("Worth the same as 1 healing power")
+    O.result:SetText("Worth in healing power")
     local h = w.healing ~= 0 and w.healing or 1
-    local stats = {
-      { "mp5", w.mp5 / h }, { "Intellect", w.int / h }, { "Spirit", w.spirit / h },
-      { "1% crit", w.crit / h }, { "1% haste", w.haste / h }, { "Healing power", 1 },
+    local groups = {
+      { { "MP5", w.mp5 / h }, { "Intellect", w.int / h }, { "Spirit", w.spirit / h } },
+      { { "Crit", w.crit / h }, { "Haste", w.haste / h } },
     }
-    table.sort(stats, function(a, b) return a[2] > b[2] end)
-    for i, c in ipairs(O.weightCells) do
-      local st = stats[i]
-      c.name:SetText("|cff9d9d9d" .. st[1] .. "|r")
-      c.value:SetText(string.format(st[1] == "Healing power" and "|cffffffff%.2f|r" or "|cffffffff%.2f|r", st[2]))
+    for _, list in ipairs(groups) do table.sort(list, function(a, b) return a[2] > b[2] end) end
+    local used = { 0, 0 }
+    for _, c in ipairs(O.weightCells) do
+      used[c.group] = used[c.group] + 1
+      local st = groups[c.group][used[c.group]]
+      if st then
+        c.name:SetText(st[1])
+        c.value:SetText(string.format("%.2f", st[2]))
+      end
     end
   end
   if O.spellRows then O.FillSpells(S) end
   local st, help = Status(S)
-  O.status:SetText(st)
+  O.status:SetText(st or "")
   O.statusHelp = help
+  if st then O.statusHit:Show() else O.statusHit:Hide() end
 end
 
 local function fmtInt(n) return tostring(math.floor((n or 0) + 0.5)) end

@@ -7,10 +7,10 @@ The maths behind a healing priest in **World of Warcraft: Forever**, worked out 
 ## What it does
 
 - **Item tooltips:** how much an item gains or loses you in healing per second, e.g. `Holy Math: +16.2 HPS (+1.8%)`. The whole model is rerun with the item swapped in, not a fixed stat weight. Gear a priest can't use says so ("can't wear Plate", "for Mage only").
-- **Your HPS and stat values:** what you heal per second over a fight, and what intellect, spirit, mp5, crit and haste are worth to you compared with healing power, right now.
+- **Your HPS and stat values:** what you heal per second over a fight, and what each stat is worth to you in healing power right now: intellect, MP5 and spirit per point, crit and haste per 1% (the way gear gives them).
 - **Playstyles:** Renew filler, Greater Heal filler, Flash Heal filler, Prayer of Healing filler, PW:Shield on tank, and Renewed Hope tank (Discipline, with the talent). Each picks the spell ranks that heal the most for you.
-- **Spell overview:** every healing spell you know: heal, mana, healing per mana and per second, and its most mana-efficient rank. Click a spell to unfold all its ranks, with how much of your healing power each low rank still gets.
-- **Checks itself against the game:** every spell rank you know is compared with the game's own spell tooltip ("Matches the game: 30 of 30 spell ranks").
+- **Spell overview:** every healing spell you know: heal, mana, healing per mana and per second, and its most mana-efficient rank. Click any spell to unfold all its ranks, with how much of your healing power each low rank still gets.
+- **Checks itself against the game:** every spell rank you know is compared with the game's own spell tooltip. `/hm check` shows the comparison; the window only speaks up when something doesn't match.
 
 Everything recalculates by itself when your gear, buffs, talents or settings change.
 
@@ -35,7 +35,8 @@ The **Settings** tab holds the assumptions: fight length (default 120 s, a typic
 - **Your stats** (healing power, crit, mana, regen, talents, known ranks) are read from the game.
 - **Spell and talent data** (base heals per rank and level, coefficients, costs, talent values, spirit regen) is the game's own data as extracted by [wowsims/forever](https://github.com/wowsims/forever). `Models/PriestData.lua` is generated from it by `tools/gen_priest_data.py`.
 - **The fight model** (mana budget, cooldowns, regen pauses, Inner Focus, Inspiration) started as a port of [doublezug's healer-priest spreadsheet](https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634). Its formulas are reproduced exactly in the tests, and the places where the game shows something different are corrected and documented in the code.
-- **Checked in game:** costs, base heals, coefficients, downranking (the penalty starts 12 levels after a rank's max level), Holy and Discipline talent values, and the regen formula all match the client's own numbers. Prayer of Mending ignores the healing power Spiritual Guidance gives you from spirit, as the client's tooltip shows.
+- **Checked in game:** costs (with talents such as Improved Healing), base heals, coefficients, downranking (the penalty starts 12 levels after a rank's max level), Holy and Discipline talent values, and the regen formula all match the client's own numbers. Prayer of Mending ignores the healing power Spiritual Guidance gives you from spirit, as the client's tooltip shows.
+- **Downranking and tooltips:** from level 50 the game's spell tooltips show low ranks at full healing power, but their real heals still have the penalty (Renew rank 1 ticks for exactly the penalised amount). Holy Math uses what the spells really heal.
 
 ## Development
 

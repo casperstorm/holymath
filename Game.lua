@@ -227,7 +227,7 @@ function G.ReadStats(talentRanks)
   st.combatRegen = spiritRegen * 5 * med            -- from spirit, while casting
   st.mp5 = math.max(0, (casting - med * spiritRegen) * 5)
   local formula = 5 * (E.DATA.regen.base + E.DATA.regen.perSpirit * st.spirit)   -- game data, per 5 sec
-  how.regen = string.format("client: %.1f per 5 s out of combat, %.1f while casting -> spirit %.1f (game data formula %.1f, %+.1f%%), mp5 %.1f, %d%% of spirit regen while casting",
+  how.regen = string.format("client: %.1f per 5 s out of combat, %.1f while casting -> spirit %.1f (game data formula %.1f, %+.1f%%), MP5 %.1f, %d%% of spirit regen while casting",
     base * 5, casting * 5, st.oocRegen, formula, (st.oocRegen / formula - 1) * 100, st.mp5, med * 100)
   return st, how
 end
