@@ -2,7 +2,8 @@
      The healing-priest model, in plain Lua with no game calls, so it runs in the
      game AND under a desktop Lua (tests/run_tests.lua checks it against the sheet).
 
-     Ported from the community healer-priest sheet (tabs "Profile", "Spells", "Sim").
+     Ported from doublezug's healer-priest spreadsheet (tabs "Profile", "Spells", "Sim"):
+     https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634
      The sheet's spell table is the default; stats, talent ranks and known spell
      ranks come from the game (Game.lua).
 

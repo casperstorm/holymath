@@ -34,7 +34,7 @@ The **Settings** tab holds the assumptions: fight length (default 120 s, a typic
 
 - **Your stats** (healing power, crit, mana, regen, talents, known ranks) are read from the game.
 - **Spell and talent data** (base heals per rank and level, coefficients, costs, talent values, spirit regen) is the game's own data as extracted by [wowsims/forever](https://github.com/wowsims/forever). `Models/PriestData.lua` is generated from it by `tools/gen_priest_data.py`.
-- **The fight model** (mana budget, cooldowns, regen pauses, Inner Focus, Inspiration) started as a port of a community healer-priest spreadsheet. Its formulas are reproduced exactly in the tests, and the places where the game shows something different are corrected and documented in the code.
+- **The fight model** (mana budget, cooldowns, regen pauses, Inner Focus, Inspiration) started as a port of [doublezug's healer-priest spreadsheet](https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634). Its formulas are reproduced exactly in the tests, and the places where the game shows something different are corrected and documented in the code.
 - **Checked in game:** costs, base heals, coefficients, downranking (the penalty starts 12 levels after a rank's max level), Holy and Discipline talent values, and the regen formula all match the client's own numbers. Prayer of Mending ignores the healing power Spiritual Guidance gives you from spirit, as the client's tooltip shows.
 
 ## Development
@@ -56,4 +56,4 @@ python3 -I tools/gen_priest_data.py /tmp/wowsims-forever > Models/PriestData.lua
 ## Credits
 
 - Spell data: [wowsims](https://github.com/wowsims/forever), MIT licence (notice in `Models/PriestData.lua`).
-- The original healing model: the community healer-priest spreadsheet for WoW: Forever.
+- The original healing model: [the healer-priest spreadsheet for WoW: Forever](https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634) by **doublezug**. Its formulas, playstyles and in-game measurements (downranking, coefficients) are what Holy Math was built from.
