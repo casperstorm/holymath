@@ -31,6 +31,8 @@ local function newFrame(name)
   function f:Hide() local was = self.shown; self.shown = false; if was and self.scripts.OnHide then self.scripts.OnHide(self) end end
   function f:IsShown() return self.shown == true end
   function f:CreateFontString() return newFontString() end
+  function f:UnregisterEvent(e) self.events[e] = nil end
+  function f:IsMouseOver() return self.mouseOver == true end
   function f:GetPoint() return "CENTER", nil, "CENTER", 0, 0 end
   for _, m in ipairs({ "SetSize", "SetWidth", "SetHeight", "SetPoint", "ClearAllPoints", "SetFrameStrata", "SetMovable",
       "EnableMouse", "RegisterForDrag", "SetClampedToScreen", "SetToplevel", "StartMoving", "StopMovingOrSizing",
@@ -144,7 +146,7 @@ C_Spell = {
     if id == 204 then return "A slow casting spell that heals a single target for 2,640 to 2,876." end
     return ""
   end,
-  GetSpellPowerCost = function(id) if id == 201 then return { { cost = 380 } } end return {} end, -- data: 370
+  GetSpellPowerCost = function(id) if id == 201 then return { { cost = 320 } } end return {} end, -- data: 370, 315 with Improved Healing
   GetSpellInfo = function(id) return { castTime = 1500 } end,
 }
 C_SpellBook = {
@@ -295,7 +297,7 @@ printed = {}
 SlashCmdList.HOLYMATH("check")
 local chk = table.concat(printed, "\n")
 expect(chk:find("2 of %d+ ranks match the model"), "/hm check: Renew r9 and GH r4 tooltips match the model")
-expect(chk:find("Greater Heal 1 costs 380 in game %(game data 370%)"), "/hm check: a client cost within 3% of the data is used")
+expect(chk:find("Greater Heal 1 costs 320 in game %(game data with your talents 315%)"), "/hm check: a client cost within 3% of the data (after talents) is used")
 
 -- action bars: no lines added to a spell's tooltip
 GameTooltip.lines = {}
@@ -405,21 +407,38 @@ do
   expect(HolyMathDB.PRIEST.settings.overheal.RENEW == 0.4, "overheal slider sets Renew overheal")
   O.controls.pots:SetChecked(false); O.controls.pots.scripts.OnClick(O.controls.pots)
   expect(HolyMathDB.PRIEST.settings.majorManaPotions == false, "Blizzard checkbox turns mana potions off")
-  -- playstyle: [<] name HPS [>], plain buttons (no Blizzard menu)
-  local start = HolyMathDB.PRIEST.rotation
-  O.controls["rot>"].scripts.OnClick(O.controls["rot>"])
-  expect(HolyMathDB.PRIEST.rotation ~= start, "playstyle arrows change the playstyle")
-  expect((O.controls.rot.text or ""):find("%d+ HPS"), "playstyle shows its HPS")
-  realprint("    playstyle: " .. (O.controls.rot.text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""))
-  O.controls["rot<"].scripts.OnClick(O.controls["rot<"])
-  expect(HolyMathDB.PRIEST.rotation == start, "and back")
-  local seen, k0 = {}, HolyMathDB.PRIEST.rotation
-  repeat
-    seen[HolyMathDB.PRIEST.rotation] = true
-    O.controls["rot>"].scripts.OnClick(O.controls["rot>"])
-  until HolyMathDB.PRIEST.rotation == k0
-  local count = 0 for _ in pairs(seen) do count = count + 1 end
-  expect(count == 5 and not seen.rhTank and not seen.renewDown, "arrows cycle the 5 playstyles you can use")
+  -- playstyle: our own dropdown (no Blizzard menu)
+  local box, list = O.controls.rot, O.controls.rotList
+  expect(box.label.text == "Renew filler", "dropdown box shows the playstyle's name")
+  box.scripts.OnClick(box)
+  expect(list:IsShown(), "clicking the box opens the list")
+  local shown, names = 0, {}
+  for i = 1, 8 do
+    local it = O.controls["rot:" .. i]
+    if it and it.shown then
+      shown = shown + 1
+      names[#names + 1] = ((it.text.text or "") .. "  " .. (it.hps.text or "")):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    end
+  end
+  for _, n in ipairs(names) do realprint("    option: " .. n) end
+  expect(shown == 5 and table.concat(names, " "):find("%d+ HPS"), "list: the 5 playstyles you can use, with HPS")
+  expect(not table.concat(names, " "):find("Renewed Hope") and not table.concat(names, " "):find("downranked"), "list: no hidden playstyles")
+  local bests = 0
+  for i = 1, shown do
+    local it = O.controls["rot:" .. i]
+    expect(not (it.text.text or ""):find("HPS"), "option " .. i .. ": name on the left, HPS in its own column")
+    if (it.hps.text or ""):find("^|cff40ff40") then bests = bests + 1 end
+  end
+  expect(bests == 1, "list: one playstyle's HPS is green, the best")
+  local pick
+  for i = 1, shown do local it = O.controls["rot:" .. i]; if it.key == "flashFill" then pick = it end end
+  pick.scripts.OnClick(pick)
+  expect(HolyMathDB.PRIEST.rotation == "flashFill" and not list:IsShown(), "picking an option sets it and closes the list")
+  expect(box.label.text == "Flash Heal filler", "box shows the new playstyle")
+  box.scripts.OnClick(box)
+  list.scripts.OnEvent(list, "GLOBAL_MOUSE_DOWN")
+  expect(not list:IsShown(), "a click elsewhere closes the list")
+  HolyMathDB.PRIEST.rotation = "renew"; O.Changed(true)
   expect(O.status.text and O.status.text:find("Matches the game"), "status line: model matches the game's tooltips")
   expect(not O.controls.Recalculate and not O.controls.Dump and not O.controls.Check, "only one button left (Defaults)")
   GameTooltip.lines = {}
@@ -455,6 +474,51 @@ do
   GameTooltip.lines = {}
   O.spellRows[1].scripts.OnEnter(O.spellRows[1])
   expect((GameTooltip.lines[1] or "") ~= "", "overview: hovering a spell shows its tooltip")
+  -- click a spell: its ranks fold down under it; again: they fold up
+  local function lines() local t = {} for _, row in ipairs(O.spellRows) do if plain(row.cells[1].text) ~= "" then t[#t + 1] = row end end return t end
+  local renewAt
+  for i, row in ipairs(O.spellRows) do if row.key == "RENEW" then renewAt = i end end
+  expect(renewAt and #lines() == #ov, "overview starts folded up")
+  click(O.spellRows[renewAt])
+  local rk = {}
+  for i = renewAt + 1, #O.spellRows do
+    local t = plain(O.spellRows[i].cells[1].text)
+    if not t:match("^Rank %d+$") then break end
+    rk[#rk + 1] = O.spellRows[i]
+  end
+  local renewTop = tonumber(O.spellRows[renewAt].cells[2].text)
+  expect(O.expanded.RENEW and #rk == renewTop and plain(rk[1].cells[1].text) == "Rank " .. renewTop
+    and plain(rk[#rk].cells[1].text) == "Rank 1", "click Renew: all its ranks fold down, highest first")
+  expect(rk[1].cells[3].text == O.spellRows[renewAt].cells[3].text and rk[1].cells[4].text == O.spellRows[renewAt].cells[4].text,
+    "the highest rank's line matches the spell's line")
+  local best, low, blank = 0, 0, 0
+  for _, r in ipairs(rk) do
+    local t = plain(r.cells[7].text)
+    if t:find("most efficient") then best = best + 1 end
+    if t:find("%d+%% of your healing power") then low = low + 1 end
+    if t == "" then blank = blank + 1 end
+  end
+  expect(best == 1, "exactly one rank marked most efficient")
+  expect(low >= 1, "low ranks say how much healing power they get")
+  expect(blank == 0, "every rank line says something (full healing power too)")
+  for _, r in ipairs(rk) do realprint("    renew: " .. rowText(r)) end
+  GameTooltip.lines = {}
+  rk[#rk].scripts.OnEnter(rk[#rk])
+  expect(rk[#rk].spellID and rk[#rk].spellID ~= O.spellRows[renewAt].spellID, "hovering a rank shows that rank's tooltip")
+  rk[1].scripts.OnClick(rk[1])
+  expect(O.expanded.RENEW, "clicking a rank line keeps the spell open")
+  -- open every spell: all stay open, the list grows past the 20 lines in view (it scrolls)
+  local total = 0
+  for _, sr in ipairs(ns.State().spells) do total = total + 1 + sr.top end
+  for pass = 1, 2 do
+    for _, row in ipairs(O.spellRows) do if row.key and not O.expanded[row.key] then click(row) end end
+  end
+  local open = 0
+  for _ in pairs(O.expanded) do open = open + 1 end
+  expect(open == #ov and #lines() == total and total > 20, "every spell open at once: " .. total .. " lines")
+  expect(O.spellRows[total].shown and not (O.spellRows[total + 1] and O.spellRows[total + 1].shown), "only the lines in use are shown")
+  for _, row in ipairs(O.spellRows) do if row.key and O.expanded[row.key] then click(row) end end
+  expect(next(O.expanded) == nil and #lines() == #ov, "click them again: all folded up")
   expect(not O.styleRows, "Your spells: no playstyle comparison, just your spells")
   expect(not (O.castRows or O.notesText or O.controls.useBest), "no 'how to play' instructions left")
   expect(not requestedTemplates.WowStyle1DropdownTemplate, "never touches Blizzard's menu system (dropdown taint)")
@@ -531,8 +595,10 @@ do
   expect(O.frame and O.frame:IsShown(), "fallback window opens")
   O.controls["fight+"].scripts.OnClick(O.controls["fight+"])
   expect(HolyMathDB.PRIEST.settings.fightLength == 150, "fallback + button raises the fight length")
-  O.controls["rot>"].scripts.OnClick(O.controls["rot>"])
-  expect(HolyMathDB.PRIEST.rotation ~= "renew", "fallback arrows change the healing plan")
+  O.controls.rot.scripts.OnClick(O.controls.rot)
+  local it = O.controls["rot:1"]
+  it.scripts.OnClick(it)
+  expect(HolyMathDB.PRIEST.rotation == it.key, "dropdown works without the game's art too")
   O.controls.pots.scripts.OnClick(O.controls.pots)
   expect(HolyMathDB.PRIEST.settings.majorManaPotions == false, "fallback toggle turns mana potions off")
   expect(O.hps.text and O.hps.text:find("HPS"), "fallback window shows the result")

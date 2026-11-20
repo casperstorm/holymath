@@ -161,6 +161,15 @@ local function tableFor(set)
 end
 E.tableFor = tableFor
 
+-- A rank's bonus coefficient: its full coefficient times the share of your
+-- healing power it gets (the downranking rule). rk.power overrides that share;
+-- ApplyClientData sets it only for a moment, to see a rank at full power.
+local function rankCoeff(rk, defCoeff, level, rules)
+  local full = rk.coeff or defCoeff
+  if rk.power then return full * rk.power end
+  return E.Downrank(full, rk, level, rules)
+end
+
 -- A rank's base heal at a player level: it grows from its base level up to its max level.
 -- (The sheet's table has one fixed number per rank, which it calls base.)
 local function baseAt(rk, level)
@@ -440,7 +449,7 @@ function E.Spell(key, rankIdx, st, t, set)
   else cast = ct / (1 + st.haste) end
 
   local rules = set.rules or E.RULES
-  local coeff = E.Downrank(rk.coeff or sp.coeff, rk, st.level, rules)
+  local coeff = rankCoeff(rk, sp.coeff, st.level, rules)
   local base = baseAt(rk, st.level)
   local bodies = sp.bodies or ((key == "FLASH" and (t.holyBinding or 0) > 0) and (1 + t.holyBinding)) or 1
   local heal, crit = 0, st.crit
@@ -528,7 +537,7 @@ local function baseFromClient(key, rank, h, st, t, set)
   local def = tableFor(set)[key]
   local rk = def.ranks[rank]
   local rules = set.rules or E.RULES
-  local coeff = E.Downrank(rk.coeff or def.coeff, rk, st.level, rules)
+  local coeff = rankCoeff(rk, def.coeff, st.level, rules)
   if def.shield then
     return h / t.impPWS - coeff * (rules.twinDiscOnShield and t.twinDisc or 1) * healingFor(key, st, rules)
   end
@@ -549,18 +558,46 @@ function E.ApplyClientData(spells, st, t, set)
     local def = E.SPELLS[c.key]
     local rk = def and def.ranks[c.rank]
     if rk then
-      local row = { key = c.key, rank = c.rank, dataCost = rk.cost, clientCost = c.cost, dataBase = baseAt(rk, st.level) }
-      if c.cost and c.cost > 0 and math.abs(c.cost / rk.cost - 1) <= E.COST_TOLERANCE then
-        rk.cost, row.costFrom = c.cost, "client"
+      -- The game's cost already has your talents in it (Improved Healing: 15% off
+      -- Lesser Heal, Heal, Greater Heal, Penance and Prayer of Mending), so it is
+      -- compared with the data's cost after those talents, and kept without them.
+      local mult = costMult(c.key, t)
+      local set4 = set.dungeon4set and 10 or 0
+      local expected = rk.cost * mult - set4
+      local row = { key = c.key, rank = c.rank, dataCost = expected, rawCost = rk.cost, clientCost = c.cost,
+                    dataBase = baseAt(rk, st.level) }
+      if c.cost and c.cost > 0 and mult > 0 and expected > 0 and math.abs(c.cost / expected - 1) <= E.COST_TOLERANCE then
+        rk.cost, row.costFrom = (c.cost + set4) / mult, "client"
       end
       local h = E.ParseDesc(c.key, c.desc)
       if h then
         row.client = h
         row.model = E.ModelTooltipHeal(c.key, c.rank, st, t, set)
         row.diff = row.client / row.model - 1
-        if math.abs(row.diff) <= E.HEAL_TOLERANCE then
+        -- Downranking: a rank the rule gives less than your full healing power.
+        -- At level 49 (20 Nov 2026) its tooltip showed the penalty exactly; from
+        -- level 50 the tooltip showed every rank at FULL power while the real heal
+        -- still had the penalty (Renew rank 1: tooltip 310, ticks of 17 = 85, the
+        -- rule's number). So a tooltip that matches the rank at full power is read
+        -- as "the tooltip leaves the penalty out": its base heal is taken at full
+        -- power and the rule still applies to what the rank really heals.
+        local full = rk.coeff or def.coeff
+        local rulePower = (full and full > 0) and E.Downrank(full, rk, st.level, set.rules or E.RULES) / full or 1
+        if math.abs(h - row.model) > 1 and rulePower < 0.999 then
+          rk.power = 1
+          local top = E.ModelTooltipHeal(c.key, c.rank, st, t, set)
+          if math.abs(h / top - 1) <= E.HEAL_TOLERANCE then
+            rk.base = baseFromClient(c.key, c.rank, h, st, t, set)
+            row.tooltipFull, row.rulePower, row.baseFrom = true, rulePower, "client"
+            row.after = E.ModelTooltipHeal(c.key, c.rank, st, t, set)   -- as the tooltip shows it
+          end
+          rk.power = nil
+        end
+        -- otherwise the base heal, when the model is within 5% of the game
+        if not row.tooltipFull and math.abs(row.diff) <= E.HEAL_TOLERANCE then
           rk.base = baseFromClient(c.key, c.rank, h, st, t, set)
           row.baseFrom = "client"
+          row.after = E.ModelTooltipHeal(c.key, c.rank, st, t, set)   -- the model once corrected
         end
         row.base = baseAt(rk, st.level)
       end
@@ -925,6 +962,27 @@ function E.SpellTable(st, t, set)
     end
   end
   table.sort(out, function(a, b) return a.bestHPM > b.bestHPM end)
+  return out
+end
+
+-- Every rank of one spell you know, highest first: heal per cast (after
+-- overheal, all targets), mana, per mana, per second, and how much of your
+-- healing power it still gets (low ranks get less: see E.Downrank).
+function E.SpellRanks(key, st, t, set)
+  local def = tableFor(set)[key]
+  local top = def and E.MaxRank(key, st.level, set.known, set)
+  if not top then return {} end
+  local out, bestR, bestH = {}, nil, nil
+  for r = 1, top do
+    local heal, cost, time, sp = castValue(key, r, st, t, set)
+    local full = def.ranks[r].coeff or def.coeff
+    local hpm = cost > 0 and heal / cost or math.huge
+    out[#out + 1] = { rank = r, heal = heal, cost = cost, hpm = hpm, hps = heal / time, id = def.ranks[r].id,
+                      power = (full and full > 0) and sp.coeff / full or 1, lvl = def.ranks[r].lvl }
+    if not bestH or hpm > bestH + 1e-9 then bestR, bestH = r, hpm end
+  end
+  for _, row in ipairs(out) do row.best = (row.rank == bestR) end
+  table.sort(out, function(a1, b1) return a1.rank > b1.rank end)
   return out
 end
 

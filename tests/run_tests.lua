@@ -257,6 +257,22 @@ do
   near("best mix heals at least as much as every plan", mix.ehps >= plans[1].ehps - 1e-6 and 1 or 0, 1)
   local tbl = E.SpellTable(gst, gt, gset)
   near("spell table lists every known spell", #tbl >= 8 and 1 or 0, 1)
+  -- the overview's folded-down ranks agree with its spell lines
+  local agree, oneBest, lowGetLess = 0, 0, 0
+  for _, sr in ipairs(tbl) do
+    local rk = E.SpellRanks(sr.key, gst, gt, gset)
+    local nBest, bestRank = 0, nil
+    for _, r in ipairs(rk) do if r.best then nBest, bestRank = nBest + 1, r.rank end end
+    if #rk == sr.top and rk[1].rank == sr.top and math.abs(rk[1].heal - sr.topHeal) < 1e-9
+       and math.abs(rk[1].cost - sr.topCost) < 1e-9 and bestRank == sr.bestRank then agree = agree + 1 end
+    if nBest == 1 then oneBest = oneBest + 1 end
+    if rk[#rk].power <= rk[1].power then lowGetLess = lowGetLess + 1 end
+  end
+  near("every spell's ranks: highest first, top rank and most efficient rank match the spell line", agree, #tbl)
+  near("every spell has exactly one most efficient rank", oneBest, #tbl)
+  near("rank 1 never gets more healing power than the top rank", lowGetLess, #tbl)
+  local renew = E.SpellRanks("RENEW", gst, gt, gset)
+  near("Renew rank 1 at level 60 gets 10% of your healing power", renew[#renew].power, 0.1, 1e-9)
 end
 
 print("-- Regen pauses and playstyles that pick their ranks (the 20 Nov dump's character)")
@@ -337,8 +353,71 @@ do
   -- and at runtime the remaining <1% is taken from the client
   local spells = {}
   for _, c in ipairs(F.spells) do spells[#spells + 1] = { key = c.key, rank = c.rank, cost = c.cost, desc = c.desc } end
-  E.ApplyClientData(spells, st, t, set)
+  local report = E.ApplyClientData(spells, st, t, set)
   near("PoM after calibration matches 287", E.ModelTooltipHeal("POM", 1, st, t, set), 287, 1e-9)
+  -- Improved Healing 3/3: the game's costs are 15% under the data (GH r1 314 vs 370).
+  -- They are compared after the talent, so every one is explained and taken.
+  local taken, notTaken, gh1 = 0, {}, nil
+  for _, r in ipairs(report) do
+    if r.clientCost then
+      if r.costFrom == "client" then taken = taken + 1 else notTaken[#notTaken + 1] = r.key .. r.rank end
+    end
+    if r.key == "GH" and r.rank == 1 then gh1 = r end
+  end
+  near("Holy dump: every game cost explained by data + talents (not taken: " .. table.concat(notTaken, " ") .. ")", #notTaken, 0)
+  near("Holy dump: costs read", taken > 20 and 1 or 0, 1)
+  near("GH r1: data with Improved Healing = 370 x 0.85", gh1.dataCost, 314.5, 1e-9)
+  near("GH r1: with the talent, the game's cost (314; Litany's refund comes off after)", E.SPELLS.GH.ranks[1].cost * (1 - t.impHealing), 314, 1e-9)
+  near("GH r1: kept without the talent (so it isn't applied twice)", E.SPELLS.GH.ranks[1].cost, 314 / 0.85, 1e-9)
+  -- a rank close enough to be corrected counts as a match afterwards
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+  local pom = E.copy(st); pom.healing = st.healing + 2
+  local before = E.ModelTooltipHeal("POM", 1, pom, t, set)
+  local rep2 = E.ApplyClientData({ { key = "POM", rank = 1, cost = 178, desc = "heals them for " .. math.floor(before - 1.5) .. " the next time" } }, pom, t, set)
+  near("PoM 1.5 off: corrected, and then matches", (rep2[1].after and math.abs(rep2[1].after - rep2[1].client) <= 1) and 1 or 0, 1)
+  near("PoM 1.5 off: still counted as off before correcting", math.abs(rep2[1].model - rep2[1].client) > 1 and 1 or 0, 1)
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+end
+
+print("-- Client tooltips, Holy priest at level 50 (20 Nov 2026, new gear, Warchief's Blessing)")
+do
+  local F = dofile("tests/fixture_client_holy50.lua")
+  local t = E.Talents(F.talents)
+  local st = { level = F.level, healing = F.healing, crit = F.crit, haste = 0.15, critMulti = 1.5,
+               spirit = F.spirit, healingFromSpirit = F.spirit * t.spiritualGuidance }
+  local set = E.copy(E.DEFAULTS.settings)
+  local n, costsOff, fixedRanks, full, notMatched = 0, 0, 0, 0, {}
+  -- From level 50 the game's tooltips leave downranking out: every rank shows full
+  -- healing power (Renew 1: 310). Real heals still have it: Renew 1 ticked for 17 in
+  -- game (x5 = 85), exactly the rule (12 levels after the rank's max level).
+  local renew1 = E.ModelTooltipHeal("RENEW", 1, st, t, set)
+  near("level 50: Renew 1 by the rule = 85, the 17-a-tick measured in game", renew1, 85, 0.01)
+  -- Prayer of Mending is the one rank that isn't exact without correcting: 0.4-0.8% either
+  -- way across three dumps (Shadow 49: model 257.0 vs 259; Holy 49: 285.4 vs 287; Holy 50:
+  -- 272.2 vs 271). Cause unknown; its base heal is taken from the game.
+  near("level 50: PoM within 1% before correcting (271)", E.ModelTooltipHeal("POM", 1, st, t, set), 271, 0.01)
+  local report = E.ApplyClientData(F.spells, st, t, set)
+  for _, r in ipairs(report) do
+    if r.client then
+      n = n + 1
+      local now = math.abs(r.model - r.client) <= 1 or (r.after and math.abs(r.after - r.client) <= 1)
+      if not now then notMatched[#notMatched + 1] = string.format("%s%d %.1f/%.1f", r.key, r.rank, r.client, r.after or r.model) end
+      if r.tooltipFull then fixedRanks = fixedRanks + 1; if r.rulePower < 1 then full = full + 1 end end
+    end
+    if r.clientCost and r.costFrom ~= "client" then costsOff = costsOff + 1; print("     cost not taken: " .. r.key .. r.rank) end
+    if r.key == "POM" then near("level 50: PoM after correcting matches 271", r.after, 271, 1 / 271) end
+  end
+  near("level 50: every tooltip explained (" .. n .. "; off: " .. table.concat(notMatched, " ") .. ")", #notMatched, 0)
+  near("level 50: the 19 downranked ranks' tooltips leave the penalty out", fixedRanks, 19)
+  near("level 50: ... and the model keeps the penalty for all of them", full, 19)
+  -- (5 ticks of a rounded 17: anything from 82.5 to 87.5)
+  near("level 50: Renew 1 still heals 85 after reading the game (17 a tick)", E.ModelTooltipHeal("RENEW", 1, st, t, set), 85, 2.5 / 85)
+  local rk = E.SpellRanks("RENEW", st, t, set)
+  near("level 50: the spell overview shows Renew 1 at 10% of healing power", rk[#rk].power, 0.1, 1e-9)
+  local best = 0
+  for _, r in ipairs(rk) do if r.best then best = r.rank end end
+  near("level 50: Renew's most efficient rank is a high one, not rank 1", best >= 6 and 1 or 0, 1)
+  near("level 50: every game cost explained by data + talents", costsOff, 0)
   E.SPELLS = E.copy(E.GAME_SPELLS)
 end
 

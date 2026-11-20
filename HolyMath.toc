@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: Holy Math
 ## Notes: The maths behind a healing priest, on your live stats and the game's own spell data (via wowsims): item upgrades in healing per second, and what each spell rank heals.
-## Version: 0.9.6
+## Version: 0.9.8
 ## SavedVariables: HolyMathDB
 ## X-Category: Combat
 

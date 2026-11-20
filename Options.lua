@@ -4,9 +4,10 @@
        window      PortraitFrameTemplate (title bar, portrait, close button)
        numbers     MinimalSliderWithSteppersTemplate (the slider from the game's options panel)
        on/off      UICheckButtonTemplate
-       playstyle   [<] name [>] with UIPanelButtonTemplate arrows. NOT the game's dropdown:
-                   that runs our code inside Blizzard's shared menu system, which tainted
-                   the Group Finder's menu (ADDON_ACTION_BLOCKED on Search(), 20 Nov 2026).
+       playstyle   our own dropdown drawn with the game's dropdown art. NOT the game's
+                   dropdown template: that runs our code inside Blizzard's shared menu
+                   system, which tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
+                   on Search(), 20 Nov 2026).
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
      Each was checked against addons that already use it on this client (BugSack,
      OpenMap). Where a client lacks one, that widget falls back to a plain version,
@@ -219,42 +220,179 @@ local function planHelp()
   return table.concat(lines, "\n")
 end
 
--- label  [<]  Greater Heal filler  110 HPS  best  [>]
--- Plain buttons only: Blizzard's dropdown would run our code inside its shared
--- menu system and taint other addons'/Blizzard's menus (see the header).
-local function PlaystyleStepper(parent, x, y)
-  RowLabel(parent, "Playstyle", x, y, nil, planHelp)
-  local function move(dir)
-    local keys, i = rotationKeys(), 1
-    for n, k in ipairs(keys) do if k == db().rotation then i = n end end
-    db().rotation = keys[(i - 1 + dir) % #keys + 1]
-    if PlaySound then pcall(PlaySound, 856) end
-    O.Changed(true)
+-- label  [ Renew filler            v ]
+-- Our own dropdown, drawn with the game's dropdown art (the same atlases
+-- WhatsTraining and Polestar use on Forever), with our own pop-up list. NOT the
+-- game's dropdown template or menu system: that tainted the Group Finder's
+-- menu (see the header). Plain frames only.
+local function hasAtlas(name)
+  return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil
+end
+
+local function atlasTexture(frame, layer, atlas, useSize)
+  local t = frame:CreateTexture(nil, layer)
+  if not t then return nil end
+  if hasAtlas(atlas) then
+    t:SetAtlas(atlas, useSize)
+    return t, true
   end
-  local prev = Button(parent, "<", 24, 22, function() move(-1) end)
-  prev:SetPoint("LEFT", parent, "TOPLEFT", x + LABEL_W, y - ROW_H / 2)
-  local name = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  name:SetPoint("LEFT", prev, "RIGHT", 4, 0)
-  name:SetWidth(SLIDER_W + VALUE_W - 60)
-  name:SetJustifyH("CENTER")
-  local nxt = Button(parent, ">", 24, 22, function() move(1) end)
-  nxt:SetPoint("LEFT", name, "RIGHT", 4, 0)
-  local hit = CreateFrame("Frame", nil, parent)
-  hit:SetPoint("LEFT", prev, "RIGHT", 0, 0)
-  hit:SetSize(SLIDER_W + VALUE_W - 56, ROW_H)
-  hit:EnableMouse(true)
-  Tip(hit, "Playstyle", planHelp)
-  Tip(prev, "Playstyle", planHelp); Tip(nxt, "Playstyle", planHelp)
-  O.controls["rot<"], O.controls["rot>"], O.controls.rot = prev, nxt, name
-  O.rows[#O.rows + 1] = function()
-    local k = db().rotation
-    local r = E.ROTATIONS[k]
-    if not r then name:SetText(""); return end
-    local hps = planEHPS(k)
+  return t, false
+end
+
+-- The game's own geometry (Blizzard_Menu's WowStyle1, as WhatsTraining and
+-- OpenMap draw it on Forever): the field's art 7 out round the field, the
+-- list's art 10 out at the sides and 3 at top and bottom, its items 20 high,
+-- inset 8 at the sides and top and 15 at the bottom.
+local FIELD_H, ITEM_H = 22, 20
+local LIST_IN = { 8, 8, 8, 15 }   -- left, top, right, bottom
+
+local function PlaystyleDropdown(parent, x, y)
+  RowLabel(parent, "Playstyle", x, y, nil, planHelp)
+  local W = SLIDER_W + VALUE_W - 4
+
+  -- the closed field
+  local box = CreateFrame("Button", nil, parent, "BackdropTemplate")
+  -- the art reaches 7 out, so the field sits 7 in: its edges then line up
+  -- with the sliders' arrows and values above and below it
+  box:SetSize(W - 14, FIELD_H)
+  box:SetPoint("LEFT", parent, "TOPLEFT", x + LABEL_W + 7, y - ROW_H / 2)
+  local bg, ok = atlasTexture(box, "BACKGROUND", "common-dropdown-c-button")
+  if bg and ok then
+    -- SetAtlas brings the art's own nine-slice; it is drawn 7 out round the field
+    bg:SetPoint("TOPLEFT", box, "TOPLEFT", -7, 7)
+    bg:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 7, -7)
+    local lit = atlasTexture(box, "HIGHLIGHT", "common-dropdown-c-button-hover-1")
+    if lit then lit:SetAllPoints(bg); lit:SetBlendMode("ADD") end
+  elseif box.SetBackdrop then
+    if bg then bg:Hide() end
+    box:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+      tile = true, tileSize = 16, edgeSize = 14, insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+    box:SetBackdropColor(0.05, 0.05, 0.05, 0.9)
+  end
+  local arrow, arrowOk = atlasTexture(box, "ARTWORK", "common-dropdown-a-button", true)
+  if arrow then
+    if not arrowOk then arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up"); arrow:SetSize(20, 20) end
+    arrow:SetPoint("RIGHT", box, "RIGHT", 2, 0)
+    box.arrow = arrow
+  end
+  local text = box:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  text:SetPoint("LEFT", box, "LEFT", 6, 0)
+  text:SetPoint("RIGHT", box, "RIGHT", -26, 0)
+  text:SetJustifyH("LEFT")
+  if text.SetWordWrap then text:SetWordWrap(false) end
+  text:SetText("")
+  box.label = text
+  Tip(box, "Playstyle", planHelp)
+
+  -- the pop-up list
+  local list = CreateFrame("Frame", nil, box, "BackdropTemplate")
+  list:SetPoint("TOPLEFT", box, "BOTTOMLEFT", 0, -6)
+  list:SetFrameStrata("FULLSCREEN_DIALOG")
+  list:SetClampedToScreen(true)
+  list:EnableMouse(true)
+  list:Hide()
+  local back, backOk = atlasTexture(list, "BACKGROUND", "common-dropdown-bg")
+  if back and backOk then
+    back:SetPoint("TOPLEFT", -10, 3)
+    back:SetPoint("BOTTOMRIGHT", 10, -3)
+    back:SetAlpha(0.925)
+  elseif list.SetBackdrop then
+    if back then back:Hide() end
+    list:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+      tile = true, tileSize = 16, edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+    list:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
+  end
+  list.items = {}
+
+  local function close() list:Hide() end
+  -- a click anywhere else closes it (as WhatsTraining and Polestar do on Forever)
+  list:SetScript("OnShow", function(self) pcall(self.RegisterEvent, self, "GLOBAL_MOUSE_DOWN") end)
+  list:SetScript("OnHide", function(self) pcall(self.UnregisterEvent, self, "GLOBAL_MOUSE_DOWN") end)
+  list:SetScript("OnEvent", function(self)
+    local over = (self.IsMouseOver and self:IsMouseOver()) or (box.IsMouseOver and box:IsMouseOver())
+    if not over then self:Hide() end
+  end)
+
+  local function width(fs, fallback)
+    return fs.GetUnboundedStringWidth and fs:GetUnboundedStringWidth() or fallback
+  end
+
+  local function build()
+    local keys = rotationKeys()
     local S = ns.State()
-    local best = S and S.plans and S.plans[1] and S.plans[1].key == k
-    name:SetText(r.name .. (hps and string.format("  |cff9d9d9d%d HPS|r", hps + 0.5) or "") ..
-      (best and "  |cff40ff40best|r" or ""))
+    local bestKey = S and S.plans and S.plans[1] and S.plans[1].key
+    for _, it in ipairs(list.items) do it:Hide() end
+    local nameW, hpsW = 0, 0
+    for i, k in ipairs(keys) do
+      local it = list.items[i]
+      if not it then
+        it = CreateFrame("Button", nil, list)
+        it:SetHeight(ITEM_H)
+        -- the game's list highlight
+        local hl = it:CreateTexture(nil, "HIGHLIGHT")
+        if hl then hl:SetAllPoints(it); hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight"); hl:SetBlendMode("ADD") end
+        local radio, radioOk = atlasTexture(it, "ARTWORK", "common-dropdown-tickradial", true)
+        local chk, chkOk = atlasTexture(it, "OVERLAY", "common-dropdown-icon-radialtick-yellow", true)
+        it.radio, it.check = radio, chk
+        if radio then
+          if radioOk then radio:SetPoint("LEFT", it, "LEFT", -3, 0) else radio:Hide() end
+        end
+        if chk and chkOk then chk:SetPoint("TOPLEFT", radio or it, "TOPLEFT")
+        elseif chk then   -- no dropdown art on this client: the classic check mark
+          chk:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+          chk:SetSize(16, 16)
+          chk:SetPoint("LEFT", it, "LEFT", 0, 0)
+        end
+        it.text = it:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        it.text:SetPoint("LEFT", it, "LEFT", 20, 0)
+        it.text:SetJustifyH("LEFT")
+        it.hps = it:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        it.hps:SetPoint("RIGHT", it, "RIGHT", -2, 0)
+        it.hps:SetJustifyH("RIGHT")
+        it:SetScript("OnClick", function(self)
+          db().rotation = self.key
+          if PlaySound then pcall(PlaySound, 856) end
+          close()
+          O.Changed(true)
+        end)
+        it:SetScript("OnEnter", function(self)
+          local r = E.ROTATIONS[self.key]
+          ShowTip(self, r.name, (r.help or "") .. (self.best and "\n\n|cff40ff40Heals the most for you right now.|r" or ""))
+        end)
+        it:SetScript("OnLeave", HideTip)
+        list.items[i] = it
+        O.controls["rot:" .. i] = it
+      end
+      it.key = k
+      it:ClearAllPoints()
+      it:SetPoint("TOPLEFT", list, "TOPLEFT", LIST_IN[1], -LIST_IN[2] - (i - 1) * ITEM_H)
+      it:SetPoint("TOPRIGHT", list, "TOPRIGHT", -LIST_IN[3], -LIST_IN[2] - (i - 1) * ITEM_H)
+      local hps = planEHPS(k)
+      it.best = (k == bestKey)
+      it.text:SetText(E.ROTATIONS[k].name)
+      -- healing per second in its own column; the best one green
+      it.hps:SetText(hps and string.format(it.best and "|cff40ff40%d HPS|r" or "|cff9d9d9d%d HPS|r", hps + 0.5) or "")
+      if it.check then if k == db().rotation then it.check:Show() else it.check:Hide() end end
+      it.selected = (k == db().rotation)
+      nameW = math.max(nameW, width(it.text, 170))
+      hpsW = math.max(hpsW, width(it.hps, 60))
+      it:Show()
+    end
+    -- at least as wide as the field, like the game's own lists
+    list:SetSize(math.max(W, LIST_IN[1] + 20 + nameW + 24 + hpsW + 2 + LIST_IN[3]),
+      LIST_IN[2] + #keys * ITEM_H + LIST_IN[4])
+  end
+
+  box:SetScript("OnClick", function()
+    if list:IsShown() then close() else build(); list:Show() end
+    if PlaySound then pcall(PlaySound, 856) end
+  end)
+
+  O.controls.rot, O.controls.rotList = box, list
+  O.rows[#O.rows + 1] = function()
+    local r = E.ROTATIONS[db().rotation]
+    text:SetText(r and r.name or "")
+    if list:IsShown() then build() end
   end
 end
 
@@ -373,25 +511,71 @@ local function Block(pane, x, y, w, h, title, help)
 end
 
 -- Your spells: every healing spell you know, as facts. (The playstyle is picked on
--- the Settings tab.)
-local OVERVIEW_ROWS, ROW_GAP = 10, 22
+-- the Settings tab.) Click a spell to unfold all its ranks under it, like the
+-- game's own collapsible lists; as many as you like, in a list that scrolls.
+local OVERVIEW_ROWS, ROW_GAP = 20, 16   -- lines in view
+local NAME_X, RANK_X = 16, 30           -- spell names after the [+], rank names indented
+local SCROLL_W = 26                     -- room for the game's scroll bar at the right
 local OV_COLS = {   -- title, x, width, justify, help
-  { "Spell", 0, 150, "LEFT" },
+  { "Spell", 0, 150, "LEFT", "Click a spell to see all its ranks." },
   { "Rank", 150, 44, "RIGHT", "Your highest rank of it." },
-  { "Heal", 194, 66, "RIGHT", "One cast at your highest rank, all targets, after your overheal setting." },
+  { "Heal", 194, 66, "RIGHT", "One cast, all targets, after your overheal setting." },
   { "Mana", 260, 56, "RIGHT", "What one cast costs, with your talents." },
-  { "Per mana", 316, 72, "RIGHT", "Healing per point of mana, at your highest rank." },
-  { "Per second", 388, 82, "RIGHT", "Healing per second of casting, at your highest rank (instants count a global cooldown)." },
-  { "Most efficient", 470, 190, "RIGHT", "Your rank of it that heals the most per point of mana, and how much. Often not your highest." },
+  { "Per mana", 316, 72, "RIGHT", "Healing per point of mana." },
+  { "Per second", 388, 80, "RIGHT", "Healing per second of casting (instants count a global cooldown)." },
+  { "Most efficient", 468, 166, "RIGHT", "The rank of it that heals the most per point of mana, and how much. Often not your highest.\n\nUnder a spell's ranks: how much of your healing power each rank gets. Ranks far below your level can get less (down to 10%); the game's tooltip may not show this, but real heals have it." },
 }
+
+local function ShowSpellTip(self)
+  if not self.spellID or not GameTooltip then return end
+  GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+  if not (GameTooltip.SetSpellByID and pcall(GameTooltip.SetSpellByID, GameTooltip, self.spellID)) then
+    GameTooltip:SetText(self.title or "", 1, 1, 1)
+  end
+  GameTooltip:Show()
+end
+
+O.expanded = O.expanded or {}   -- spell key -> open
+
+local function SpellRow(i)
+  local child = O.spellChild
+  local row = CreateFrame("Button", nil, child)
+  row:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -(i - 1) * ROW_GAP)
+  row:SetSize(O.spellListW, ROW_GAP)
+  row:EnableMouse(true)
+  -- the game's own [+]/[-] buttons and list highlight (quest log, skills)
+  local tg = row:CreateTexture(nil, "ARTWORK")
+  if tg then tg:SetSize(14, 14); tg:SetPoint("LEFT", 0, 0) end
+  row.toggle = tg
+  local hl = row:CreateTexture(nil, "HIGHLIGHT")
+  if hl then hl:SetAllPoints(row); hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight"); hl:SetBlendMode("ADD") end
+  row:SetScript("OnEnter", ShowSpellTip)
+  row:SetScript("OnLeave", HideTip)
+  row:SetScript("OnClick", function(self)
+    if not self.key then return end
+    O.expanded[self.key] = not O.expanded[self.key] or nil
+    if PlaySound then pcall(PlaySound, O.expanded[self.key] and 856 or 857) end
+    O.FillSpells(O.spellState)
+    if GameTooltip and GameTooltip.IsOwned and GameTooltip:IsOwned(self) then ShowSpellTip(self) end
+  end)
+  -- the text lives on the row, so the highlight sits under it
+  row.cells = {}
+  for n, c in ipairs(OV_COLS) do
+    row.cells[n] = Cell(row, c[2] + (n == 1 and NAME_X or 0), -2, c[3] - (n == 1 and NAME_X or 0), c[4])
+  end
+  O.spellRows[i] = row
+  return row
+end
+
 local function BuildSpellsPane(pane)
   local W = WIDTH - 2 * MARGIN
-  -- Spell overview --------------------------------------------------------------
   local y = TOP
   Header(pane, "Spell overview", LEFT, y)
+  local hint = Label(pane, "|cff9d9d9dClick a spell to see all its ranks|r", "GameFontHighlightSmall", LEFT, y - 4, W)
+  hint:SetJustifyH("RIGHT")
   y = y - 22
   for _, c in ipairs(OV_COLS) do
-    Cell(pane, LEFT + c[2], y, c[3], c[4], "GameFontNormalSmall"):SetText(c[1])
+    Cell(pane, LEFT + c[2] + (c[2] == 0 and NAME_X or 0), y, c[3], c[4], "GameFontNormalSmall"):SetText(c[1])
     if c[5] then
       local h = CreateFrame("Frame", nil, pane)
       h:SetPoint("TOPLEFT", LEFT + c[2], y)
@@ -400,29 +584,26 @@ local function BuildSpellsPane(pane)
       Tip(h, c[1], c[5])
     end
   end
-  O.spellRows = {}
-  for i = 1, OVERVIEW_ROWS do
-    local ry = y - 4 - i * ROW_GAP
-    local row = CreateFrame("Frame", nil, pane)
-    row:SetPoint("TOPLEFT", LEFT, ry + 3)
-    row:SetSize(W, ROW_GAP)
-    row:EnableMouse(true)
-    row:SetScript("OnEnter", function(self)
-      if not self.spellID or not GameTooltip then return end
-      GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-      if not (GameTooltip.SetSpellByID and pcall(GameTooltip.SetSpellByID, GameTooltip, self.spellID)) then
-        GameTooltip:SetText(self.title or "", 1, 1, 1)
-      end
-      GameTooltip:Show()
+  -- the lines scroll inside the game's own scroll frame (its bar at the right)
+  O.spellListW = W - SCROLL_W
+  local sf = try("ScrollFrame", pane, "UIPanelScrollFrameTemplate") or CreateFrame("ScrollFrame", nil, pane)
+  sf:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT, y - 16)
+  sf:SetSize(O.spellListW, OVERVIEW_ROWS * ROW_GAP)
+  sf.scrollBarHideable = true       -- the bar shows only when there is more than fits
+  if not sf.ScrollBar and sf.EnableMouseWheel then   -- no template: the wheel still scrolls
+    sf:EnableMouseWheel(true)
+    sf:SetScript("OnMouseWheel", function(self, d)
+      local maxS = self.GetVerticalScrollRange and self:GetVerticalScrollRange() or 0
+      local v = (self.GetVerticalScroll and self:GetVerticalScroll() or 0) - d * ROW_GAP * 3
+      self:SetVerticalScroll(math.max(0, math.min(maxS, v)))
     end)
-    row:SetScript("OnLeave", HideTip)
-    row.cells = {}
-    for n, c in ipairs(OV_COLS) do row.cells[n] = Cell(pane, LEFT + c[2], ry, c[3], c[4]) end
-    O.spellRows[i] = row
   end
-
-  Label(pane, "|cff9d9d9dAfter your overheal settings. Hover a spell for its tooltip, a heading for what it means.|r",
-    "GameFontHighlightSmall", LEFT, y - 6 - (OVERVIEW_ROWS + 1) * ROW_GAP, W)
+  local child = CreateFrame("Frame", nil, sf)
+  child:SetSize(O.spellListW, OVERVIEW_ROWS * ROW_GAP)
+  if sf.SetScrollChild then sf:SetScrollChild(child) end
+  O.spellScroll, O.spellChild = sf, child
+  O.spellRows = {}
+  for i = 1, OVERVIEW_ROWS do SpellRow(i) end
 end
 
 local function BuildTooltipsPane(pane)
@@ -493,7 +674,7 @@ local function Build()
     function() return db().settings.fightLength end, function(v) db().settings.fightLength = v end,
     30, 900, 30, function(v) return v .. " s" end)
   y = y - ROW
-  PlaystyleStepper(p, LEFT, y)
+  PlaystyleDropdown(p, LEFT, y)
   y = y - ROW
   Slider(p, "pom", LEFT, y, "Prayer of Mending\nbounces",
     "How many people Prayer of Mending heals before it runs out (it can jump up to 5 times).",
@@ -596,13 +777,24 @@ end
 
 -- The status line: how many of your known spell ranks the model matches against
 -- the game's own spell tooltips (the same check as /hm check).
+-- A rank the model got within 1 healing, or within 5% and then took its base
+-- heal from the game (so it now matches too), or neither.
+local function tooltipMatch(r)
+  if math.abs(r.client - r.model) <= 1 then return "match" end
+  if r.after and math.abs(r.client - r.after) <= 1 then return "corrected" end
+  return "off"
+end
+ns.TooltipMatch = tooltipMatch
+
 local function Status(S)
   local rows = S and S.info and S.info.client or {}
-  local ok, off, none = 0, {}, 0
+  local ok, fixed, off, none = 0, {}, {}, 0
   for _, r in ipairs(rows) do
     if not r.client then none = none + 1
-    elseif math.abs(r.client - r.model) <= 1 then ok = ok + 1
-    else off[#off + 1] = r end
+    else
+      local m = tooltipMatch(r)
+      if m == "match" then ok = ok + 1 elseif m == "corrected" then fixed[#fixed + 1] = r else off[#off + 1] = r end
+    end
   end
   local read = #rows - none
   local help = "Every spell rank you know is compared with the game's own spell tooltip " ..
@@ -611,15 +803,29 @@ local function Status(S)
   if read == 0 then
     return "|cff9d9d9dSpell check: waiting for the game's spell tooltips.|r", help
   end
-  if #off == 0 then
-    return string.format("|cff40ff40Matches the game:|r %d of %d spell ranks.", ok, read), help
+  local function list(title, rs)
+    local lines = { title }
+    for _, r in ipairs(rs) do
+      lines[#lines + 1] = string.format("%s %d: game %.0f, model %.0f", E.SPELLS[r.key].name, r.rank, r.client, r.model)
+    end
+    return "\n\n" .. table.concat(lines, "\n")
   end
-  local lines = {}
-  for _, r in ipairs(off) do
-    lines[#lines + 1] = string.format("%s %d: game %.0f, model %.0f", E.SPELLS[r.key].name, r.rank, r.client, r.model)
+  local close, noPenalty = {}, {}
+  for _, r in ipairs(fixed) do if r.tooltipFull then noPenalty[#noPenalty + 1] = r else close[#close + 1] = r end end
+  if #noPenalty > 0 then
+    local names = {}
+    for _, r in ipairs(noPenalty) do names[#names + 1] = E.SPELLS[r.key].name .. " " .. r.rank end
+    help = help .. "\n\nThe game's tooltip shows these low ranks at full healing power, but their real heals " ..
+      "still get less (downranking). Holy Math uses what they really heal:\n" .. table.concat(names, ", ")
+  end
+  if #close > 0 then
+    help = help .. list("Close, so the game's number is used (the model was within 5%):", close)
+  end
+  if #off == 0 then
+    return string.format("|cff40ff40Matches the game:|r %d of %d spell ranks.", ok + #fixed, read), help
   end
   return string.format("|cffffb000%d of %d spell ranks differ from the game|r (hover for details)", #off, read),
-    help .. "\n\nDifferent:\n" .. table.concat(lines, "\n") .. "\n\n/hm check prints this in chat."
+    help .. list("Different:", off) .. "\n\n/hm check prints this in chat."
 end
 
 -- Fill in every control and the live result. force: rebuild from the game now.
@@ -663,32 +869,85 @@ local function fmtInt(n) return tostring(math.floor((n or 0) + 0.5)) end
 -- The Your spells tab.
 local function spellName(key) return E.SPELLS[key] and E.SPELLS[key].name or key end
 
+local function fmtHPM(v) return v == math.huge and "free" or string.format("%.2f", v) end
+
+-- What the open spell's ranks look like with your stats right now.
+local function ranksOf(key, S)
+  if not (key and S and S.st and E.SpellRanks) then return {} end
+  local ok, r = pcall(E.SpellRanks, key, S.st, S.t, S.input.settings)
+  if not ok then if ns.LogError then ns.LogError("spellRanks", r) end; return {} end
+  return r or {}
+end
+
+local function setNameX(row, x)
+  local fs = row.cells[1]
+  if row.nameX == x or not fs.ClearAllPoints then return end
+  fs:ClearAllPoints()
+  fs:SetPoint("TOPLEFT", x, -2)
+  row.nameX = x
+end
+
+-- What a rank's line says in the last column: how much of your healing power
+-- it gets, and (green) whether it is the spell's most efficient rank.
+local function rankNote(rk)
+  local full = rk.power >= 0.995
+  local pct = math.floor(rk.power * 100 + 0.5)
+  if rk.best then
+    return "|cff40ff40most efficient|r|cff9d9d9d, " .. (full and "full power" or (pct .. "% power")) .. "|r"
+  end
+  return "|cff9d9d9d" .. (full and "full healing power" or (pct .. "% of your healing power")) .. "|r"
+end
+
 function O.FillSpells(S)
-  local fl = db().settings.fightLength
-  -- Spell overview
-  local rows = S and S.spells or {}
+  O.spellState = S
+  -- one line per spell, and each open spell's ranks under it
+  local lines = {}
+  for _, sr in ipairs(S and S.spells or {}) do
+    lines[#lines + 1] = { spell = sr }
+    if O.expanded[sr.key] then
+      for _, rk in ipairs(ranksOf(sr.key, S)) do lines[#lines + 1] = { rank = rk, spell = sr } end
+    end
+  end
+  for i = #O.spellRows + 1, #lines do SpellRow(i) end
+  if O.spellChild then O.spellChild:SetHeight(math.max(1, #lines) * ROW_GAP) end
   for i, row in ipairs(O.spellRows) do
-    local sr = rows[i]
-    local c = row.cells
-    if sr then
+    local l, c = lines[i], row.cells
+    for _, cell in ipairs(c) do cell:SetText("") end
+    row.key, row.spellID, row.title = nil, nil, nil
+    if row.toggle then row.toggle:Hide() end
+    if l then row:Show() else row:Hide() end
+    if l and not l.rank then
+      local sr = l.spell
+      setNameX(row, NAME_X)
       c[1]:SetText("|cffffffff" .. sr.name .. "|r")
       c[2]:SetText(tostring(sr.top))
       c[3]:SetText(fmtInt(sr.topHeal))
       c[4]:SetText(fmtInt(sr.topCost))
-      c[5]:SetText(sr.topHPM == math.huge and "free" or string.format("%.2f", sr.topHPM))
+      c[5]:SetText(fmtHPM(sr.topHPM))
       c[6]:SetText(fmtInt(sr.topHPS))
       if sr.bestRank == sr.top then
         c[7]:SetText("|cff9d9d9dyour highest|r")
       else
         c[7]:SetText(string.format("Rank %d  |cff40ff40%.2f|r per mana", sr.bestRank, sr.bestHPM))
       end
-      row.spellID, row.title = sr.id, sr.name
-    else
-      for _, cell in ipairs(c) do cell:SetText("") end
-      row.spellID = nil
+      row.key, row.spellID, row.title = sr.key, sr.id, sr.name
+      if row.toggle then
+        row.toggle:SetTexture(O.expanded[sr.key] and "Interface\\Buttons\\UI-MinusButton-Up"
+          or "Interface\\Buttons\\UI-PlusButton-Up")
+        row.toggle:Show()
+      end
+    elseif l then
+      local rk = l.rank
+      setNameX(row, RANK_X)
+      c[1]:SetText("Rank " .. rk.rank)
+      c[3]:SetText(fmtInt(rk.heal))
+      c[4]:SetText(fmtInt(rk.cost))
+      c[5]:SetText(rk.best and ("|cff40ff40" .. fmtHPM(rk.hpm) .. "|r") or fmtHPM(rk.hpm))
+      c[6]:SetText(fmtInt(rk.hps))
+      c[7]:SetText(rankNote(rk))
+      row.spellID, row.title = rk.id, l.spell.name .. " (Rank " .. rk.rank .. ")"
     end
   end
-
 end
 
 -- A setting changed: recalculate (item tooltips too) and show it. Slider drags

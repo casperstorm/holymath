@@ -139,23 +139,36 @@ local function Check()
   print("  Kings: " .. tostring(S.input.buffs.kings) .. "  Human: " .. tostring(S.input.race.human))
 
   -- Model vs the game's own spell tooltips
-  local rows, ok, off, none = S.info.client or {}, 0, {}, 0
+  local rows, ok, off, none, fixed = S.info.client or {}, 0, {}, 0, 0
   for _, r in ipairs(rows) do
     if not r.client then none = none + 1
     elseif math.abs(r.client - r.model) <= 1 then ok = ok + 1
-    else off[#off + 1] = r end
+    else
+      off[#off + 1] = r
+      if r.after and math.abs(r.client - r.after) <= 1 then fixed = fixed + 1 end
+    end
   end
-  print(string.format("  Spell tooltips: %d of %d ranks match the model within 1 healing%s",
-    ok, #rows, none > 0 and string.format(" (%d had no readable tooltip yet)", none) or ""))
+  print(string.format("  Spell tooltips: %d of %d ranks match the model within 1 healing%s%s",
+    ok, #rows, fixed > 0 and string.format(", %d more once corrected from the game", fixed) or "",
+    none > 0 and string.format(" (%d had no readable tooltip yet)", none) or ""))
   for _, r in ipairs(off) do
+    local how = {}
+    if r.tooltipFull then
+      how[#how + 1] = string.format("the game's tooltip leaves out downranking; real heals get %d%% of your healing power, and so does the model",
+        math.floor(r.rulePower * 100 + 0.5))
+    elseif r.baseFrom == "client" then how[#how + 1] = "base heal taken from the game" end
+    local fixed = r.after and math.abs(r.client - r.after) <= 1
     print(string.format("    %s %d: game %.0f, model %.0f (%+.1f%%) - %s", E.SPELLS[r.key].name, r.rank, r.client, r.model,
-      r.diff * 100, r.baseFrom == "client" and "base heal taken from the game" or "|cffff5050too far apart, not corrected|r"))
+      r.diff * 100, #how > 0 and (table.concat(how, "; ") .. (fixed and ", now matches" or ""))
+        or "|cffff5050too far apart, not corrected|r"))
   end
   for _, r in ipairs(rows) do
-    if r.costFrom == "client" and r.clientCost ~= r.dataCost then
-      print(string.format("    %s %d costs %d in game (game data %d) - using the client's", E.SPELLS[r.key].name, r.rank, r.clientCost, r.dataCost))
-    elseif r.clientCost and r.clientCost ~= r.dataCost and r.costFrom ~= "client" then
-      print(string.format("    %s %d costs %d in game, game data %d - |cffff5050not taken (gap over 3%%)|r", E.SPELLS[r.key].name, r.rank, r.clientCost, r.dataCost))
+    -- dataCost: the data's cost after your talents, as the game would show it
+    local data = r.dataCost and math.floor(r.dataCost + 0.5)
+    if r.costFrom == "client" and data and math.abs(r.clientCost - r.dataCost) >= 1 then
+      print(string.format("    %s %d costs %d in game (game data with your talents %d) - using the game's", E.SPELLS[r.key].name, r.rank, r.clientCost, data))
+    elseif r.clientCost and data and r.costFrom ~= "client" then
+      print(string.format("    %s %d costs %d in game, game data with your talents %d - |cffff5050not taken (gap over 3%%)|r", E.SPELLS[r.key].name, r.rank, r.clientCost, data))
     end
   end
 end

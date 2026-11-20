@@ -9,7 +9,7 @@ The maths behind a healing priest in **World of Warcraft: Forever**, worked out 
 - **Item tooltips:** how much an item gains or loses you in healing per second, e.g. `Holy Math: +16.2 HPS (+1.8%)`. The whole model is rerun with the item swapped in, not a fixed stat weight. Gear a priest can't use says so ("can't wear Plate", "for Mage only").
 - **Your HPS and stat values:** what you heal per second over a fight, and what intellect, spirit, mp5, crit and haste are worth to you compared with healing power, right now.
 - **Playstyles:** Renew filler, Greater Heal filler, Flash Heal filler, Prayer of Healing filler, PW:Shield on tank, and Renewed Hope tank (Discipline, with the talent). Each picks the spell ranks that heal the most for you.
-- **Spell overview:** every healing spell you know: heal, mana, healing per mana and per second, and its most mana-efficient rank.
+- **Spell overview:** every healing spell you know: heal, mana, healing per mana and per second, and its most mana-efficient rank. Click a spell to unfold all its ranks, with how much of your healing power each low rank still gets.
 - **Checks itself against the game:** every spell rank you know is compared with the game's own spell tooltip ("Matches the game: 30 of 30 spell ranks").
 
 Everything recalculates by itself when your gear, buffs, talents or settings change.
