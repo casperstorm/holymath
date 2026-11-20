@@ -1,0 +1,21 @@
+-- Item tooltip text saved by /hm dump on 20 Nov 2026 (generated, do not edit).
+return {
+  { name = "Bad Mojo Mask", lines = { "Binds when picked up", "Head", "57 Armor", "+21 Intellect", "Equip: Increases damage done by Shadow spells and effects by up to 20.", "Requires Level 44", "" } },
+  { name = "Triune Amulet", lines = { "Binds when picked up", "Neck", "+7 Stamina", "+7 Spirit", "Equip: Increases damage and healing done by magical spells and effects by up to 8.", "Requires Level 39", "" } },
+  { name = "Death Speaker Mantle", lines = { "Binds when picked up", "Shoulder", "37 Armor", "+11 Intellect", "Equip: Increases damage and healing done by magical spells and effects by up to 6.", "Requires Level 27", "" } },
+  { name = "Neophyte's Shirt", lines = { "Shirt", "" } },
+  { name = "Civinad Robes", lines = { "Binds when picked up", "Chest", "54 Armor", "+7 Stamina", "+12 Spirit", "Equip: Increases healing done by up to 26 and damage done by up to 9 for all magical spells and effects.", "" } },
+  { name = "Makeshift Belt", lines = { "Binds when picked up", "Waist", "40 Armor", "+12 Intellect", "+10 Spirit", "Equip: Increases damage and healing done by magical spells and effects by up to 6.", "" } },
+  { name = "Marshdweller's Pants", lines = { "Binds when picked up", "Legs", "62 Armor", "+13 Stamina", "+8 Intellect", "+10 Spirit", "Equip: Increases damage and healing done by magical spells and effects by up to 11.", "" } },
+  { name = "Library Walkers", lines = { "Binds when picked up", "Feet", "35 Armor", "+9 Intellect", "Equip: Increases healing done by up to 13 and damage done by up to 5 for all magical spells and effects.", "Enchanted: Agility +4", "Requires Level 34", "" } },
+  { name = "Spidertank Oilrag", lines = { "Binds when picked up", "Wrist", "22 Armor", "Equip: Restores 3 Mana per 5 sec.", "Equip: Increases damage and healing done by magical spells and effects by up to 9.", "Requires Level 29", "" } },
+  { name = "Jumanza Grips", lines = { "Binds when picked up", "Hands", "43 Armor", "+10 Stamina", "+7 Intellect", "Equip: Increases healing done by up to 18 and damage done by up to 6 for all magical spells and effects.", "Equip: Restores 4 Mana per 5 sec.", "Requires Level 43", "" } },
+  { name = "Bloodmaster's Ring", lines = { "Binds when picked up", "Finger", "+7 Stamina", "+6 Intellect", "Equip: Increases damage and healing done by magical spells and effects by up to 9.", "" } },
+  { name = "Snake Hoop", lines = { "Binds when picked up", "Finger", "+5 Intellect", "Equip: Increases damage and healing done by magical spells and effects by up to 6.", "" } },
+  { name = "Roogug's Severed Head", lines = { "Binds when picked up", "Unique-Equipped", "Trinket", "+6 Spirit", "Use: Raise the severed head of Roogug, Horrifying and Silencing all Swine within 15 yds for 5 sec. (5 |4Min:Min; Cooldown)", "Requires Level 25", "" } },
+  { name = "Carrot on a Stick", lines = { "Binds when picked up", "Unique-Equipped", "Trinket", "Equip: Increases mount speed by 3%.", "" } },
+  { name = "Chainlink Towel", lines = { "Binds when picked up", "Back", "31 Armor", "+3 Intellect", "+10 Spirit", "\"Now even less absorbant!\"", "" } },
+  { name = "Farraki Kris", lines = { "Binds when picked up", "Main Hand", "23 - 44 Damage", "(20.9 damage per second)", "Equip: Increases damage and healing done by magical spells and effects by up to 54.", "Equip: Your spells pierce 2 Magical Resistance.", "Equip: Chance on harmful spell cast to afflict the target with a draining ritual, leeching 22 health every 2 sec for 6 sec.", "Requires Level 42", "" } },
+  { name = "Omega Orb", lines = { "Binds when picked up", "Held In Off-hand", "Equip: Restores 3 Mana per 5 sec.", "Equip: Increases damage and healing done by magical spells and effects by up to 9.", "" } },
+  { name = "Dudd's Second-Favorite Wand", lines = { "Binds when picked up", "Ranged", "37 - 70 Fire Damage", "(35.7 damage per second)", "+5 Intellect", "Equip: Restores 1 Mana per 5 sec.", "Requires Level 40", "" } },
+}

@@ -1,0 +1,138 @@
+--[[ Holy Math - Tooltips.lua
+     Item tooltips: how much effective HPS the item gains or loses you, by running
+     the whole model with the item swapped in (not a weight shortcut).
+     Holy Math adds nothing to spell tooltips: the game's own spell tooltip already
+     shows the heal at your healing power, and the rest is in the window.
+]]--
+
+local ADDON, ns = ...
+local G = ns.Game
+local E = setmetatable({}, { __index = function(_, k) return ns.model and ns.model[k] end })
+
+local GREEN, RED, GRAY, GOLD = "|cff40ff40", "|cffff5050", "|cff9d9d9d", "|cffffd100"
+local TAG = GOLD .. "Holy Math|r"
+
+local function fmtInt(n) return tostring(math.floor((n or 0) + 0.5)):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "") end
+
+---------------------------------------------------------------------------
+-- Items
+---------------------------------------------------------------------------
+local RELEVANT = { "healing", "int", "spirit", "mp5", "crit", "haste" }
+
+local function sumStats(slots)
+  local out, links = {}, {}
+  for _, s in ipairs(slots) do
+    local st, link = G.EquippedStats(s)
+    for _, k in ipairs(RELEVANT) do out[k] = (out[k] or 0) + (st[k] or 0) end
+    links[#links + 1] = link
+  end
+  return out, links
+end
+
+local function itemID(link) return link and tonumber(link:match("item:(%d+)")) end
+
+local verdictCache = {}
+function ns.ClearVerdicts() verdictCache = {} end
+
+local function Verdict(link)
+  local S = ns.State()
+  if not S or not S.weights then return nil end
+  if verdictCache[link] then return verdictCache[link] end
+  local slots = G.SlotsFor(link)
+  if not slots then return nil end
+  local new = G.ItemStats(link)
+  if not new then return nil end
+
+  local candidates = {}
+  if slots.both then candidates[1] = { 16, 17 }
+  else for _, s in ipairs(slots) do candidates[#candidates + 1] = { s } end end
+
+  -- A one-hand or off-hand next to an equipped two-hander would be compared
+  -- against an empty slot; it needs a partner we don't know, so stay silent.
+  if not slots.both and (slots[1] == 16 or slots[1] == 17) and G.TwoHanderEquipped() then
+    verdictCache[link] = false
+    return nil
+  end
+
+  local best
+  for _, cand in ipairs(candidates) do
+    local old, links = sumStats(cand)
+    local same = links[1] and itemID(links[1]) == itemID(link)
+    local diff, any = {}, false
+    for _, k in ipairs(RELEVANT) do
+      diff[k] = (new[k] or 0) - (old[k] or 0)
+      if (new[k] or 0) ~= 0 or (old[k] or 0) ~= 0 then any = true end
+    end
+    if any or same then
+      local d, pct = E.Compare(S.rotation, S.st, S.input, diff)
+      if d and (not best or d > best.d) then best = { d = d, pct = pct, same = same } end
+    end
+  end
+  if best then best.hasUse = new.hasUse end
+  verdictCache[link] = best or false
+  return best
+end
+
+local function AddItemLine(tt, link)
+  ns.Count("itemHook")
+  if not ns.enabled or type(link) ~= "string" or tt.fpLink == link then return end
+  local tip = ns.db and ns.db.tooltips or {}
+  if tip.items == false then return end
+  if tip.itemShift and not (IsShiftKeyDown and IsShiftKeyDown()) then return end
+  local okEq, why = pcall(G.CannotEquip, link)
+  if not okEq then ns.LogError("cannotEquip", why); why = nil end
+  if why then
+    if tip.cantEquip == false then return end
+    tt.fpLink = link
+    tt:AddLine(TAG .. ": " .. GRAY .. why .. "|r")
+    return
+  end
+  local ok, v = pcall(Verdict, link)
+  if not ok then ns.LogError("itemTooltip", v); return end
+  if not v then return end
+  local isSame = v.same and math.abs(v.d) < 0.05
+  if tip.onlyUpgrades and not isSame and v.d <= 0.05 then return end
+  tt.fpLink = link
+  if isSame then
+    tt:AddLine(TAG .. ": equipped")
+  else
+    local col = v.d > 0.05 and GREEN or (v.d < -0.05 and RED or GRAY)
+    local pct = tip.itemPercent ~= false and string.format(" (%+.1f%%)", v.pct * 100) or ""
+    tt:AddLine(string.format("%s: %s%+.1f HPS%s|r", TAG, col, v.d, pct))
+  end
+  if v.hasUse and tip.useNote ~= false then tt:AddLine(GRAY .. "  Use or proc effect not counted|r") end
+end
+
+---------------------------------------------------------------------------
+-- Hooks: the newer tooltip pipeline when GameTooltip runs it (Forever does),
+-- otherwise the classic scripts. Same checks StatCap uses.
+---------------------------------------------------------------------------
+local function hasScript(frame, name)
+  if not (frame and frame.HasScript) then return false end
+  local ok, yes = pcall(frame.HasScript, frame, name)
+  return ok and yes == true
+end
+
+function ns.HookTooltips()
+  local pipeline = type(GameTooltip.ProcessInfo) == "function" and TooltipDataProcessor
+    and TooltipDataProcessor.AddTooltipPostCall and Enum and Enum.TooltipDataType
+  ns.hookPath = pipeline and "pipeline" or "classic scripts"
+  if pipeline then
+    TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tt)
+      if tt ~= GameTooltip and tt ~= ItemRefTooltip then return end
+      local link
+      if TooltipUtil and TooltipUtil.GetDisplayedItem then link = select(2, TooltipUtil.GetDisplayedItem(tt))
+      elseif tt.GetItem then link = select(2, tt:GetItem()) end
+      AddItemLine(tt, link)
+    end)
+  else
+    if hasScript(GameTooltip, "OnTooltipSetItem") then
+      GameTooltip:HookScript("OnTooltipSetItem", function(tt) AddItemLine(tt, select(2, tt:GetItem())) end)
+    end
+  end
+  for _, tt in ipairs({ GameTooltip, ItemRefTooltip }) do
+    if tt and hasScript(tt, "OnTooltipCleared") then
+      tt:HookScript("OnTooltipCleared", function(t) t.fpLink = nil end)
+    end
+  end
+end
