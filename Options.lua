@@ -8,6 +8,7 @@
                    knowing it once tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
                    on Search(), 20 Nov 2026); our look-alike is the fallback.
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
+     Tabs: Settings (the fight, item tooltips, the result), Your spells, Math.
        typing      InputBoxTemplate (the Math tab's cells)
      Each was checked against addons that already use it on this client (BugSack,
      OpenMap). Where a client lacks one, that widget falls back to a plain version,
@@ -493,7 +494,7 @@ local function Cell(parent, x, y, w, justify, font)
 end
 
 local TABS = { { key = "settings", text = "Settings" }, { key = "spells", text = "Your spells" },
-               { key = "math", text = "Math" }, { key = "tooltips", text = "Tooltips" } }
+               { key = "math", text = "Math" } }
 
 function O.ShowTab(key)
   O.tab = key
@@ -1073,40 +1074,20 @@ function O.FillYourValues()
   b:Show()
 end
 
-local function BuildTooltipsPane(pane)
+-- Item tooltips, on the Settings tab: the line, and what it shows.
+-- (Holy Math leaves spell tooltips alone: the game's own already shows the heal.)
+local function TooltipSettings(p, x, y)
   local tips = function() return db().tooltips end
-  local function opt(id, x, y, label, help, key)
-    Check(pane, id, x, y, label, help,
+  local function opt(id, oy, label, help, key)
+    Check(p, id, x, oy, label, help,
       function() return tips()[key] ~= false end, function(v) tips()[key] = v end)
   end
-  local y = TOP
-  Header(pane, "Item tooltips", LEFT, y)
-  y = y - 24
-  opt("tipItems", LEFT, y, "Show on item tooltips", "The line with how much an item gains or loses you in healing per second.", "items")
-  y = y - 26
-  opt("tipItemPct", LEFT, y, "Also show the change in %", "Adds the change as a percentage of your healing, e.g. (+1.8%).", "itemPercent")
-  y = y - 26
-  opt("tipCantEquip", LEFT, y, "Say when you can't use an item", "Plate, swords, shields, items for other classes: \"can't wear Plate\" instead of a number.", "cantEquip")
-  y = y - 26
-  opt("tipUseNote", LEFT, y, "Note on-use and proc effects", "\"Use or proc effect not counted\" under items that have one.", "useNote")
-  y = y - 26
-  opt("tipOnlyUp", LEFT, y, "Only show upgrades", "Hide the line on items that would lower your healing.", "onlyUpgrades")
-  y = y - 26
-  opt("tipShift", LEFT, y, "Only while holding Shift", "Show the item line only while you hold down Shift.", "itemShift")
-
-  -- Right: why there are no spell options
-  Header(pane, "Spell tooltips", RIGHT, TOP)
-  Label(pane, "Holy Math leaves spell tooltips alone. The game's own spell tooltip already shows " ..
-    "what a heal does with your healing power, and everything else (best ranks, healing per mana " ..
-    "and per second, what to cast) is on the Your spells tab.", "GameFontHighlightSmall", RIGHT, TOP - 24, COL_W)
-
-  local def = Button(pane, "Defaults", 110, 22, function()
-    db().tooltips = ns.TooltipDefaults()
-    O.Changed(true)
-  end)
-  def:SetPoint("BOTTOMLEFT", MARGIN - 4, 14)
-  Tip(def, "Defaults", "Put every tooltip setting back to its starting value.")
-  O.controls.TooltipDefaults = def
+  Header(p, "Item tooltips", x, y)
+  opt("tipItems", y - 24, "Show Holy Math on item tooltips",
+    "A line on item tooltips with how much the item gains or loses you in healing per second, " ..
+    "worked out by running the whole model with it equipped.", "items")
+  opt("tipItemNumber", y - 48, "Show the number (+16.2 HPS)", "The change in healing per second.", "itemNumber")
+  opt("tipItemPct", y - 72, "Show it in % (+1.8%)", "The change as a share of your healing per second.", "itemPercent")
 end
 
 local function Build()
@@ -1127,7 +1108,7 @@ local function Build()
   local ui = HolyMathDB.ui
   if ui and ui.point then p:ClearAllPoints(); p:SetPoint(ui.point, UIParent, ui.rel or ui.point, ui.x or 0, ui.y or 0) end
 
-  O.panes = { settings = Pane(p), spells = Pane(p), math = Pane(p), tooltips = Pane(p) }
+  O.panes = { settings = Pane(p), spells = Pane(p), math = Pane(p) }
   local frame = p
   p = O.panes.settings
 
@@ -1238,10 +1219,12 @@ local function Build()
   Tip(shit, "Checked against the game", function() return O.statusHelp or "" end)
   O.statusHit = shit
 
+  TooltipSettings(p, RIGHT, TOP - 172)
+
   -- Defaults, bottom left, as in the game's own options --------------------------
   local def = Button(p, "Defaults", 110, 22, function()
     local d = ns.ClassDefaults(ns.model)
-    db().settings, db().rotation = d.settings, d.rotation
+    db().settings, db().rotation, db().tooltips = d.settings, d.rotation, ns.TooltipDefaults()
     O.Changed(true)
   end)
   def:SetPoint("BOTTOMLEFT", MARGIN - 4, 14)
@@ -1250,7 +1233,6 @@ local function Build()
 
   BuildSpellsPane(O.panes.spells)
   BuildMathPane(O.panes.math)
-  BuildTooltipsPane(O.panes.tooltips)
   Tabs(frame)
   YourValuesLine(frame)
   frame:Hide()

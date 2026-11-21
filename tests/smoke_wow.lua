@@ -672,11 +672,13 @@ do
   expect(not O.styleRows, "Your spells: no playstyle comparison, just your spells")
   expect(not (O.castRows or O.notesText or O.controls.useBest), "no 'how to play' instructions left")
 
-  click(O.controls["tab:tooltips"])
-  expect(O.panes.tooltips:IsShown(), "Tooltips tab shows its own page")
-  expect(not O.controls.tipSpells, "Tooltips tab has no spell options")
+  -- item tooltips: three options on the Settings tab, no Tooltips tab
+  click(O.controls["tab:settings"])
+  expect(not O.controls["tab:tooltips"] and not O.panes.tooltips, "no Tooltips tab")
+  expect(O.controls.tipItems and O.controls.tipItemNumber and O.controls.tipItemPct, "Settings tab: show, number, % for item tooltips")
+  expect(not (O.controls.tipOnlyUp or O.controls.tipShift or O.controls.tipCantEquip or O.controls.tipUseNote),
+    "... and no other tooltip options")
   local c
-  -- item tooltips: percent, only upgrades, shift
   local function itemTip(link)
     ns.ClearVerdicts()
     GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = link
@@ -684,26 +686,28 @@ do
     return GameTooltip.lines[1] or ""
   end
   local better, worse = "|Hitem:1002:0:|h", "|Hitem:3002:0:|h"
-  expect(itemTip(better):find("%%"), "item line shows % by default")
+  local line = plain(itemTip(better))
+  expect(line:find("HPS %(%+[%d.]+%%%)$"), "item line shows the number and % by default (" .. line .. ")")
   c = O.controls.tipItemPct; c:SetChecked(false); click(c)
-  expect(itemTip(better) ~= "" and not itemTip(better):find("%%"), "item % can be turned off")
+  line = plain(itemTip(better))
+  expect(line:find("HPS$") and not line:find("%%"), "% off: just the number (" .. line .. ")")
   c:SetChecked(true); click(c)
+  c = O.controls.tipItemNumber; c:SetChecked(false); click(c)
+  line = plain(itemTip(better))
+  expect(line:find(": %+[%d.]+%%$") and not line:find("HPS"), "number off: just the % (" .. line .. ")")
+  O.controls.tipItemPct:SetChecked(false); click(O.controls.tipItemPct)
+  expect(itemTip(better) == "", "number and % both off: no line")
+  c:SetChecked(true); click(c); O.controls.tipItemPct:SetChecked(true); click(O.controls.tipItemPct)
   local realInv = GetInventoryItemLink
   GetInventoryItemLink = function(u, slot) if slot == 5 then return "|Hitem:3001:0:|h" end return realInv(u, slot) end
-  expect(itemTip(worse):find("%-%d"), "a worse item shows a loss by default")
-  c = O.controls.tipOnlyUp; c:SetChecked(true); click(c)
-  expect(itemTip(worse) == "", "only upgrades: the loss is hidden")
-  c:SetChecked(false); click(c)
+  expect(itemTip(worse):find("%-%d"), "a worse item shows a loss")
   GetInventoryItemLink = realInv
-  c = O.controls.tipShift; c:SetChecked(true); click(c)
-  IsShiftKeyDown = function() return false end
-  expect(itemTip(better) == "", "Shift option: nothing without Shift")
-  IsShiftKeyDown = function() return true end
-  expect(itemTip(better) ~= "", "Shift option: shown with Shift")
-  c:SetChecked(false); click(c)
-  IsShiftKeyDown = nil
-  click(O.controls.TooltipDefaults)
-  expect(db.tooltips.items and db.tooltips.itemPercent and not db.tooltips.onlyUpgrades, "tooltip Defaults")
+  c = O.controls.tipItems; c:SetChecked(false); click(c)
+  expect(itemTip(better) == "", "item tooltips off: no line")
+  c:SetChecked(true); click(c)
+  db.tooltips.itemPercent = false; db.tooltips.items = false
+  click(O.controls.Defaults)
+  expect(db.tooltips.items and db.tooltips.itemPercent and db.tooltips.itemNumber, "Defaults puts the tooltip options back too")
   click(O.controls["tab:settings"])
   SlashCmdList.HOLYMATH("")
 end

@@ -31,7 +31,7 @@ Copy the `HolyMath` folder into `World of Warcraft/_forever_/Interface/AddOns/` 
 | `/hm set fight <seconds>` | fight length, and other settings (`/hm set` lists them) |
 | `/hm reset` | put back every value you typed on the Math tab |
 
-The **Settings** tab holds the fight: its length (default 120 s, a typical raid boss), playstyle, Prayer of Mending bounces, Mana Tide, mana potions and Inspiration, next to the result. The overheal you expect per spell is set on the **Math** tab (Settings has a button to it). Every setting explains itself on hover. The **Tooltips** tab controls what item tooltips show.
+The **Settings** tab holds the fight: its length (default 120 s, a typical raid boss), playstyle, Prayer of Mending bounces, Mana Tide, mana potions and Inspiration, next to the result, and what item tooltips show (the line at all, the number, the %). The overheal you expect per spell is set on the **Math** tab (Settings has a button to it). Every setting explains itself on hover.
 
 ## Where the numbers come from
 

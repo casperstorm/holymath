@@ -77,12 +77,11 @@ local function AddItemLine(tt, link)
   ns.Count("itemHook")
   if not ns.enabled or type(link) ~= "string" or tt.fpLink == link then return end
   local tip = ns.db and ns.db.tooltips or {}
-  if tip.items == false then return end
-  if tip.itemShift and not (IsShiftKeyDown and IsShiftKeyDown()) then return end
+  local showNumber, showPct = tip.itemNumber ~= false, tip.itemPercent ~= false
+  if tip.items == false or not (showNumber or showPct) then return end
   local okEq, why = pcall(G.CannotEquip, link)
   if not okEq then ns.LogError("cannotEquip", why); why = nil end
   if why then
-    if tip.cantEquip == false then return end
     tt.fpLink = link
     tt:AddLine(TAG .. ": " .. GRAY .. why .. "|r")
     return
@@ -91,16 +90,17 @@ local function AddItemLine(tt, link)
   if not ok then ns.LogError("itemTooltip", v); return end
   if not v then return end
   local isSame = v.same and math.abs(v.d) < 0.05
-  if tip.onlyUpgrades and not isSame and v.d <= 0.05 then return end
   tt.fpLink = link
   if isSame then
     tt:AddLine(TAG .. ": equipped")
   else
     local col = v.d > 0.05 and GREEN or (v.d < -0.05 and RED or GRAY)
-    local pct = tip.itemPercent ~= false and string.format(" (%+.1f%%)", v.pct * 100) or ""
-    tt:AddLine(string.format("%s: %s%+.1f HPS%s|r", TAG, col, v.d, pct))
+    local pct = string.format("%+.1f%%", v.pct * 100)
+    local text = showNumber and string.format("%+.1f HPS", v.d) or pct      -- "+16.2 HPS (+1.8%)", or one of them
+    if showNumber and showPct then text = text .. " (" .. pct .. ")" end
+    tt:AddLine(string.format("%s: %s%s|r", TAG, col, text))
   end
-  if v.hasUse and tip.useNote ~= false then tt:AddLine(GRAY .. "  Use or proc effect not counted|r") end
+  if v.hasUse then tt:AddLine(GRAY .. "  Use or proc effect not counted|r") end
 end
 
 ---------------------------------------------------------------------------

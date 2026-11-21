@@ -18,10 +18,9 @@ local function ClassDefaults(model)
 end
 ns.ClassDefaults = ClassDefaults
 
--- What the item tooltips show (Tooltips tab of the window).
-local TOOLTIP_DEFAULTS = {
-  items = true, itemPercent = true, cantEquip = true, useNote = true, onlyUpgrades = false, itemShift = false,
-}
+-- What the item tooltips show (Settings tab of the window): the line at all,
+-- the change in healing per second, and the change in %.
+local TOOLTIP_DEFAULTS = { items = true, itemNumber = true, itemPercent = true }
 function ns.TooltipDefaults()
   local d = {}
   for k, v in pairs(TOOLTIP_DEFAULTS) do d[k] = v end
@@ -390,6 +389,8 @@ f:SetScript("OnEvent", function(self, event, unit)
     HolyMathDB[class] = HolyMathDB[class] or {}
     merge(HolyMathDB[class], ClassDefaults(ns.model))
     merge(HolyMathDB[class], { tooltips = ns.TooltipDefaults() })
+    -- options the window no longer has (only upgrades, Shift only, notes): their old defaults
+    for _, k in ipairs({ "cantEquip", "useNote", "onlyUpgrades", "itemShift" }) do HolyMathDB[class].tooltips[k] = nil end
     if type(HolyMathDB[class].overrides) ~= "table" then HolyMathDB[class].overrides = {} end
     ns.db = HolyMathDB[class]
     -- one-time: the old default fight length (300 s) becomes the new one (120 s)
