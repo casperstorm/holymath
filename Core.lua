@@ -41,7 +41,10 @@ local function say(msg, ...) print("|cffffd100Holy Math|r: " .. string.format(ms
 -- where the client may hide stat values; the last good state is kept).
 ---------------------------------------------------------------------------
 local state, dirty = nil, true
-function ns.MarkDirty() dirty = true end
+function ns.MarkDirty()
+  dirty = true
+  if ns.Profiles then ns.Profiles.Sync() end   -- auto-save into the loaded profile
+end
 
 -- How many of your own values (Math tab) are in use.
 function ns.OverrideCount()
@@ -137,6 +140,191 @@ function ns.State(force)
     end
   end
   return state
+end
+
+---------------------------------------------------------------------------
+-- Profiles: named sets of your settings (the fight, playstyle, overheal per
+-- spell, the Math tab's other settings), to swap between and compare.
+-- db.profiles[name] = { settings = {...}, rotation = key }; db.profile = the
+-- loaded one, which every change is saved into (P.Sync). None loaded: your
+-- settings are just your settings, as before profiles. Not in a profile: the values you typed over the
+-- game's on the Math tab (db.overrides, about your character, not the fight) and
+-- the tooltip options.
+---------------------------------------------------------------------------
+local P = {}
+ns.Profiles = P
+P.MAX_NAME = 32
+
+local function deepEqual(a, b)
+  if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+  for k, v in pairs(a) do if not deepEqual(v, b[k]) then return false end end
+  for k in pairs(b) do if a[k] == nil then return false end end
+  return true
+end
+
+local function current() return { settings = E.copy(ns.db.settings), rotation = ns.db.rotation } end
+local hpsCache = { state = nil }
+local function forget() hpsCache = { state = nil } end
+
+-- "  Raid  " -> "Raid"; nil when empty or too long.
+function P.CleanName(name)
+  -- no "|": it would start a colour or texture code in the menu
+  name = type(name) == "string" and name:gsub("|", ""):gsub("^%s+", ""):gsub("%s+$", "") or ""
+  if name == "" or #name > P.MAX_NAME then return nil end
+  return name
+end
+
+function P.List()
+  local out = {}
+  for name in pairs(ns.db.profiles or {}) do out[#out + 1] = name end
+  table.sort(out, function(a, b) return a:lower() < b:lower() end)
+  return out
+end
+
+function P.Exists(name) return name ~= nil and (ns.db.profiles or {})[name] ~= nil end
+function P.Loaded() return P.Exists(ns.db.profile) and ns.db.profile or nil end
+
+-- A playstyle you can't use now (it needs a talent you no longer have) becomes the
+-- default one when the state is rebuilt; the profile keeps its own. (The last
+-- state is used as it is: Sync runs on every change and mustn't rebuild.)
+local function usable(key)
+  local r = key and E.ROTATIONS[key]
+  if not r or r.sheetOnly then return false end
+  if not r.requires then return true end
+  return not (state and state.t) or (state.t[r.requires] or 0) > 0
+end
+
+-- Auto-save: while a profile is loaded, every change to your settings is written
+-- into it (ns.MarkDirty calls this on every change).
+function P.Sync()
+  local name = ns.db and P.Loaded()
+  if not name then return end
+  local p = ns.db.profiles[name]
+  p.settings = E.copy(ns.db.settings)
+  if ns.db.rotation ~= p.rotation and not (ns.db.rotation == E.DEFAULT_ROTATION and not usable(p.rotation)) then
+    p.rotation = ns.db.rotation
+  end
+end
+
+-- At login: profiles saved by an older version get the settings added since
+-- (their defaults).
+function P.FillDefaults()
+  local d = ClassDefaults(ns.model)
+  for _, p in pairs(ns.db.profiles or {}) do
+    if type(p) == "table" then
+      p.settings = type(p.settings) == "table" and p.settings or {}
+      merge(p.settings, d.settings)
+      if not (p.rotation and E.ROTATIONS[p.rotation]) then p.rotation = d.rotation end
+    end
+  end
+end
+
+-- A new profile with your settings now; it is loaded.
+function P.Save(name)
+  name = P.CleanName(name)
+  if not name then return nil end
+  ns.db.profiles = ns.db.profiles or {}
+  ns.db.profiles[name] = current()
+  ns.db.profile = name
+  forget()
+  return name
+end
+
+function P.Load(name)
+  local p = (ns.db.profiles or {})[name]
+  if not p then return false end
+  -- a profile saved by an older version gets the settings added since (their defaults)
+  local d = ClassDefaults(ns.model)
+  p.settings = type(p.settings) == "table" and p.settings or {}
+  merge(p.settings, d.settings)
+  if not (p.rotation and E.ROTATIONS[p.rotation]) then p.rotation = d.rotation end
+  ns.db.settings, ns.db.rotation = E.copy(p.settings), p.rotation
+  ns.db.profile = name
+  ns.MarkDirty()
+  return true
+end
+
+-- false, why: the new name is empty, too long, or another profile's.
+function P.Rename(old, new)
+  new = P.CleanName(new)
+  if not (P.Exists(old) and new) then return false, "empty" end
+  if new ~= old and P.Exists(new) then return false, "taken" end
+  local p = ns.db.profiles[old]
+  ns.db.profiles[old] = nil
+  ns.db.profiles[new] = p
+  if ns.db.profile == old then ns.db.profile = new end
+  forget()
+  return true
+end
+
+function P.Delete(name)
+  if not P.Exists(name) then return false end
+  ns.db.profiles[name] = nil
+  if ns.db.profile == name then ns.db.profile = nil end
+  forget()
+  return true
+end
+
+-- What a profile heals per second (after overheal) with your gear, buffs and
+-- talents now, without loading it: the model run with its settings.
+function P.HPS(name)
+  local p = (ns.db.profiles or {})[name]
+  local S = ns.State()
+  if not (p and S and S.weights) then return nil end
+  if hpsCache.state ~= S then hpsCache = { state = S } end
+  if hpsCache[name] == nil then
+    local set = E.copy(S.input.settings)          -- has your known ranks, rules and typed values
+    for k, v in pairs(p.settings or {}) do set[k] = E.copy(v) end
+    local rot = E.ROTATIONS[p.rotation] and p.rotation or E.DEFAULT_ROTATION
+    local r = E.ROTATIONS[rot]
+    if r.sheetOnly or (r.requires and (S.t[r.requires] or 0) <= 0) then rot = E.DEFAULT_ROTATION end
+    local ok, res = pcall(E.Rotation, rot, S.st, S.t, set)
+    hpsCache[name] = (ok and res and res.ehps) or false
+  end
+  return hpsCache[name] or nil
+end
+
+-- How a profile differs from your current settings, one line each:
+-- "Prayer of Mending bounces: 1 (now 3)".
+local LABELS = {
+  fightLength = { "Fight length", "sec" }, pomHits = { "Prayer of Mending bounces" },
+  manaTidesInGroup = { "Mana Tide totems" }, majorManaPotions = { "Mana potion on cooldown", "onoff" },
+  includeInspiration = { "Count Inspiration", "onoff" }, imperfectPlay = { "Downtime used", "pct0" },
+  litanyAlternation = { "Litany of Light, on its own", "pct0" },
+}
+local function show(v, unit)
+  if unit == "onoff" or type(v) == "boolean" then return v and "on" or "off" end
+  if unit and E.MathFormat and type(v) == "number" then return E.MathFormat(unit, v) end
+  return tostring(v)
+end
+function P.Diff(name)
+  local p = (ns.db.profiles or {})[name]
+  if not p then return {} end
+  local cur, out = ns.db.settings, {}
+  local function line(label, a, b, unit) out[#out + 1] = string.format("%s: %s (now %s)", label, show(a, unit), show(b, unit)) end
+  if p.rotation ~= ns.db.rotation then
+    local a, b = E.ROTATIONS[p.rotation], E.ROTATIONS[ns.db.rotation]
+    line("Playstyle", a and a.name or tostring(p.rotation), b and b.name or tostring(ns.db.rotation))
+  end
+  local keys = {}
+  for k in pairs(p.settings or {}) do keys[#keys + 1] = k end
+  table.sort(keys, function(a, b) return (LABELS[a] and LABELS[a][1] or a) < (LABELS[b] and LABELS[b][1] or b) end)
+  for _, k in ipairs(keys) do
+    local a, b = p.settings[k], cur[k]
+    if k == "overheal" and type(a) == "table" and type(b) == "table" then
+      local spells = {}
+      for s in pairs(a) do if a[s] ~= b[s] then spells[#spells + 1] = s end end
+      table.sort(spells)
+      for _, s in ipairs(spells) do
+        local def = E.SPELLS and E.SPELLS[s]
+        line("Overheal, " .. (def and def.name or s), a[s], b[s], "pct0")
+      end
+    elseif not deepEqual(a, b) and type(a) ~= "table" then
+      local l = LABELS[k]
+      line(l and l[1] or k, a, b, l and l[2])
+    end
+  end
+  return out
 end
 
 ---------------------------------------------------------------------------
@@ -418,6 +606,26 @@ SlashCmdList.HOLYMATH = function(msg)
   elseif cmd == "check" then Check()
   elseif cmd == "dump" then Dump()
   elseif cmd == "set" then Set(rest)
+  elseif cmd == "profile" or cmd == "profiles" then
+    -- /hm profile <name> loads one (for a macro); /hm profile lists them
+    local name = P.CleanName(rest)
+    if name then
+      local found
+      for _, n in ipairs(P.List()) do if n:lower() == name:lower() then found = n end end
+      if not found then return say("no profile called %q. /hm profile lists them.", name) end
+      P.Load(found)
+      if ns.Options and ns.Options.frame and ns.Options.frame:IsShown() then ns.Options.Changed(true) end
+      Summary()
+    else
+      local names = P.List()
+      if #names == 0 then return say("no profiles yet. Save one from the bottom of the Settings tab (/hm).") end
+      local parts = {}
+      for _, n in ipairs(names) do
+        local h = P.HPS(n)
+        parts[#parts + 1] = n .. (h and string.format(" (%.0f HPS)", h) or "") .. (n == P.Loaded() and " - loaded" or "")
+      end
+      say("profiles: %s. /hm profile <name> loads one.", table.concat(parts, ", "))
+    end
   elseif cmd == "reset" then
     -- your own values from the Math tab (also the way out if one ever breaks the window)
     local n = 0
@@ -426,7 +634,7 @@ SlashCmdList.HOLYMATH = function(msg)
     ns.MarkDirty()
     if ns.Options and ns.Options.frame and ns.Options.frame:IsShown() then ns.Options.Changed(true) end
     say("%d value(s) you typed on the Math tab are back to the game's.", n)
-  else say("/hm (options window) | /hm show (summary in chat) | /hm check | /hm dump | /hm set ... | /hm reset (your Math tab values)") end
+  else say("/hm (options window) | /hm show (summary in chat) | /hm check | /hm dump | /hm set ... | /hm profile [name] | /hm reset (your Math tab values)") end
 end
 
 ---------------------------------------------------------------------------
@@ -447,6 +655,9 @@ f:SetScript("OnEvent", function(self, event, unit)
     -- options the window no longer has (only upgrades, Shift only, notes): their old defaults
     for _, k in ipairs({ "cantEquip", "useNote", "onlyUpgrades", "itemShift" }) do HolyMathDB[class].tooltips[k] = nil end
     if type(HolyMathDB[class].overrides) ~= "table" then HolyMathDB[class].overrides = {} end
+    if type(HolyMathDB[class].profiles) ~= "table" then HolyMathDB[class].profiles = {} end
+    ns.db = HolyMathDB[class]
+    P.FillDefaults()
     ns.db = HolyMathDB[class]
     -- one-time: the old default fight length (300 s) becomes the new one (120 s)
     if not ns.db.fight120 then

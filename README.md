@@ -32,9 +32,12 @@ Download from [CurseForge](https://www.curseforge.com/wow/addons/holy-math/) (or
 | `/hm check` | where every number comes from, and how the model compares with the game |
 | `/hm dump` | save everything Holy Math reads (for bug reports), then `/reload` |
 | `/hm set fight <seconds>` | fight length, and other settings (`/hm set` lists them) |
+| `/hm profile [name]` | list your profiles with their HPS, or load one (for a macro) |
 | `/hm reset` | put back every value you typed on the Math tab |
 
 The **Settings** tab holds the fight: its length (default 120 s, a typical raid boss), playstyle, Prayer of Mending bounces, Mana Tide, mana potions and Inspiration, next to the result, and what the tooltips show (the item line at all, its number, its %, and the spell line). Your spells and the overheal you expect per spell are at the top of the **Math** tab (Settings has a button to it), and the bottom of the Settings tab shows which version you have. Every setting explains itself on hover.
+
+**Profiles** (top right of the window): keep several sets of settings under any name, e.g. "1 bounce", "3 bounces", "5 min, no Mana Tide", and switch between them. A profile holds the fight, the playstyle and the overheal per spell; values you typed over the game's on the Math tab are not part of it. The loaded profile saves itself: whatever you change goes into it, and "New profile" starts one from your settings now. The list shows what each profile heals per second with your gear right now, so you can compare them without switching, and hovering one shows how it differs from your current settings.
 
 ## Where the numbers come from
 

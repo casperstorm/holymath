@@ -8,7 +8,8 @@
                    knowing it once tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
                    on Search(), 20 Nov 2026); our look-alike is the fallback.
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
-     Tabs: Settings (the fight, item tooltips, the result), Math (Your spells first).
+     Tabs: Settings (the fight, tooltips, the result), Math (Your spells first).
+     Profiles: a dropdown at the top right, on both tabs (ProfileControls).
        typing      InputBoxTemplate (the Math tab's cells)
      Each was checked against addons that already use it on this client (BugSack,
      OpenMap). Where a client lacks one, that widget falls back to a plain version,
@@ -1125,6 +1126,149 @@ local function TooltipSettings(p, x, y)
     "downranking (in dungeons especially), so these are worked out by Holy Math, not read from it.", "spells")
 end
 
+---------------------------------------------------------------------------
+-- Profiles (Core.lua ns.Profiles): top right of the window, on both tabs.
+--   Profile  [ 3 bounces  v ]
+-- The menu lists every profile with what it heals per second on your gear now
+-- (hover: how it differs from your settings), then New / Rename / Delete. The
+-- loaded profile saves itself: every change goes into it (Core.lua P.Sync). Names are asked for in the game's own popup (StaticPopup). Without the
+-- game's dropdown (WowStyle1) there are no profiles in the window; /hm profile
+-- still works.
+---------------------------------------------------------------------------
+local function editBoxOf(dialog)
+  return dialog and ((dialog.GetEditBox and dialog:GetEditBox()) or dialog.editBox or dialog.EditBox)
+end
+
+-- Ask for a name; accept(name) returns an error text to ask again with, or nil.
+function O.AskName(prompt, default, accept)
+  if not (StaticPopupDialogs and StaticPopup_Show) then return end
+  StaticPopupDialogs.HOLYMATH_PROFILE_NAME = StaticPopupDialogs.HOLYMATH_PROFILE_NAME or {
+    text = "%s", button1 = ACCEPT or "Accept", button2 = CANCEL or "Cancel",
+    hasEditBox = true, maxLetters = ns.Profiles.MAX_NAME, timeout = 0, whileDead = true,
+    hideOnEscape = true, preferredIndex = 3,
+    OnShow = function(self, data)
+      local eb = editBoxOf(self)
+      if eb then eb:SetText(data and data.default or ""); if eb.HighlightText then eb:HighlightText() end end
+    end,
+    OnAccept = function(self, data) data.done(editBoxOf(self) and editBoxOf(self):GetText()) end,
+    EditBoxOnEnterPressed = function(eb, data)
+      if StaticPopup_Hide then StaticPopup_Hide("HOLYMATH_PROFILE_NAME") end
+      data.done(eb:GetText())
+    end,
+    EditBoxOnEscapePressed = function() if StaticPopup_Hide then StaticPopup_Hide("HOLYMATH_PROFILE_NAME") end end,
+  }
+  local data = { default = default }
+  data.done = function(text)
+    local problem = accept(text)
+    if problem then   -- ask again, saying why
+      local again = function() O.AskName(problem .. "\n\n" .. prompt, text, accept) end
+      if C_Timer and C_Timer.After then C_Timer.After(0, again) else again() end
+    end
+  end
+  StaticPopup_Show("HOLYMATH_PROFILE_NAME", prompt, nil, data)
+end
+
+local function nameProblem(name, except)
+  local P = ns.Profiles
+  local clean = P.CleanName(name)
+  if not clean then return "|cffff5050A name needs 1 to " .. P.MAX_NAME .. " letters.|r" end
+  for _, n in ipairs(P.List()) do
+    if n ~= except and n:lower() == clean:lower() then return "|cffff5050There is already a profile called \"" .. n .. "\".|r" end
+  end
+end
+
+function O.NewProfile()
+  O.AskName("Name for a new profile with your settings now:", "", function(text)
+    local problem = nameProblem(text)
+    if problem then return problem end
+    ns.Profiles.Save(text)
+    O.Changed(true)
+  end)
+end
+
+function O.RenameProfile(old)
+  O.AskName("New name for \"" .. old .. "\":", old, function(text)
+    local problem = nameProblem(text, old)
+    if problem then return problem end
+    ns.Profiles.Rename(old, text)
+    O.Changed(true)
+  end)
+end
+
+function O.DeleteProfile(name)
+  if not (StaticPopupDialogs and StaticPopup_Show) then return end
+  StaticPopupDialogs.HOLYMATH_PROFILE_DELETE = StaticPopupDialogs.HOLYMATH_PROFILE_DELETE or {
+    text = "Delete the profile \"%s\"? Your settings now stay as they are.",
+    button1 = DELETE or "Delete", button2 = CANCEL or "Cancel",
+    timeout = 0, whileDead = true, hideOnEscape = true, showAlert = true, preferredIndex = 3,
+    OnAccept = function(_, data) ns.Profiles.Delete(data); O.Changed(true) end,
+  }
+  StaticPopup_Show("HOLYMATH_PROFILE_DELETE", name, nil, name)
+end
+
+local PROFILE_HELP = "Keep several sets of settings under names and switch between them here: the fight, " ..
+  "playstyle, Prayer of Mending bounces, Mana Tide, potions, Inspiration, and the overheal you set per spell " ..
+  "on the Math tab. The loaded profile saves itself: whatever you change goes into it.\n\nThe list shows what each profile heals per second with your gear now, so you can " ..
+  "compare them without switching; hover one to see how it differs from your settings.\n\n" ..
+  "Values you typed over the game's on the Math tab (your stats, talents) are not part of a profile. " ..
+  "/hm profile <name> loads one from a macro."
+
+local function profileTip(tooltip, name)
+  local P = ns.Profiles
+  tooltip:SetText(name, 1, 1, 1)
+  local h = P.HPS(name)
+  if h then tooltip:AddLine(string.format("%s HPS with your gear now", fmtInt(h)), 0.25, 1, 0.25) end
+  local diff = P.Diff(name)
+  if name == P.Loaded() then
+    tooltip:AddLine("Loaded: what you change is saved into it.", nil, nil, nil, true)
+  elseif #diff == 0 then
+    tooltip:AddLine("The same as your settings now.", nil, nil, nil, true)
+  else
+    tooltip:AddLine("Differs from your settings now:", nil, nil, nil, true)
+    for _, l in ipairs(diff) do tooltip:AddLine("  " .. l, 1, 1, 1) end
+  end
+end
+
+local function ProfileControls(frame)
+  local dd = try("DropdownButton", frame, "WowStyle1DropdownTemplate")
+  if not (dd and dd.SetupMenu) then return end
+  local P = ns.Profiles
+  dd:SetSize(190, 26)
+  dd:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -MARGIN, -30)
+  local label = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  label:SetPoint("RIGHT", dd, "LEFT", -8, 0)
+  label:SetText("Profile")
+  if dd.SetDefaultText then dd:SetDefaultText("None") end
+  local function isSelected(name) return P.Loaded() == name end
+  local function setSelected(name) P.Load(name); O.Changed(true) end
+  dd:SetupMenu(function(_, root)
+    local names = P.List()
+    if #names == 0 and root.CreateTitle then root:CreateTitle("No profiles yet") end
+    for _, n in ipairs(names) do
+      -- the window's refresh only needs the closed field's text: no model runs then
+      local h = not O.quietMenu and P.HPS(n) or nil
+      local radio = root:CreateRadio(h and string.format("%s  |cff9d9d9d%s HPS|r", n, fmtInt(h)) or n, isSelected, setSelected, n)
+      if radio and radio.SetTooltip then radio:SetTooltip(function(tooltip) profileTip(tooltip, n) end) end
+    end
+    if not root.CreateButton then return end
+    if root.CreateDivider then root:CreateDivider() end
+    root:CreateButton("New profile...", O.NewProfile)
+    local cur = P.Loaded()
+    if cur then
+      root:CreateButton("Rename \"" .. cur .. "\"...", function() O.RenameProfile(cur) end)
+      root:CreateButton("Delete \"" .. cur .. "\"...", function() O.DeleteProfile(cur) end)
+    end
+  end)
+  -- the closed field: the loaded profile's name, without its HPS
+  if dd.SetSelectionTranslator then dd:SetSelectionTranslator(function() return P.Loaded() or "None" end) end
+  Tip(dd, "Profiles", PROFILE_HELP)
+  O.controls.profile = dd
+  -- (the menu itself is built again, with the HPS, each time it opens)
+  O.rows[#O.rows + 1] = function()
+    if dd.GenerateMenu then O.quietMenu = true; pcall(dd.GenerateMenu, dd); O.quietMenu = false end
+  end
+end
+
 -- "Holy Math 1.0.1", from the .toc (the packager writes the release's version
 -- there; a copy straight from the repository still has its placeholder).
 function O.VersionText()
@@ -1268,7 +1412,8 @@ local function Build()
     O.Changed(true)
   end)
   def:SetPoint("BOTTOMLEFT", MARGIN - 4, 14)
-  Tip(def, "Defaults", "Put every setting in this window back to its starting value.")
+  Tip(def, "Defaults", "Put every setting in this window back to its starting value " ..
+    "(in the loaded profile too, if one is loaded).")
   O.controls.Defaults = def
   -- which version this is, next to it
   local ver = p:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -1279,6 +1424,7 @@ local function Build()
   BuildMathPane(O.panes.math)
   Tabs(frame)
   YourValuesLine(frame)
+  ProfileControls(frame)
   frame:Hide()
   O.frame = frame
   O.ShowTab("settings")

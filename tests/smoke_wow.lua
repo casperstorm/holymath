@@ -889,6 +889,181 @@ do
   SlashCmdList.HOLYMATH("")
 end
 
+-- Profiles: named sets of settings, in a dropdown at the top right; the loaded one saves itself
+do
+  local O, P = ns.Options, ns.Profiles
+  local db = HolyMathDB.PRIEST
+  local popups = {}
+  StaticPopupDialogs = {}
+  StaticPopup_Show = function(which, a1, a2, data) popups[#popups + 1] = { which = which, text = a1, data = data } end
+  StaticPopup_Hide = function() end
+  local function menu()
+    local m = { radios = {}, buttons = {}, titles = {} }
+    local root = {
+      CreateRadio = function(_, text, isSel, setSel, data)
+        local r = { text = text, isSel = isSel, setSel = setSel, data = data }
+        function r:SetTooltip(fn) self.tip = fn end
+        m.radios[#m.radios + 1] = r; return r end,
+      CreateButton = function(_, text, fn) m.buttons[#m.buttons + 1] = { text = text, fn = fn } end,
+      CreateTitle = function(_, text) m.titles[#m.titles + 1] = text end,
+      CreateDivider = function() end,
+    }
+    O.controls.profile.gen(O.controls.profile, root)
+    return m
+  end
+  local function button(m, start) for _, b in ipairs(m.buttons) do if b.text:find(start, 1, true) == 1 then return b end end end
+  local function closed() return O.controls.profile.translate and O.controls.profile.translate() end
+  -- answer the last name popup with a name
+  local function answer(name) local p = popups[#popups]; p.data.done(name) end
+
+  local function click(b) b.scripts.OnClick(b) end
+  click(O.controls.Defaults)
+  expect(O.controls.profile and requestedTemplates.WowStyle1DropdownTemplate, "profile dropdown (the game's) in the window")
+  local m = menu()
+  expect(#m.radios == 0 and m.titles[1] == "No profiles yet" and closed() == "None", "no profiles: says so, field shows None")
+  expect(button(m, "New profile") and not button(m, "Rename"), "menu: New profile; nothing to rename yet")
+
+  -- New profile: asks for a name in the game's popup, saves the settings now
+  db.settings.pomHits = 1
+  button(m, "New profile").fn()
+  expect(popups[#popups] and popups[#popups].which == "HOLYMATH_PROFILE_NAME" and StaticPopupDialogs.HOLYMATH_PROFILE_NAME.hasEditBox,
+    "New profile asks for a name (popup with a text box)")
+  answer("  1 bounce ")
+  expect(P.Exists("1 bounce") and db.profiles["1 bounce"].settings.pomHits == 1 and P.Loaded() == "1 bounce", "saved as \"1 bounce\" (trimmed), now loaded")
+  expect(closed() == "1 bounce", "field shows the loaded profile")
+  db.settings.pomHits = 3; P.Save("3 bounces")
+  db.settings.overheal.RENEW = 0.4; db.settings.fightLength = 300; db.rotation = "flashFill"; P.Save("long, flash")
+  -- the same name again, or empty: asked again, saying why
+  local n = #popups
+  button(menu(), "New profile").fn(); answer("3 BOUNCES")
+  expect(#popups == n + 2 and popups[#popups].text:find("already a profile"), "a taken name asks again, saying why")
+  answer("")
+  expect(popups[#popups].text:find("1 to"), "an empty name asks again too")
+  answer("5 bounces"); P.Delete("5 bounces")
+
+  -- the menu: every profile with its HPS, sorted
+  m = menu()
+  local names = {}
+  for _, r in ipairs(m.radios) do names[#names + 1] = r.data end
+  expect(table.concat(names, "|") == "1 bounce|3 bounces|long, flash", "menu lists the profiles by name (" .. table.concat(names, "|") .. ")")
+  expect(m.radios[1].text:find("HPS"), "each with its HPS (" .. m.radios[1].text .. ")")
+  local h1, h3 = P.HPS("1 bounce"), P.HPS("3 bounces")
+  expect(h1 and h3 and h3 > h1, string.format("more bounces heal more: %.0f vs %.0f", h1 or 0, h3 or 0))
+  -- hover: what differs from the settings now (loaded: long, flash)
+  local fake = { lines = {} }
+  function fake:SetText(t) self.lines = { t } end
+  function fake:AddLine(t) self.lines[#self.lines + 1] = t end
+  m.radios[1].tip(fake)
+  local tipText = table.concat(fake.lines, "\n")
+  expect(tipText:find("Prayer of Mending bounces: 1 %(now 3%)") and tipText:find("Fight length") and tipText:find("Playstyle")
+    and tipText:find("Overheal, Renew"), "hover lists the differences:\n" .. tipText)
+  P.Load("long, flash")
+  m.radios[3].tip(fake)
+  expect(table.concat(fake.lines, " "):find("what you change is saved into it"), "the loaded one says it saves itself")
+
+  -- load: settings and playstyle swap, HPS in the window follows
+  local before = O.hps.text
+  m.radios[1].setSel(m.radios[1].data)
+  expect(db.settings.pomHits == 1 and db.settings.fightLength == 120 and db.rotation == "renew" and db.settings.overheal.RENEW == 0.25,
+    "loading a profile sets its settings")
+  expect(O.hps.text ~= before and m.radios[1].isSel("1 bounce"), "the result follows; the profile is selected")
+  local shown = ns.State().weights.base.ehps
+  expect(math.abs(shown - h1) < 0.01, "its HPS in the menu is what you get when it's loaded")
+
+  -- auto-save: a change goes into the loaded profile by itself, and only into it
+  O.controls.pots:SetChecked(false); O.controls.pots.scripts.OnClick(O.controls.pots)
+  expect(db.profiles["1 bounce"].settings.majorManaPotions == false and closed() == "1 bounce",
+    "a change on the Settings tab is saved into the loaded profile")
+  expect(db.profiles["3 bounces"].settings.majorManaPotions == true, "... and not into the others")
+  db.settings.overheal.GH = 0.5; O.Changed(true)
+  expect(db.profiles["1 bounce"].settings.overheal.GH == 0.5, "overheal set on the Math tab is saved into it too")
+  expect(not button(menu(), "Save changes"), "nothing to save by hand")
+  P.Load("3 bounces")
+  expect(db.settings.majorManaPotions == true and db.settings.overheal.GH == 0.25 and db.profiles["1 bounce"].settings.pomHits == 1,
+    "switching profiles: each keeps its own settings")
+  P.Load("1 bounce")
+  expect(db.settings.majorManaPotions == false and db.settings.overheal.GH == 0.5, "... and switching back brings them back")
+  -- profiles hold no typed Math-tab values
+  db.overrides["stat.healing"] = 1000
+  P.Save("1 bounce")
+  expect(db.profiles["1 bounce"].overrides == nil and db.profiles["1 bounce"].settings.overrides == nil, "typed values are not saved in a profile")
+  P.Load("3 bounces")
+  expect(db.overrides["stat.healing"] == 1000, "loading a profile leaves typed values alone")
+  db.overrides = {}
+
+  -- rename (asks, refuses a taken name) and delete (asks first)
+  P.Load("1 bounce")
+  button(menu(), "Rename").fn(); answer("long, Flash")
+  expect(popups[#popups].text:find("already a profile") and P.Exists("1 bounce"), "rename to a taken name: asked again")
+  answer("one bounce")
+  expect(P.Exists("one bounce") and not P.Exists("1 bounce") and P.Loaded() == "one bounce", "renamed, still loaded")
+  button(menu(), "Delete").fn()
+  local del = popups[#popups]
+  expect(del.which == "HOLYMATH_PROFILE_DELETE" and P.Exists("one bounce"), "Delete asks first")
+  StaticPopupDialogs.HOLYMATH_PROFILE_DELETE.OnAccept(nil, del.data)
+  expect(not P.Exists("one bounce") and P.Loaded() == nil and closed() == "None" and db.settings.pomHits == 1,
+    "deleted; your settings stay, nothing loaded")
+
+  -- Defaults leaves the profiles alone
+  click(O.controls.Defaults)
+  expect(P.Exists("3 bounces") and P.Exists("long, flash"), "Defaults keeps the profiles")
+
+  -- an older profile missing a setting gets its default when loaded
+  db.profiles.old = { settings = { pomHits = 2 }, rotation = "nope" }
+  P.Load("old")
+  expect(db.settings.pomHits == 2 and db.settings.fightLength == 120 and db.rotation == "renew",
+    "an old profile is filled in with defaults")
+  P.Delete("old")
+
+  -- /hm profile: list, and load by name (any case) for macros
+  printed = {}
+  SlashCmdList.HOLYMATH("profile")
+  expect(table.concat(printed, " "):find("3 bounces %(%d+ HPS%)"), "/hm profile lists them with HPS")
+  SlashCmdList.HOLYMATH("profile LONG, FLASH")
+  expect(P.Loaded() == "long, flash" and db.settings.fightLength == 300, "/hm profile <name> loads one")
+  printed = {}
+  SlashCmdList.HOLYMATH("profile nothing")
+  expect(table.concat(printed, " "):find("no profile called"), "/hm profile with an unknown name says so")
+
+  -- a window refresh doesn't nudge values typed off the sliders' steps (that would be saved)
+  db.settings.fightLength = 125; db.settings.overheal.GH = 0.33; db.settings.pomHits = 4
+  P.Save("odd values"); O.Changed(true); O.Refresh(true)
+  local odd = db.profiles["odd values"].settings
+  expect(odd.fightLength == 125 and odd.overheal.GH == 0.33 and odd.pomHits == 4, "values typed off the slider steps stay as typed")
+  -- a profile whose playstyle needs a talent you don't have: the default is used, the profile keeps its own
+  db.profiles.renewed = { settings = ns.model.copy(db.settings), rotation = "rhTank" }
+  P.Load("renewed"); ns.State(true); O.Refresh(true); O.Changed(true)
+  expect(db.rotation == "renew" and db.profiles.renewed.rotation == "rhTank",
+    "a playstyle you can't use: the default is used, the profile keeps its own")
+  -- Defaults with a profile loaded: that profile is reset too (it saves itself)
+  click(O.controls.Defaults)
+  expect(db.profiles.renewed.settings.fightLength == 120, "Defaults resets the loaded profile")
+  P.Delete("renewed")
+  -- "|" can't get into a name (it starts colour codes)
+  expect(P.CleanName("|cffff0000red|r") == "cffff0000redr", "\"|\" is taken out of names")
+  -- many profiles: a window refresh stays quick
+  for i = 1, 20 do db.settings.pomHits = 1 + i % 5; db.settings.fightLength = 60 + i * 30; P.Save("p" .. i) end
+  -- like the game's dropdown: a refresh builds the menu again for the closed field's text
+  local dd, seen = O.controls.profile, {}
+  dd.GenerateMenu = function(self)
+    self.gen(self, { CreateRadio = function(_, text) seen[#seen + 1] = text; return {} end,
+                     CreateButton = function() end, CreateTitle = function() end, CreateDivider = function() end })
+  end
+  local function timed(fn) local t0 = os.clock(); for _ = 1, 5 do ns.MarkDirty(); fn() end; return (os.clock() - t0) / 5 * 1000 end
+  local refresh = timed(function() O.Refresh(true) end)
+  local base = refresh
+  expect(#seen > 0 and not table.concat(seen, " "):find("HPS"), "a refresh works out no profile HPS (only the closed field)")
+  local open = timed(function() O.Refresh(true); menu() end) - refresh
+  realprint(string.format("     20 profiles (desktop Lua): refresh %.0f ms, opening the menu %.0f ms more", base, open))
+  local m20 = menu()
+  expect(#m20.radios == #P.List() and #m20.radios >= 20 and m20.radios[1].text:find("HPS"), "opening the menu shows every profile with its HPS")
+  dd.GenerateMenu = noop
+
+  for _, k in ipairs(P.List()) do P.Delete(k) end
+  click(O.controls.Defaults)
+  StaticPopupDialogs, StaticPopup_Show, StaticPopup_Hide = nil, nil, nil
+end
+
 -- The window closes in combat: close button, /hm and Esc
 do
   local O = ns.Options
