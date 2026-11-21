@@ -1,6 +1,6 @@
 # Holy Math
 
-The maths behind a healing priest in **World of Warcraft: Forever**, worked out on your own live stats and the game's own spell data.
+The maths behind a healing priest in **World of Warcraft: Forever**, worked out on your own live stats and the game's own spell data. Get it on [CurseForge](https://www.curseforge.com/wow/addons/holy-math/).
 
 ![Holy Math's Settings tab: the fight, the result and item tooltips](media/settings.webp)
 
@@ -21,7 +21,7 @@ Everything recalculates by itself when your gear, buffs, talents or settings cha
 
 ## Install
 
-Copy the `HolyMath` folder into `World of Warcraft/_forever_/Interface/AddOns/` and restart the game. Holy Math stays off on other classes.
+Download from [CurseForge](https://www.curseforge.com/wow/addons/holy-math/) (or with the CurseForge app), or copy the `HolyMath` folder into `World of Warcraft/_forever_/Interface/AddOns/` yourself, and restart the game. Holy Math stays off on other classes.
 
 ## Use
 
