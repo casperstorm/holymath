@@ -400,10 +400,11 @@ local function fightSection(rows, S)
     local text, shown = terms(base.fiveSecondCasts, base.pauseHeal, fill and fill.overheal or 0, base.pauseAegis)
     worst = max(worst, abs(shown - base.pauseEff))
     add({ "Pauses to regenerate", string.format("%s s not casting x %s / %s s a cycle = %s more casts: %s",
-          n0(base.pauseTime), trim(set.imperfectPlay, 2), n1(base.pauseCycle), n1(base.fiveSecondCasts), text),
+          n0(base.pauseTime), pct(set.imperfectPlay, 1), n1(base.pauseCycle), n1(base.fiveSecondCasts), text),
           n0(base.pauseEff), "assumption" })
-    add({ note = "A cycle: wait out the 5-second rule, regenerate the filler's mana, cast it. " ..
-          trim(set.imperfectPlay, 2) .. " = the share of that downtime you really use (an assumption)." })
+    add({ note = "Out of mana before the fight ends: the time left is spent in cycles of waiting out the 5-second rule, " ..
+          "regenerating the filler's mana and casting it. " .. pct(set.imperfectPlay, 1) ..
+          " = how much of that time you really use this way (Downtime used, at the bottom)." })
   end
   if base.innerFocus then
     local f = base.innerFocus
@@ -485,10 +486,12 @@ local function assumptionsSection(rows, S)
                     help = E.OverhealHelp(name) }, { "overheal", k }, "pct0", set.overheal[k]))
     end
   end
-  add(setting({ "Downtime used", "share of a pause you really use to regenerate (an assumption)", "", "assumption",
-                help = "When the playstyle pauses to let mana come back (the 5-second rule), how much of that pause " ..
-                       "you really spend regenerating. 1 = all of it." },
-              { "imperfectPlay" }, "num2", set.imperfectPlay))
+  add(setting({ "Downtime used", "out of mana, how much of the time left you spend regenerating and casting again (an assumption)",
+                "", "assumption",
+                help = "When your mana runs out before the fight ends, the time left is spent waiting out the 5-second " ..
+                       "rule, regenerating and casting the filler again. This is how much of that time you really use " ..
+                       "that way; the rest goes to moving, waiting for someone to need a heal, and so on. 100% = all of it." },
+              { "imperfectPlay" }, "pct0", set.imperfectPlay))
   if (S.t.litanyRefund or 0) > 0 then
     add(setting({ "Litany of Light, on its own", "share of a spell's casts after a different heal, on Your spells " ..
                   "(the fight works out its own)", "", "assumption",
