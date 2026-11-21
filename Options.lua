@@ -1149,8 +1149,11 @@ local function Build()
     function() return db().settings.majorManaPotions end, function(v) db().settings.majorManaPotions = v end)
   y = y - 24
   Check(p, "insp", LEFT, y, "Count Inspiration (tank armor after crits)",
-    "Inspiration (a Holy talent) raises the tank's armor for a while after your heals crit. " ..
-    "When this is on, the damage that prevents is counted as healing. Only matters if you have the talent.",
+    function()
+      return "Inspiration (a Holy talent) raises the tank's armor for a while after your heals crit. " ..
+        "When this is on, the damage that prevents is counted as healing." ..
+        (O.hasInspiration == false and "\n\n|cffff5050You don't have the talent, so this does nothing.|r" or "")
+    end,
     function() return db().settings.includeInspiration end, function(v) db().settings.includeInspiration = v end)
 
   -- Overheal per spell lives on the Math tab, with every other number the model uses
@@ -1306,6 +1309,16 @@ function O.Refresh(force)
   for _, f in ipairs(O.rows) do f() end
   local S = ns.State(force)
   local w = S and S.weights
+  -- Inspiration's checkbox is greyed out without the talent (then the setting does nothing)
+  local insp = O.controls.insp
+  if insp then
+    O.hasInspiration = S and S.t and (S.t.inspiration or 0) > 0 or false
+    if insp.SetEnabled then insp:SetEnabled(O.hasInspiration)
+    elseif insp.Enable then if O.hasInspiration then insp:Enable() else insp:Disable() end end
+    if insp.Text and insp.Text.SetFontObject then
+      insp.Text:SetFontObject(O.hasInspiration and GameFontHighlightSmall or GameFontDisableSmall)
+    end
+  end
   for _, c in ipairs(O.weightCells) do c.name:SetText(""); c.value:SetText("") end
   if not w then
     O.hps:SetText("")

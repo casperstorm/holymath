@@ -78,6 +78,7 @@ local TEMPLATES = {
   UICheckButtonTemplate = function(f)
     f.Text = newFontString()
     function f:SetChecked(v) self.checked = v end
+    function f:SetEnabled(v) self.enabled = v and true or false end
     function f:GetChecked() return self.checked end
   end,
   MinimalSliderWithSteppersTemplate = function(f)
@@ -102,6 +103,7 @@ CreateFrame = function(kind, name, parent, template)
 end
 MinimalSliderWithSteppersMixin = { Label = { Right = 3 }, Event = { OnValueChanged = "OnValueChanged" } }
 GameFontHighlightSmall = {}
+GameFontDisableSmall = {}
 UISpecialFrames = {}
 PlaySound = noop
 GameTooltip = newFrame(); GameTooltip.ProcessInfo = function() end
@@ -657,6 +659,18 @@ do
   expect(mine() == 0 and not O.yourValues:IsShown() and O.hps.text == hpsBefore, "Put all back: the game's values everywhere")
   click(O.controls.SetOverheal)
   expect(O.panes.math:IsShown() and O.mathAnchors.settings, "Settings tab's 'Set overheal' opens the sheet at the settings")
+  click(O.controls["tab:settings"])
+  local insp = O.controls.insp
+  expect(insp.enabled ~= false, "Inspiration's checkbox works: you have the talent")
+  db.overrides["talent.inspiration"] = 0
+  O.Changed(true)
+  GameTooltip.lines = {}
+  insp.scripts.OnEnter(insp)
+  expect(insp.enabled == false and insp.shown ~= false, "... greyed out (still there) without it")
+  expect((GameTooltip.lines[2] or ""):find("don't have the talent"), "... and its hover says why")
+  db.overrides["talent.inspiration"] = nil
+  O.Changed(true)
+  expect(insp.enabled == true, "... and works again with it")
   db.overrides["stat.healing"] = 500
   SlashCmdList.HOLYMATH("reset")
   expect(mine() == 0, "/hm reset puts back every value")
