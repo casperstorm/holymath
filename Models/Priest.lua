@@ -216,6 +216,7 @@ E.RULES = {
   fiveSecond = "seconds",      -- regen pauses: mana per 5 s converted to per second (see pauseCycle)
   autoRanks = true,            -- playstyles pick the ranks that heal most
   pomWithoutSpiritHealing = true, -- Prayer of Mending ignores Spiritual Guidance's healing (see healingFor)
+  critPerInt = "game",         -- intellect -> crit by level (E.CritPerInt); the sheet uses 1 / 60 at every level
 }
 E.SHEET_RULES = { table = "sheet", talents = "sheet", downrank = "learned", downrankFreeLevels = 16,
                   twinDiscOnShield = true, litany = "discount", fiveSecond = "sheet" }
@@ -239,7 +240,7 @@ E.PauseCycle = pauseCycle
 -- Twin Disciplines and Spiritual Healing applied. st.healingFromSpirit is that part.
 local function healingFor(key, st, rules)
   if key == "POM" and (rules or E.RULES).pomWithoutSpiritHealing then
-    return st.healing - (st.healingFromSpirit or 0)
+    return max(0, st.healing - (st.healingFromSpirit or 0))
   end
   return st.healing
 end
@@ -262,6 +263,97 @@ function E.Downrank(coeff, rk, playerLevel, rules)
     below = max(0, (playerLevel - rules.downrankFreeLevels) - rk.lvl)
   end
   return max(coeff * 0.1, coeff - below * 0.05 * coeff)
+end
+
+-- Spell crit (percent) one point of intellect gives, by level. Level 60 is the
+-- game data (wowsims, PlayerExpectedStat). The game data has no other levels, so
+-- the rest are measured from the client: with no crit on gear, a priest's spell
+-- crit is 0.8% + intellect x this, and the dumps fit it to four decimals
+-- (level 49: 204 int -> 5.1452%; level 50: 208 int -> 5.1264%; 20 Nov 2026).
+-- Between known levels it is interpolated; below the lowest it is extended
+-- along the two lowest. Returns the value and how it was found.
+E.CRIT_PER_INT_MEASURED = { [49] = 0.0213, [50] = 0.0208 }
+function E.CritPerInt(level)
+  local pts = {}
+  for l, v in pairs(E.CRIT_PER_INT_MEASURED) do pts[#pts + 1] = { l, v, "measured in game" } end
+  if DATA.critPerInt60 then pts[#pts + 1] = { 60, DATA.critPerInt60, "game data" } end
+  table.sort(pts, function(a, b) return a[1] < b[1] end)
+  level = level or 60
+  for _, p in ipairs(pts) do if p[1] == level then return p[2], p[3] end end
+  if #pts == 0 then return 1 / 60, "sheet" end
+  if #pts == 1 then return pts[1][2], "estimated" end
+  local lo, hi = pts[1], pts[2]
+  if level > pts[#pts][1] then lo, hi = pts[#pts - 1], pts[#pts] end
+  for i = 1, #pts - 1 do
+    if level > pts[i][1] and level < pts[i + 1][1] then lo, hi = pts[i], pts[i + 1] end
+  end
+  local v = lo[2] + (hi[2] - lo[2]) * (level - lo[1]) / (hi[1] - lo[1])
+  return max(v, 0.001), "estimated"
+end
+
+---------------------------------------------------------------------------
+-- Your own values (typed over on the Math tab). Any input the model uses can be
+-- replaced; they are saved per class (db.overrides = { [id] = number }) and reach
+-- every calculation through input.settings.overrides. The check against the
+-- game's tooltips (E.ApplyClientData) always runs without them, on the game's
+-- own numbers.
+--   stat.<field>                 healing, healingFromSpirit, crit, critMulti, haste,
+--                                manaPool, mp5, oocRegen, castingShare, critPerInt
+--   talent.<field>               a value as E.Talents returns it (litanyRefund = 0.1)
+-- (A spell rank's own data - base heal, coefficient, cost - is not typed over: it is
+-- the game's, checked against its tooltips; talents and stats cover every spell.)
+---------------------------------------------------------------------------
+
+-- The range a typed value must be in (a bad saved value must never break a rebuild,
+-- and none in range may make a cost, cast time or heal go below zero).
+local STAT_RANGE = { healing = { 0, 1e5 }, healingFromSpirit = { 0, 1e5 }, crit = { 0, 1 }, critMulti = { 1, 5 },
+                     haste = { 0, 2 }, manaPool = { 1, 1e6 }, mp5 = { 0, 1e4 }, oocRegen = { 0, 1e5 },
+                     castingShare = { 0, 1 }, critPerInt = { 0.001, 1 } }
+local TALENT_RANGE = { impRenew = { 0.1, 3 }, twinDisc = { 0.1, 3 }, spiritualHealing = { 0.1, 3 }, impPWS = { 0.1, 3 },
+                       mentalStrength = { 0.1, 3 }, mentalAgility = { 0, 0.9 }, impHealing = { 0, 0.9 },
+                       soulWarding = { 0, 0.9 }, litany = { 0, 0.9 }, litanyRefund = { 0, 1 }, daMulti = { 0, 2 },
+                       divineFury = { 0, 2.5 } }                         -- any other talent value: 0 to 1
+function E.OverrideRange(id)
+  if type(id) ~= "string" then return nil end
+  local kind, field = id:match("^(%a+)%.(.+)$")
+  local r
+  if kind == "stat" then r = STAT_RANGE[field]
+  elseif kind == "talent" then r = field:match("^%a+$") and (TALENT_RANGE[field] or { 0, 1 })
+  end
+  if r then return r[1], r[2] end
+end
+function E.OverrideOK(id, v)
+  if type(v) ~= "number" or v ~= v then return false end
+  local lo, hi = E.OverrideRange(id)
+  return lo ~= nil and v >= lo and v <= hi
+end
+
+local function override(set, id)
+  local o = set and set.overrides
+  local v = o and o[id]
+  if v ~= nil and E.OverrideOK(id, v) then return v end
+end
+E.OverrideFor = override
+
+-- Final stats with your values in them. Regen while casting follows regen from
+-- spirit (as a share of it), unless that share is typed over too. st.orig keeps
+-- what each replaced value was.
+function E.ApplyStatOverrides(st, o)
+  if not (o and next(o)) then return st end
+  local out, orig = copy(st), {}
+  local share = (st.oocRegen or 0) > 0 and (st.combatRegen or 0) / st.oocRegen or 0
+  for id, v in pairs(o) do
+    local f = type(id) == "string" and id:match("^stat%.(.+)$")
+    if f and f ~= "critPerInt" and f ~= "castingShare" and E.OverrideOK(id, v) then orig[f] = st[f]; out[f] = v end
+  end
+  local s = o["stat.castingShare"]
+  if s ~= nil and E.OverrideOK("stat.castingShare", s) then orig.castingShare = share; share = s end
+  if orig.oocRegen ~= nil or orig.castingShare ~= nil then
+    if orig.combatRegen == nil then orig.combatRegen = st.combatRegen end
+    out.combatRegen = out.oocRegen * share
+  end
+  out.orig = next(orig) and orig or nil
+  return out
 end
 
 ---------------------------------------------------------------------------
@@ -303,7 +395,24 @@ local function curve(name, rank)
   return c[math.min(rank, #c)]
 end
 
-function E.Talents(tr, rules)
+local talentsFrom
+-- o: your own values (talent.<field>); t.orig keeps what each replaced value was.
+function E.Talents(tr, rules, o)
+  local t = talentsFrom(tr, rules)
+  if o and next(o) then
+    for id, v in pairs(o) do
+      local f = type(id) == "string" and id:match("^talent%.(%a+)$")
+      if f and type(t[f]) == "number" and E.OverrideOK(id, v) then
+        t.orig = t.orig or {}
+        t.orig[f] = t[f]
+        t[f] = v
+      end
+    end
+  end
+  return t
+end
+
+function talentsFrom(tr, rules)
   if (rules or E.RULES).talents == "game" then
     return {
       twinDisc = 1 + curve("twinDisciplines", tr.twinDisciplines) / 100,
@@ -366,7 +475,7 @@ local function on(b, v) return b and v or 0 end
 
 -- How one point of each stat ON GEAR turns into final stats, given buffs/talents.
 function E.Multipliers(input)
-  local b, c, r, t = input.buffs, input.consumables, input.race, E.Talents(input.talents, input.settings.rules)
+  local b, c, r, t = input.buffs, input.consumables, input.race, E.Talents(input.talents, input.settings.rules, input.settings.overrides)
   local kings = b.kings and 1.1 or 1
   local spiritMult = kings * (r.human and 1.1 or 1) * (b.shadowSpirit and 1.15 or 1)
   local intMult = t.mentalStrength * kings
@@ -375,7 +484,8 @@ function E.Multipliers(input)
     healingPerSpirit = t.spiritualGuidance,         -- Spiritual Guidance
     spellDamagePerSpirit = input.talents.spiritualGuidance * 0.01,
     manaPerInt = 15 * (r.gnome and 1.05 or 1),
-    critPctPerInt = 1 / 60,
+    critPctPerInt = override(input.settings, "stat.critPerInt")
+      or ((input.settings.rules or E.RULES).critPerInt == "game" and E.CritPerInt(input.level) or 1 / 60),
     -- out-of-combat mp5 per spirit: sheet 0.64 (+40); the client fits the classic
     -- priest formula, 2.5 x (13 + spirit/4) = 32.5 + 0.625 x spirit, within 1%.
     regenPerSpirit = input.regenPerSpirit or 0.64,
@@ -384,7 +494,7 @@ end
 
 function E.Derive(input)
   local g, b, c, r, s = input.gear, input.buffs, input.consumables, input.race, input.settings
-  local t = E.Talents(input.talents, input.settings.rules)
+  local t = E.Talents(input.talents, input.settings.rules, input.settings.overrides)
   local m = E.Multipliers(input)
 
   local spirit = (g.spirit + on(b.divineSpirit, 40) + on(b.mark, 16) + on(c.spiritFood, 20)
@@ -426,7 +536,9 @@ function E.StatDelta(input, stat)
   end
   if stat == "spirit" then
     local sp = m.spirit
-    local med = E.Talents(input.talents, input.settings.rules).meditation
+    -- regen while casting: Meditation's share, or the share you typed on the Math tab
+    local med = override(input.settings, "stat.castingShare")
+      or E.Talents(input.talents, input.settings.rules, input.settings.overrides).meditation
     return { spirit = sp, healing = sp * m.healingPerSpirit, healingFromSpirit = sp * m.healingPerSpirit,
              spelldamage = sp * m.spellDamagePerSpirit,
              oocRegen = sp * m.regenPerSpirit, combatRegen = sp * m.regenPerSpirit * med }
@@ -449,8 +561,11 @@ function E.Spell(key, rankIdx, st, t, set)
   else cast = ct / (1 + st.haste) end
 
   local rules = set.rules or E.RULES
+  local full = rk.coeff or sp.coeff
   local coeff = rankCoeff(rk, sp.coeff, st.level, rules)
+  local power = (full and full > 0) and coeff / full or 1
   local base = baseAt(rk, st.level)
+  local rankCost = rk.cost
   local bodies = sp.bodies or ((key == "FLASH" and (t.holyBinding or 0) > 0) and (1 + t.holyBinding)) or 1
   local heal, crit = 0, st.crit
   if sp.shield then
@@ -461,15 +576,19 @@ function E.Spell(key, rankIdx, st, t, set)
   end
   local expected = sp.shield and heal or heal * ((1 - crit) + crit * st.critMulti)
   local aegis = sp.shield and 0 or heal * crit * t.daMulti
-  local cost = rk.cost * costMult(key, t) - (set.dungeon4set and 10 or 0)
+  local cm, set4 = costMult(key, t), (set.dungeon4set and 10 or 0)
+  local cost = rankCost * cm - set4
+  local refund, share = 0, 0
   if (t.litanyRefund or 0) > 0 and E.LITANY_SPELLS[key] then
-    local share = set.litanyShare and set.litanyShare[key] or set.litanyAlternation or 0.5
-    cost = cost - rk.cost * t.litanyRefund * share
+    share = set.litanyShare and set.litanyShare[key] or set.litanyAlternation or 0.5
+    refund = rankCost * t.litanyRefund * share
+    cost = cost - refund
   end
+  cost = max(cost, 1)        -- only your own values (Math tab) could take it lower
   local targets = sp.targets == "pomhits" and set.pomHits or (sp.targets or 1)
   -- Renewed Hope variants (crit chance with the talent's bonus, crits fixed at 1.5x)
   local rcrit = crit + t.renewedHopeCrit
-  local expectedRH = sp.shield and heal or heal * ((1 - rcrit) + rcrit * 1.5)
+  local expectedRH = sp.shield and heal or heal * ((1 - rcrit) + rcrit * st.critMulti)
   return {
     key = key, rank = rankIdx, name = sp.name, cast = cast, coeff = coeff, bodies = bodies,
     heal = heal,                 -- one cast, one target, non-crit
@@ -478,7 +597,18 @@ function E.Spell(key, rankIdx, st, t, set)
     expectedRH = expectedRH, aegisRH = heal * rcrit * t.daMulti,
     cost = cost, targets = targets,
     hpm = targets * (expected + aegis) / cost,
-    hpct = targets * (expected + aegis) / cast,
+    hpct = targets * (expected + aegis) / max(cast, gcd),
+    -- the working, for the Math tab (each number is the one used above)
+    parts = {
+      base = base, baseCalc = rk.bp and (rk.bp + rk.ppl * max(0, ((rk.ml and rk.ml > 0) and min(st.level, rk.ml) or st.level) - rk.bl)),
+      bp = rk.bp, ppl = rk.ppl, bl = rk.bl, ml = rk.ml,
+      fullCoeff = full, power = power,
+      healing = healingFor(key, st, rules), talentMult = sp.shield and t.impPWS or talentMult(key, t),
+      shield = sp.shield and true or false, crit = crit, critMulti = st.critMulti, daMulti = t.daMulti,
+      castBase = ct, haste = st.haste, divineFury = (key == "GH" or key == "HEAL") and t.divineFury or 0,
+      rankCost = rankCost, costMult = cm, set4 = set4, refund = refund, litanyShare = share,
+      litanyRefund = t.litanyRefund or 0, cast = cast,
+    },
   }
 end
 
@@ -610,14 +740,32 @@ end
 ---------------------------------------------------------------------------
 -- Mana budget for the fight (sheet Sim F4:O6).
 ---------------------------------------------------------------------------
-function E.ManaBudget(st, t, set)
+-- E.ManaParts: the same sum, part by part (for the Math tab): key, mana, and the
+-- numbers it was made from.
+function E.ManaParts(st, t, set)
   local fl = set.fightLength
   local ticks = fl / 5
-  local pots = max(1, ceil((fl - 15) / 120)) * ((set.majorManaPotions and 1800 or 0) + (set.cheapManaPotions and 1200 or 0))
-  local tides = max(1, ceil((fl - 5) / 300)) * set.manaTidesInGroup * 290 * 4
-  local innervate = max(1, ceil((fl - 15) / 360)) * (set.innervate and 1 or 0) * (st.oocRegen * 5 - st.combatRegen) * 4
-  local pi = set.powerInfusionOut and -250 * max(1, fl / 180) or 0
-  return ticks * st.mp5 + st.manaPool + ticks * st.combatRegen + pots + tides + innervate + pi
+  local potN = max(1, ceil((fl - 15) / 120))
+  local potEach = (set.majorManaPotions and 1800 or 0) + (set.cheapManaPotions and 1200 or 0)
+  local tideN = max(1, ceil((fl - 5) / 300))
+  local innN = max(1, ceil((fl - 15) / 360))
+  local innEach = (set.innervate and 1 or 0) * (st.oocRegen * 5 - st.combatRegen) * 4
+  local piN = max(1, fl / 180)
+  return {
+    { key = "pool", mana = st.manaPool },
+    { key = "mp5", mana = ticks * st.mp5, ticks = ticks, per = st.mp5 },
+    { key = "casting", mana = ticks * st.combatRegen, ticks = ticks, per = st.combatRegen },
+    { key = "potions", mana = potN * potEach, n = potN, per = potEach },
+    { key = "manaTide", mana = tideN * set.manaTidesInGroup * 290 * 4, n = tideN * set.manaTidesInGroup, per = 290 * 4 },
+    { key = "innervate", mana = innN * innEach, n = set.innervate and innN or 0, per = innEach },
+    { key = "powerInfusion", mana = set.powerInfusionOut and -250 * piN or 0, n = set.powerInfusionOut and piN or 0, per = -250 },
+  }
+end
+
+function E.ManaBudget(st, t, set)
+  local sum = 0
+  for _, p in ipairs(E.ManaParts(st, t, set)) do sum = sum + p.mana end
+  return sum
 end
 
 ---------------------------------------------------------------------------
@@ -680,7 +828,7 @@ E.ROTATIONS = {
               { "RENEW", fill = true, auto = true } } },
 }
 
-local function gcdsFor(s, gcd) return s.cast / gcd end
+local function gcdsFor(s, gcd) return max(s.cast, gcd) / gcd end   -- a cast takes at least a global cooldown
 
 local rotationPass
 
@@ -780,10 +928,11 @@ function rotationPass(rotKey, st, t, set)
     local enabled = rank and (not step.needs or t[step.needs])
     local sp = E.Spell(key, rank or 1, st, t, set)
     local perCastGcds = (key == "PENANCE") and (2 / 1.5) or gcdsFor(sp, gcd)
-    local n = 0
+    local n, limit = 0, nil
     if enabled then
-      if step.fill then n = min(mana / sp.cost, free / perCastGcds)
-      else n = min(fl / step.cap, mana / sp.cost, free / perCastGcds) end
+      local byCd, byMana, byTime = step.cap and not step.fill and fl / step.cap or math.huge, mana / sp.cost, free / perCastGcds
+      n = min(byCd, byMana, byTime)
+      limit = (n == byCd and "cooldown") or (n == byMana and "mana") or "time"
       n = max(0, n)
     end
     local useRH = rot.renewedHope and key ~= "POM" and key ~= "RENEW" and key ~= "PWS"
@@ -798,7 +947,10 @@ function rotationPass(rotKey, st, t, set)
     tankCasts = tankCasts + n * (step.tank or 0)
     out.steps[#out.steps + 1] = { key = key, rank = sp.rank, casts = n, raw = raw, eff = eff, enabled = enabled and true or false,
                                   cap = step.cap, fill = step.fill, tank = step.tank,
-                                  id = tableFor(set)[key].ranks[sp.rank].id }
+                                  id = tableFor(set)[key].ranks[sp.rank].id,
+                                  limit = limit, perCast = hpc, aegis = da, overheal = set.overheal[key],
+                                  time = perCastGcds * gcd, cost = sp.cost, rh = useRH or nil,
+                                  manaBefore = mana + n * sp.cost }
     if step.fill then last, fillIdx = sp, #out.steps end
   end
 
@@ -807,11 +959,16 @@ function rotationPass(rotKey, st, t, set)
   out.pauseTime = out.freeGcds * gcd               -- time not spent casting: mana ran out first
   local per = pauseCycle(last.cost, max(last.cast, gcd), st, set.rules)
   local extra = set.imperfectPlay * out.pauseTime / per
-  local fillRaw = extra * last.expected
-  local fillEff = fillRaw * (1 - set.overheal[last.key]) + extra * last.aegis * (1 - pwsOH)
-  out.raw = out.raw + fillRaw + extra * last.aegis
+  out.pauseCycle, out.gcd, out.manaLeft = per, gcd, mana
+  -- every target the filler heals (Prayer of Healing: 5), as its own casts count them
+  local pauseHeal, pauseAegis = last.expected * last.targets, last.aegis * last.targets
+  local fillRaw = extra * pauseHeal
+  local fillEff = fillRaw * (1 - set.overheal[last.key]) + extra * pauseAegis * (1 - pwsOH)
+  out.raw = out.raw + fillRaw + extra * pauseAegis
+  out.pauseHeal, out.pauseAegis = pauseHeal, pauseAegis
   out.eff = out.eff + fillEff
   out.fiveSecondCasts = extra
+  out.pauseEff = fillEff
   local fs = out.steps[fillIdx]
   fs.pauseCasts, fs.eff = extra, fs.eff + fillEff
 
@@ -826,7 +983,7 @@ function rotationPass(rotKey, st, t, set)
     local ifEff = ifCasts * (h * (1 - set.overheal.POH) + da * (1 - pwsOH))
     out.raw = out.raw + ifCasts * (h + da)
     out.eff = out.eff + ifEff
-    out.innerFocus = { casts = ifCasts, rank = pohRank, eff = ifEff }
+    out.innerFocus = { casts = ifCasts, rank = pohRank, eff = ifEff, perCast = h, aegis = da }
   end
 
   -- Inspiration: crits on the tank raise its armor by 25%; the damage it no
@@ -840,6 +997,7 @@ function rotationPass(rotKey, st, t, set)
     local a1 = a0 * (1 + t.inspiration)
     local saved = set.tankRawDTPS * (1 - a0 / (a0 + 7285)) - set.tankRawDTPS * (1 - a1 / (a1 + 7285))
     out.inspiration = saved * uptime            -- already per second (damage per second saved)
+    out.inspirationParts = { rate = rate, uptime = uptime, armor = a0, armorUp = a1, saved = saved, dtps = set.tankRawDTPS }
     out.raw = out.raw + out.inspiration * fl
     out.eff = out.eff + out.inspiration * fl
   end
@@ -866,7 +1024,7 @@ end
 -- stops being mana-limited, so weights don't jump around between nearby gear sets.
 function E.Weights(rotKey, st, input, step)
   step = step or 10
-  local t = E.Talents(input.talents, input.settings.rules)
+  local t = E.Talents(input.talents, input.settings.rules, input.settings.overrides)
   local set = input.settings
   local base = E.Rotation(rotKey, st, t, set)
   if not base then return nil end
@@ -884,6 +1042,7 @@ function E.Weights(rotKey, st, input, step)
     local up = E.Rotation(rotKey, addDelta(st, d, s), t, fixed)
     w[stat] = (up.ehps - base.ehps) / s
     w[stat .. "Raw"] = (up.hps - base.hps) / s
+    w[stat .. "Up"], w[stat .. "Step"] = up.ehps, s
   end
   return w
 end
@@ -900,7 +1059,7 @@ end
 -- right across the points where a spell stops being mana-limited.
 -- diff = { healing=, int=, spirit=, mp5=, crit= (in %), haste= (in %) }
 function E.Compare(rotKey, st, input, diff)
-  local t = E.Talents(input.talents, input.settings.rules)
+  local t = E.Talents(input.talents, input.settings.rules, input.settings.overrides)
   local set = input.settings
   local base = E.Rotation(rotKey, st, t, set)
   if not base then return nil end
@@ -920,7 +1079,7 @@ end
 
 -- Every healing plan with your stats, best first.
 function E.ComparePlans(st, input)
-  local t = E.Talents(input.talents, input.settings.rules)
+  local t = E.Talents(input.talents, input.settings.rules, input.settings.overrides)
   local out = {}
   local sheet = input.settings.rules and input.settings.rules.table == "sheet"
   for key, rot in pairs(E.ROTATIONS) do
@@ -942,6 +1101,7 @@ local function castValue(key, rank, st, t, set)
   local gcd = 1.5 / (1 + st.haste)
   return heal, sp.cost, max(sp.cast, gcd), sp
 end
+E.CastValue = castValue
 
 -- Per spell you know: its most mana-efficient rank and its top rank.
 function E.SpellTable(st, t, set)

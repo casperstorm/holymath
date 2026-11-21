@@ -439,5 +439,255 @@ do
   near("Greater Heal r2 base at level 49 = 1099 + 3 x 5.8", E.BaseAt(E.GAME_SPELLS.GH.ranks[2], 49), 1116.4, 1e-9)
 end
 
+print("-- Intellect -> crit by level (game data at 60, measured at 49 and 50)")
+do
+  near("level 60: game data 0.0168% per int", E.CritPerInt(60), 0.0168, 1e-9)
+  near("level 50: measured 0.0208% per int", E.CritPerInt(50), 0.0208, 1e-9)
+  near("level 49: measured 0.0213% per int", E.CritPerInt(49), 0.0213, 1e-9)
+  near("level 55: halfway between 50 and 60", E.CritPerInt(55), 0.0188, 1e-9)
+  near("level 48: extended along 49-50", E.CritPerInt(48), 0.0218, 1e-9)
+  -- the two dumps: no crit on gear, Holy Specialization 3/3 (3%) added on top
+  local f49, f50 = dofile("tests/fixture_client_holy.lua"), dofile("tests/fixture_client_holy50.lua")
+  near("dump at 49 fits 0.8% + 204 int", f49.crit - 0.03, (0.8 + 204 * E.CritPerInt(49)) / 100, 1e-6)
+  near("dump at 50 fits 0.8% + 208 int", f50.crit - 0.03, (0.8 + 208 * E.CritPerInt(50)) / 100, 1e-6)
+  local inp = E.copy(E.DEFAULTS); inp.settings.rules = E.RULES
+  inp.level = 50
+  near("stat values use it: +1 int at 50", E.StatDelta(inp, "int").crit,
+       E.Multipliers(inp).int * 0.0208 / 100, 1e-12)
+  inp.settings.rules = E.SHEET_RULES
+  near("the sheet's rule stays 1/60", E.Multipliers(inp).critPctPerInt, 1 / 60, 1e-12)
+end
+
+print("-- The Math tab adds up to what the window shows (level 50 dump: calibrated ranks)")
+do
+  assert(loadfile("Models/PriestMath.lua"))(nil, { Models = { PRIEST = E } })
+  local F = dofile("tests/fixture_client_holy50.lua")
+  local t = E.Talents(F.talents)
+  -- the 22:49 dump: 208 int, 4006 mana, regen 30.701 / 4.201 per second, no Meditation
+  local st = { level = F.level, healing = F.healing, crit = F.crit, haste = 0.15, critMulti = 1.5,
+               spirit = F.spirit, healingFromSpirit = F.spirit * t.spiritualGuidance, int = 208,
+               manaPool = 4006, oocRegen = 26.5 * 5, combatRegen = 0, mp5 = 4.201 * 5 }
+  local input = { level = F.level, talents = F.talents, buffs = {}, consumables = {}, race = { troll = true },
+                  settings = E.copy(E.DEFAULTS.settings), regenPerSpirit = 5 * E.DATA.regen.perSpirit }
+  input.settings.fightLength = 120
+  local set = input.settings
+  local report = E.ApplyClientData(F.spells, st, t, set)
+  local w = E.Weights("renew", st, input)
+  local S = { st = st, t = t, input = input, weights = w, rotation = "renew",
+              info = { client = report, how = { critParts = { client = F.crit - 0.03, talent = 0.03, holySpec = 3,
+                       perInt = E.CritPerInt(50), perIntFrom = "measured in game" } } } }
+  S.spells = E.SpellTable(st, t, set)
+  local rows, check = E.MathPage(S)
+  near("math: mana parts add up to the mana budget", check.fight.mana, E.ManaBudget(st, t, set), 1e-9)
+  near("math: the fight's lines add up to its healing", check.fight.eff, w.base.eff, 1e-9)
+  near("math: ... and to the HPS on the Settings tab", check.fight.ehps, w.base.ehps, 1e-9)
+  -- one section per spell the fight casts, each = its line in the fight
+  local function stepsMatch(X, ck)
+    local n, good, ohPWS = 0, 0, X.input.settings.overheal.PWS or 0
+    for _, sc in ipairs(ck.spells) do
+      local s2 = sc.step
+      n = n + 1
+      local want = s2.perCast * (1 - (s2.overheal or 0)) + s2.aegis * (1 - ohPWS)
+      if math.abs(sc.cost - s2.cost) < 1e-9 and math.abs(sc.heal - want) < 1e-9 then good = good + 1 end
+    end
+    local steps = 0
+    for _, s2 in ipairs(X.weights.base.steps) do if s2.enabled and s2.casts > 0.01 then steps = steps + 1 end end
+    return n == steps and good == n, n
+  end
+  local okSteps, nSteps = stepsMatch(S, check)
+  near("math: a section for each of the fight's " .. nSteps .. " spells, its mana and heal = its fight line", okSteps and 1 or 0, 1)
+  local bad, ranks, note = 0, 0, false
+  for _, sr in ipairs(S.spells) do
+    for r = 1, sr.top do
+      local rws, c = E.MathPage(S, sr.key, r)
+      local heal, cost = E.CastValue(sr.key, r, st, t, set)
+      ranks = ranks + 1
+      if not (c.spell.key == sr.key and c.spell.rank == r) then bad = bad + 1
+      elseif not c.spell.step and (math.abs(c.spell.heal - heal) > 1e-9 or math.abs(c.spell.cost - cost) > 1e-9) then bad = bad + 1 end
+      for _, row in ipairs(rws) do
+        if not (row.head or row.note) and not (row[1] and row[2] and row[3] and row[4]) then bad = bad + 1 end
+        if row.note and row.note:find("tooltip shows this rank at full power") and sr.key == "RENEW" and r == 1 then note = true end
+      end
+    end
+  end
+  near("math: every rank you pick gets its section; outside the fight = Your spells (" .. ranks .. " ranks)", bad, 0)
+  near("math: Renew 1 says its tooltip leaves downranking out", note and 1 or 0, 1)
+  local _, gone = E.MathPage(S, "SMITE", 1)
+  near("math: a spell you don't know: just the fight's spells", (gone.spell == gone.spells[1] and #gone.spells == nSteps) and 1 or 0, 1)
+
+  -- Your own values (typed over on the Math tab), the way Core.lua applies them
+  local function withValues(ov)
+    local inp = E.copy(input)
+    inp.settings.overrides = ov
+    local t2 = E.Talents(inp.talents, nil, ov)
+    local st2 = E.ApplyStatOverrides(st, ov)
+    local S2 = { st = st2, t = t2, input = inp, rotation = "renew", info = S.info, weights = E.Weights("renew", st2, inp) }
+    S2.spells = E.SpellTable(st2, t2, inp.settings)
+    return S2
+  end
+  local function sig(X, key, rank)   -- everything a value can move
+    local _, c = E.MathPage(X, key, rank)
+    local s = c.fight.ehps + c.spell.heal + c.spell.cost * 7 + c.spell.time * 13
+    for _, k in ipairs(E.WEIGHT_STATS) do s = s + (X.weights[k] or 0) * 3 end
+    return s, c
+  end
+  near("values: none = exactly as before", sig(withValues({}), "GH", 4), sig(S, "GH", 4), 0)
+  -- every editable cell on these pages: typed over, it moves the model, the
+  -- page shows it as yours with the old value kept, and the page still adds up
+  local moved, shown, checked, stillAdds = 0, 0, 0, 0
+  for _, pick in ipairs({ { "RENEW", 8 }, { "GH", 4 }, { "POM", 1 }, { "RENEW", 1 } }) do
+    local rws = E.MathPage(S, pick[1], pick[2])
+    local before = sig(S, pick[1], pick[2])
+    for _, row in ipairs(rws) do
+      local e = row.edit
+      if e and e.id then
+        checked = checked + 1
+        local v = e.raw * 1.2 + 0.01
+        if e.unit == "pct" or e.unit == "pct0" then v = math.min(1, e.raw + 0.05) end
+        if e.id == "stat.critMulti" then v = 2 end
+        local X = withValues({ [e.id] = v })
+        local after, c = sig(X, pick[1], pick[2])
+        if math.abs(after - before) > 1e-6 then moved = moved + 1 else print("   did not move: " .. e.id) end
+        if math.abs(c.fight.eff - X.weights.base.eff) < 1e-6 then stillAdds = stillAdds + 1 end
+        for _, r2 in ipairs((E.MathPage(X, pick[1], pick[2]))) do
+          if r2.edit and r2.edit.id == e.id and r2[4] == "you" and math.abs(r2.edit.raw - v) < 1e-9
+             and math.abs(r2.edit.orig - e.raw) < 1e-9 then shown = shown + 1; break end
+        end
+      end
+    end
+  end
+  near("values: " .. checked .. " editable cells, each moves the model", moved, checked)
+  near("values: ... shows as yours, the old value kept", shown, checked)
+  near("values: ... and the fight still adds up", stillAdds, checked)
+  -- every editable cell at both ends of what it accepts: nothing goes negative or breaks
+  local ids, seen = {}, {}
+  for _, pick in ipairs({ { "RENEW", 8 }, { "GH", 4 }, { "POM", 1 }, { "RENEW", 1 }, { "FLASH", 6 } }) do
+    for _, row in ipairs((E.MathPage(S, pick[1], pick[2]))) do
+      if row.edit and row.edit.id and not seen[row.edit.id] then seen[row.edit.id] = true; ids[#ids + 1] = row.edit.id end
+    end
+  end
+  for _, extra in ipairs({ "talent.mentalAgility", "talent.impHealing", "talent.litany", "talent.daMulti", "talent.divineFury" }) do
+    if not seen[extra] then ids[#ids + 1] = extra end
+  end
+  local sane, tried = 0, 0
+  local function fine(x) return type(x) == "number" and x == x and x ~= math.huge and x >= 0 end
+  for _, id in ipairs(ids) do
+    local lo, hi = E.OverrideRange(id)
+    for _, v in ipairs({ lo, hi }) do
+      tried = tried + 1
+      local ok2, X2 = pcall(withValues, { [id] = v })
+      local good = ok2 and X2.weights and fine(X2.weights.base.ehps)
+      if good then
+        for _, k in ipairs(E.WEIGHT_STATS) do if X2.weights[k] ~= X2.weights[k] then good = false end end
+        for _, sr in ipairs(X2.spells) do
+          local h, c, tm = E.CastValue(sr.key, sr.top, X2.st, X2.t, X2.input.settings)
+          if not (fine(h) and c >= 1 and tm > 0) then good = false end
+        end
+        local _, ck = E.MathPage(X2)
+        if not (ck.fight and math.abs(ck.fight.eff - X2.weights.base.eff) < 1e-6 and ck.fight.worst < 1e-6) then good = false end
+      end
+      if good then sane = sane + 1 else print("   breaks at the end of its range: " .. id .. " = " .. tostring(v)) end
+    end
+  end
+  near("values: " .. #ids .. " cells at both ends of their range: costs >= 1, heals >= 0, the page adds up", sane, tried)
+  -- every cost cut at its top at once still leaves a cost
+  local cuts = withValues({ ["talent.mentalAgility"] = 0.9, ["talent.impHealing"] = 0.9, ["talent.litany"] = 0.9, ["talent.litanyRefund"] = 1 })
+  local _, pc = E.CastValue("POM", 1, cuts.st, cuts.t, cuts.input.settings)
+  near("values: all cost cuts at once: a cost of at least 1", pc, 1)
+  near("values: a spell rank's own data can't be typed over", E.OverrideOK("spell.RENEW.8.base", 600) and 0 or 1, 1)
+  -- the share of regen while casting reaches spirit's worth too
+  local share0 = withValues({ ["stat.castingShare"] = 0 })
+  local share1 = withValues({ ["stat.castingShare"] = 1 })
+  near("values: regen while casting typed: spirit's regen while casting follows",
+       E.StatDelta(share1.input, "spirit").combatRegen, E.StatDelta(share1.input, "spirit").oocRegen, 1e-12)
+  near("values: ... and spirit is worth more with all of it", share1.weights.spirit > share0.weights.spirit and 1 or 0, 1)
+
+  -- item tooltips (E.Compare) and stat values follow a value
+  local X = withValues({ ["stat.critMulti"] = 2 })
+  near("values: crit x2 raises the HPS", X.weights.base.ehps > S.weights.base.ehps and 1 or 0, 1)
+  near("values: ... and the worth of crit", X.weights.crit > S.weights.crit and 1 or 0, 1)
+  local diff = { crit = 1 }
+  near("values: ... and an item with crit (tooltips)",
+       E.Compare("renew", X.st, X.input, diff) > E.Compare("renew", st, input, diff) and 1 or 0, 1)
+  X = withValues({ ["stat.critPerInt"] = 0.05 })
+  near("values: intellect to crit moves intellect's worth", X.weights.int > S.weights.int and 1 or 0, 1)
+  -- regen while casting follows regen from spirit, unless its share is yours too
+  local share = st.oocRegen > 0 and st.combatRegen / st.oocRegen or 0
+  local R = E.ApplyStatOverrides({ oocRegen = 100, combatRegen = 50 }, { ["stat.oocRegen"] = 200 })
+  near("values: regen while casting follows regen", R.combatRegen, 100, 1e-12)
+  R = E.ApplyStatOverrides({ oocRegen = 100, combatRegen = 50 }, { ["stat.oocRegen"] = 200, ["stat.castingShare"] = 0.25 })
+  near("values: ... unless its share is typed too", R.combatRegen, 50, 1e-12)
+  near("values: ... and the old values are kept", (R.orig.oocRegen == 100 and R.orig.combatRegen == 50) and 1 or 0, 1)
+  -- a bad saved value is left out, never breaks anything
+  local bad = { ["stat.crit"] = 7, ["stat.healing"] = "lots", ["spell.RENEW.8.cost"] = 0, ["talent.x y"] = 1,
+                ["stat.nope"] = 1, ["spell.RENEW.8.zap"] = 1, [3] = 1 }
+  near("values: bad saved values are ignored", sig(withValues(bad), "RENEW", 8), sig(S, "RENEW", 8), 0)
+  local Y = withValues({ ["stat.healingFromSpirit"] = 99999 })
+  near("values: Prayer of Mending's healing power can't go below 0", E.HealingFor("POM", Y.st), 0, 0)
+  -- what you type is read the way it is shown
+  local reads = { { "pct", "18.8%", 0.188 }, { "pct", "18.8", 0.188 }, { "bonus", "+15%", 1.15 }, { "mult", "x2", 2 },
+                  { "sec", "2.5 s", 2.5 }, { "int", "1,234", 1234 }, { "regen", "132.5 per 5 s", 132.5 },
+                  { "perInt", "0.0208%", 0.0208 }, { "coef", "0.4286", 0.4286 } }
+  local ok = 0
+  for _, r in ipairs(reads) do
+    local v = E.MathParse(r[1], r[2])
+    if v and math.abs(v - r[3]) < 1e-12 then ok = ok + 1 else print("   misread: " .. r[1] .. " '" .. r[2] .. "'") end
+  end
+  near("values: typed text is read in its unit", ok, #reads)
+  near("values: nonsense is not read", E.MathParse("int", "abc") == nil and 1 or 0, 1)
+  ok = 0
+  for unit in pairs(E.MATH_UNITS) do
+    local v = unit == "bonus" and 1.15 or 0.375
+    if math.abs(E.MathParse(unit, E.MathEditText(unit, v)) - v) < 1e-9 then ok = ok + 1 end
+  end
+  local units = 0
+  for _ in pairs(E.MATH_UNITS) do units = units + 1 end
+  near("values: the edit box text reads back as the same number", ok, units)
+  -- every playstyle, and a Discipline priest (Divine Aegis, Renewed Hope, Penance,
+  -- Inner Focus): each fight line's printed terms add up to its value
+  local disc = E.copy(E.DEFAULTS)
+  disc.settings.rules = E.RULES
+  disc.settings.fightLength = 120
+  disc.talents.divineAegis, disc.talents.penance, disc.talents.renewedHope = 3, 1, 5
+  local dst = E.Derive(disc)
+  local dt = E.Talents(disc.talents)
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+  for _, case in ipairs({ { "level 50", S }, { "Discipline 60", { st = dst, t = dt, input = disc, info = { client = {}, how = {} } } } }) do
+    local CS = case[2]
+    for key, rot in pairs(E.ROTATIONS) do
+      if not rot.sheetOnly and (not rot.requires or (CS.t[rot.requires] or 0) > 0) then
+        CS.rotation, CS.weights = key, E.Weights(key, CS.st, CS.input)
+        CS.spells = E.SpellTable(CS.st, CS.t, CS.input.settings)
+        if CS.weights then
+          local _, ck = E.MathPage(CS)
+          near("math, " .. case[1] .. ", " .. rot.name .. ": lines add up", ck.fight.eff, CS.weights.base.eff, 1e-9)
+          near("math, " .. case[1] .. ", " .. rot.name .. ": each line's terms = its value", ck.fight.worst, 0, 1e-6)
+          near("math, " .. case[1] .. ", " .. rot.name .. ": each spell's section = its fight line", stepsMatch(CS, ck) and 1 or 0, 1)
+        end
+      end
+    end
+  end
+  -- the Discipline priest with crits for x2 (typed over): every playstyle still adds up
+  local ov = { ["stat.critMulti"] = 2, ["talent.daMulti"] = 0.5 }
+  local dinp = E.copy(disc)
+  dinp.settings.overrides = ov
+  local DS = { st = E.ApplyStatOverrides(dst, ov), t = E.Talents(dinp.talents, dinp.settings.rules, ov), input = dinp,
+               info = { client = {}, how = {} } }
+  for key, rot in pairs(E.ROTATIONS) do
+    if not rot.sheetOnly and (not rot.requires or (DS.t[rot.requires] or 0) > 0) then
+      DS.rotation, DS.weights = key, E.Weights(key, DS.st, DS.input)
+      DS.spells = E.SpellTable(DS.st, DS.t, DS.input.settings)
+      if DS.weights then
+        local _, ck = E.MathPage(DS)
+        local plain = E.Weights(key, dst, disc)
+        near("values, Discipline 60, crit x2, " .. rot.name .. ": adds up, terms = values, sections = fight lines",
+             (math.abs(ck.fight.eff - DS.weights.base.eff) < 1e-6 and ck.fight.worst < 1e-6 and stepsMatch(DS, ck)) and 1 or 0, 1)
+        near("values, Discipline 60, crit x2, " .. rot.name .. ": heals more", DS.weights.base.ehps > plain.base.ehps and 1 or 0, 1)
+      end
+    end
+  end
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+end
+
 print(string.format("\n%d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

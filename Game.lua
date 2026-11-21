@@ -203,6 +203,10 @@ function G.ReadStats(talentRanks)
   st.crit = holy / 100 + ((hs > 0 and not included) and hs * 0.01 or 0)
   how.crit = string.format("school %d: %.2f%%, school %d: %.2f%%, %s %d %s", school, holy, other, shadow, label, hs,
     hs == 0 and "" or (included and "(already in the client's number)" or "(added by us)"))
+  local perInt, from = E.CritPerInt(st.level)
+  how.critParts = { client = holy / 100, talent = (hs > 0 and not included) and hs * 0.01 or 0, included = included,
+                    holySpec = hs, perInt = perInt, perIntFrom = from }
+  how.crit = how.crit .. string.format("; intellect: %.1f per 1%% crit at level %d (%s)", 1 / perInt, st.level, from)
 
   local haste = num(safe(UnitSpellHaste, "player")) or 0
   st.haste = haste / 100
@@ -226,6 +230,7 @@ function G.ReadStats(talentRanks)
   st.oocRegen = spiritRegen * 5                     -- from spirit, out of the 5-second rule
   st.combatRegen = spiritRegen * 5 * med            -- from spirit, while casting
   st.mp5 = math.max(0, (casting - med * spiritRegen) * 5)
+  how.regenParts = { base = base, casting = casting, share = med, spiritRegen = spiritRegen }
   local formula = 5 * (E.DATA.regen.base + E.DATA.regen.perSpirit * st.spirit)   -- game data, per 5 sec
   how.regen = string.format("client: %.1f per 5 s out of combat, %.1f while casting -> spirit %.1f (game data formula %.1f, %+.1f%%), MP5 %.1f, %d%% of spirit regen while casting",
     base * 5, casting * 5, st.oocRegen, formula, (st.oocRegen / formula - 1) * 100, st.mp5, med * 100)

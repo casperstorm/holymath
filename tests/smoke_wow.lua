@@ -34,9 +34,20 @@ local function newFrame(name)
   function f:UnregisterEvent(e) self.events[e] = nil end
   function f:IsMouseOver() return self.mouseOver == true end
   function f:GetPoint() return "CENTER", nil, "CENTER", 0, 0 end
+  local function sized(self, w) self.width = w end
   for _, m in ipairs({ "SetSize", "SetWidth", "SetHeight", "SetPoint", "ClearAllPoints", "SetFrameStrata", "SetMovable",
       "EnableMouse", "RegisterForDrag", "SetClampedToScreen", "SetToplevel", "StartMoving", "StopMovingOrSizing",
-      "SetBackdrop", "SetBackdropColor", "SetBackdropBorderColor", "Raise", "CreateTexture", "SetAllPoints", "SetID" }) do f[m] = noop end
+      "SetBackdrop", "SetBackdropColor", "SetBackdropBorderColor", "Raise", "SetAllPoints", "SetID" }) do f[m] = noop end
+  f.SetWidth = sized
+  function f:SetSize(w) self.width = w end
+  function f:CreateTexture()
+    local t = { shown = true }
+    for _, m in ipairs({ "SetColorTexture", "SetTexture", "SetVertexColor", "SetPoint", "SetAllPoints", "SetSize",
+                         "SetWidth", "SetHeight", "ClearAllPoints", "SetBlendMode", "SetTexCoord", "SetAlpha" }) do t[m] = noop end
+    function t:Show() self.shown = true end
+    function t:Hide() self.shown = false end
+    return t
+  end
   frames[#frames + 1] = f
   if name then _G[name] = f end
   return f
@@ -45,6 +56,17 @@ end
 local missingTemplates = {}      -- names listed here "don't exist" in this fake client
 local TEMPLATES = {
   UIPanelButtonTemplate = function(f) function f:SetText(t) self.text = t end; function f:GetText() return self.text end end,
+  InputBoxTemplate = function(f)
+    function f:SetText(t) self.text = t end
+    function f:GetText() return self.text end
+    function f:SetFocus() self.focus = true end
+    function f:HasFocus() return self.focus == true end
+    function f:ClearFocus()
+      local had = self.focus; self.focus = false
+      if had and self.scripts.OnEditFocusLost then self.scripts.OnEditFocusLost(self) end
+    end
+    for _, m in ipairs({ "HighlightText", "SetAutoFocus", "SetMaxLetters", "SetJustifyH", "SetFontObject" }) do f[m] = noop end
+  end,
   PortraitFrameTemplate = function(f)
     function f:SetTitle(t) self.title = t end
     f.SetPortraitToAsset = noop
@@ -177,7 +199,7 @@ SlashCmdList = {}
 
 -- load the addon -------------------------------------------------------------
 local ns = {}
-for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
+for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
   assert(loadfile(f))("HolyMath", ns)
 end
 local core = frames[#frames]                      -- Core's event frame
@@ -414,8 +436,7 @@ do
   O.controls.fight.onChange(nil, 240)
   expect(HolyMathDB.PRIEST.settings.fightLength == 240, "slider sets the fight length")
   expect(O.hps.text ~= before, "result updates after a change")
-  O.controls.ohRENEW.onChange(nil, 0.4)
-  expect(HolyMathDB.PRIEST.settings.overheal.RENEW == 0.4, "overheal slider sets Renew overheal")
+  expect(not O.controls.ohRENEW, "no overheal sliders on the Settings tab (they are on the Math tab)")
   O.controls.pots:SetChecked(false); O.controls.pots.scripts.OnClick(O.controls.pots)
   expect(HolyMathDB.PRIEST.settings.majorManaPotions == false, "Blizzard checkbox turns mana potions off")
   -- playstyle: the game's dropdown (WowStyle1), one radio per playstyle, no HPS
@@ -522,6 +543,120 @@ do
   expect(rk[#rk].spellID and rk[#rk].spellID ~= O.spellRows[renewAt].spellID, "hovering a rank shows that rank's tooltip")
   rk[1].scripts.OnClick(rk[1])
   expect(O.expanded.RENEW, "clicking a rank line keeps the spell open")
+  -- ... and opens the Math tab on that rank
+  expect(O.panes.math:IsShown() and not O.panes.spells:IsShown(), "clicking a rank opens the Math tab")
+  local E_SOURCES = ns.model.MATH_SOURCES
+  local mathLines, head, hpsLine, srcs = {}, nil, nil, 0
+  for _, row in ipairs(O.mathRows) do
+    if row.shown then
+      local w = plain(row.wide.text)
+      if w ~= "" then mathLines[#mathLines + 1] = w; if w:find("^Renew rank " .. renewTop .. "%f[^%d]") then head = true end
+      else
+        mathLines[#mathLines + 1] = rowText(row)
+        if plain(row.cells[1].text) == "Healing per second" then hpsLine = plain(row.cells[3].text) end
+        if E_SOURCES[row.src or ""] then srcs = srcs + 1 end
+      end
+    end
+  end
+  for _, l in ipairs(mathLines) do realprint("    math: " .. l) end
+  expect(head, "Math tab works out the rank that was clicked (Renew " .. renewTop .. ")")
+  expect(hpsLine and (hpsLine .. " HPS") == plain(O.hps.text), "Math tab's HPS = the Settings tab's (" .. tostring(hpsLine) .. ")")
+  expect(srcs >= 10, "Math lines know where their numbers come from (shown on hover)")
+  expect(not O.mathRows[1].cells[4], "no Source column")
+  expect(O.mathSpellY ~= nil, "clicking a rank scrolls the sheet to its section")
+  expect(O.frame.width == 880, "the Math tab makes the window wider")
+  click(O.controls["tab:spells"])
+  expect(O.frame.width ~= 880, "... and the other tabs make it narrow again")
+  click(O.controls["tab:math"])
+  expect(O.panes.math:IsShown(), "Math tab opens from its tab too")
+
+  -- the sheet: type your own value, see it used everywhere, put it back
+  local function cellRow(match)
+    for _, row in ipairs(O.mathRows) do
+      local e = row.shown and row.data and row.data.edit
+      if e and (e.id == match or (e.setting and table.concat(e.setting, ".") == match)) then return row end
+    end
+  end
+  local function press(row, button) row.valueBtn.scripts.OnClick(row.valueBtn, button or "LeftButton") end
+  local function mine() local n = 0; for _ in pairs(db.overrides) do n = n + 1 end; return n end
+  local hpsBefore = O.hps.text
+  local function tipLine(link)
+    ns.ClearVerdicts()
+    GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = link
+    postCalls[0](GameTooltip)
+    return GameTooltip.lines[1] or ""
+  end
+  local tipBefore = tipLine("|Hitem:1002:0:|h")
+  local cm = cellRow("stat.critMulti")
+  expect(cm and cm.valueBtn:IsShown() and cm.box.top.shown, "sheet: 'a crit heals for' is a boxed value")
+  press(cm)
+  local eb = O.mathEdit
+  expect(eb and eb:IsShown() and eb:HasFocus() and eb:GetText() == "1.5", "sheet: clicking it opens a box with 1.5 in it")
+  expect(requestedTemplates.InputBoxTemplate, "sheet: the box is the game's own input box")
+  O.Refresh(true)
+  expect(eb:IsShown() and eb.row == cm and eb:GetText() == "1.5", "sheet: a change in game while typing leaves the box alone")
+  eb:SetText("x2"); eb.scripts.OnEnterPressed(eb)
+  expect(db.overrides["stat.critMulti"] == 2, "sheet: typing x2 makes crits heal for x2")
+  expect(not eb:IsShown(), "sheet: Enter closes the box")
+  expect(O.hps.text ~= hpsBefore, "sheet: the Settings tab's HPS uses your value")
+  expect(tipLine("|Hitem:1002:0:|h") ~= tipBefore and tipBefore ~= "", "sheet: item tooltips use your value too")
+  cm = cellRow("stat.critMulti")
+  expect(plain(cm.cells[3].text) == "x2" and cm.resetBtn:IsShown(), "sheet: your value, with an arrow to put it back")
+  GameTooltip.lines = {}
+  cm.resetBtn.scripts.OnEnter(cm.resetBtn)
+  expect((GameTooltip.lines[2] or ""):find("x1.5"), "sheet: the arrow says what it puts back")
+  expect(O.yourValues:IsShown() and plain(O.yourValues.text.text):find("^1 value typed by you"), "a line at the bottom: 1 value is yours")
+  GameTooltip.lines = {}
+  cm.valueBtn.scripts.OnEnter(cm.valueBtn)
+  local tipText = table.concat(GameTooltip.lines, " / ")
+  expect(tipText:find("Before: x1.5") and tipText:find("right%-click"), "sheet: hovering your value says what it was")
+  press(cm); eb:SetText("lots"); eb.scripts.OnEnterPressed(eb)
+  expect(eb:IsShown() and db.overrides["stat.critMulti"] == 2, "sheet: text it can't read keeps the box open, saves nothing")
+  eb.scripts.OnEscapePressed(eb)
+  expect(not eb:IsShown() and plain(cellRow("stat.critMulti").cells[3].text) == "x2", "sheet: Esc closes the box, value unchanged")
+  local mana = cellRow("stat.manaPool")
+  press(cellRow("stat.critMulti")); press(mana)
+  expect(plain(cellRow("stat.critMulti").cells[3].text) == "x2" and eb.row == mana, "sheet: opening another cell gives the first its value back")
+  eb.scripts.OnEscapePressed(eb)
+  press(cellRow("stat.critMulti"), "RightButton")
+  expect(db.overrides["stat.critMulti"] == nil and O.hps.text == hpsBefore, "sheet: right-click puts back the game's value")
+  expect(not O.yourValues:IsShown(), "the bottom line goes with it")
+  press(cellRow("stat.critMulti")); eb:SetText("1.5"); eb.scripts.OnEnterPressed(eb)
+  expect(mine() == 0, "sheet: typing the game's own value is not 'yours'")
+  -- overheal is a setting on the sheet now
+  local oh = cellRow("overheal.RENEW")
+  expect(oh, "sheet: Renew's overheal is on it")
+  press(oh); eb:SetText("40%"); eb.scripts.OnEnterPressed(eb)
+  expect(db.settings.overheal.RENEW == 0.4 and mine() == 0, "sheet: typing 40% sets Renew's overheal (a setting, not 'yours')")
+  press(cellRow("overheal.RENEW")); eb:SetText("300"); eb.scripts.OnEnterPressed(eb)
+  expect(eb:IsShown() and db.settings.overheal.RENEW == 0.4, "sheet: 300% overheal is refused")
+  eb.scripts.OnEscapePressed(eb)
+  press(cellRow("overheal.RENEW"), "RightButton")
+  expect(db.settings.overheal.RENEW == 0.25, "sheet: right-click puts a setting back to its starting value")
+  -- your values on a spell rank, then all put back at once
+  press(cellRow("talent.twinDisc")); eb:SetText("+20%"); eb.scripts.OnEnterPressed(eb)
+  expect(math.abs((db.overrides["talent.twinDisc"] or 0) - 1.2) < 1e-12, "sheet: a talent typed as +20%")
+  press(cellRow("talent.litanyRefund")); eb:SetText("20"); eb.scripts.OnEnterPressed(eb)
+  expect(mine() == 2 and math.abs(db.overrides["talent.litanyRefund"] - 0.2) < 1e-12, "sheet: Twin Disciplines and Litany 20% typed")
+  expect(plain(O.yourValues.text.text):find("^2 values typed by you"), "the bottom line counts 2")
+  GameTooltip.lines = {}
+  O.controls.ResetValues.scripts.OnEnter(O.controls.ResetValues)
+  click(O.controls["tab:settings"])
+  expect(O.yourValues:IsShown(), "the bottom line shows on the Settings tab too")
+  click(O.controls.ResetValues)
+  expect(mine() == 0 and not O.yourValues:IsShown() and O.hps.text == hpsBefore, "Put all back: the game's values everywhere")
+  click(O.controls.SetOverheal)
+  expect(O.panes.math:IsShown() and O.mathAnchors.settings, "Settings tab's 'Set overheal' opens the sheet at the settings")
+  db.overrides["stat.healing"] = 500
+  SlashCmdList.HOLYMATH("reset")
+  expect(mine() == 0, "/hm reset puts back every value")
+  db.overrides["stat.crit"] = "broken"; db.overrides["stat.healing"] = -5
+  O.Changed(true)
+  expect(O.hps.text == hpsBefore and not O.yourValues:IsShown(), "a broken saved value is ignored")
+  db.overrides = {}
+  O.Changed(true)
+  expect(tipLine("|Hitem:1002:0:|h") == tipBefore, "item tooltips back to the game's values")
+  click(O.controls["tab:spells"])
   -- open every spell: all stay open, the list grows past the 20 lines in view (it scrolls)
   local total = 0
   for _, sr in ipairs(ns.State().spells) do total = total + 1 + sr.top end
@@ -599,7 +734,7 @@ do
   for _, t in ipairs({ "PortraitFrameTemplate", "MinimalSliderWithSteppersTemplate", "UICheckButtonTemplate",
                        "WowStyle1DropdownTemplate", "UIPanelButtonTemplate", "UIPanelCloseButton" }) do missingTemplates[t] = true end
   local ns3 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
+  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
     assert(loadfile(f))("HolyMath", ns3)
   end
   local core3 = frames[#frames]
@@ -625,7 +760,7 @@ do
   local function login(db)
     HolyMathDB = { PRIEST = db }
     local ns4 = {}
-    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
+    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
       assert(loadfile(f))("HolyMath", ns4)
     end
     local core4 = frames[#frames]
@@ -645,7 +780,7 @@ end
 do
   UnitClass = function() return "Warrior", "WARRIOR" end
   local ns2 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do assert(loadfile(f))("HolyMath", ns2) end
+  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do assert(loadfile(f))("HolyMath", ns2) end
   local core2 = frames[#frames]
   core2.scripts.OnEvent(core2, "PLAYER_LOGIN")
   expect(not ns2.enabled, "warrior: addon stays off")

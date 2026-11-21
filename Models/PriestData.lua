@@ -22,6 +22,7 @@ local _, ns = ...
 local D = {
   source = "wowsims/forever f95b7a5de4689445ea05d5ee3e8ead66db4f89e8 2026-11-20",
   regen = { base = 6.25, perSpirit = 0.125 },  -- mana per second from spirit: base + spirit x perSpirit
+  critPerInt60 = 0.0168,  -- spell crit (percent) per point of intellect at level 60
   spells = {
     RENEW = { name = "Renew", ranks = {
       { id = 139, cost = 30, lvl = 8, bl = 8, ml = 13, bp = 45, ppl = 0, coeff = 1, cast = 0 },

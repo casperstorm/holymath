@@ -8,9 +8,16 @@
                    knowing it once tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
                    on Search(), 20 Nov 2026); our look-alike is the fallback.
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
+       typing      InputBoxTemplate (the Math tab's cells)
      Each was checked against addons that already use it on this client (BugSack,
      OpenMap). Where a client lacks one, that widget falls back to a plain version,
      so the window always works.
+
+     The Math tab is a sheet of Models/PriestMath.lua's lines: how each number is
+     worked out and where it comes from. Boxed values can be typed over: your own
+     value is then used everywhere until you put it back (a line at the bottom of
+     every tab says so), and settings typed there (overheal per spell, fight
+     length) are the same settings the Settings tab has.
 
      Every setting explains itself on hover. Everything recalculates by itself
      (settings, gear, buffs, talents), so there is no Recalculate button; the
@@ -29,6 +36,9 @@ local COL_W = LABEL_W + SLIDER_W + VALUE_W
 local LEFT = MARGIN
 local RIGHT = LEFT + COL_W + GAP
 local WIDTH = RIGHT + COL_W + MARGIN
+-- The Math tab makes the window wider (like the game's character window does for
+-- some of its tabs): its formulas need the room.
+local MATH_WIDTH = 880
 local HEIGHT = 470
 local TOP, ROW, ROW_H = -66, 30, 28
 
@@ -430,7 +440,6 @@ local function PlaystyleDropdown(parent, x, y)
   O.rows[#O.rows + 1] = function() if dd.GenerateMenu then pcall(dd.GenerateMenu, dd) end end
 end
 
-local OVERHEAL_ORDER = { "RENEW", "GH", "FLASH", "HEAL", "POH", "POM", "PWS", "PENANCE", "NOVA", "LESSER" }
 
 local function Window()
   local p = try("Frame", UIParent, "PortraitFrameTemplate", "HolyMathOptions")
@@ -467,11 +476,6 @@ local function Window()
   return p
 end
 
-local function overhealHelp(name)
-  return "How much of " .. name .. "'s healing you expect to land on players who are already " ..
-    "at full health, and so be wasted. The higher this is, the less " .. name .. " is worth."
-end
-
 local function Pane(p)
   local pane = CreateFrame("Frame", nil, p)
   pane:SetAllPoints(p)
@@ -489,10 +493,11 @@ local function Cell(parent, x, y, w, justify, font)
 end
 
 local TABS = { { key = "settings", text = "Settings" }, { key = "spells", text = "Your spells" },
-               { key = "tooltips", text = "Tooltips" } }
+               { key = "math", text = "Math" }, { key = "tooltips", text = "Tooltips" } }
 
 function O.ShowTab(key)
   O.tab = key
+  if O.frame and O.frame.SetWidth then O.frame:SetWidth(key == "math" and MATH_WIDTH or WIDTH) end
   for i, t in ipairs(TABS) do
     local pane, tab = O.panes[t.key], O.tabs[i]
     if t.key == key then pane:Show() else pane:Hide() end
@@ -586,6 +591,10 @@ local function SpellRow(i)
   row:SetScript("OnEnter", ShowSpellTip)
   row:SetScript("OnLeave", HideTip)
   row:SetScript("OnClick", function(self)
+    if self.rankOf then
+      if PlaySound then pcall(PlaySound, 856) end
+      return O.ShowMath(self.rankOf, self.rankNum)
+    end
     if not self.key then return end
     O.expanded[self.key] = not O.expanded[self.key] or nil
     if PlaySound then pcall(PlaySound, O.expanded[self.key] and 856 or 857) end
@@ -605,7 +614,7 @@ local function BuildSpellsPane(pane)
   local W = WIDTH - 2 * MARGIN
   local y = TOP
   Header(pane, "Spell overview", LEFT, y)
-  local hint = Label(pane, "|cff9d9d9dClick a spell to see all its ranks|r", "GameFontHighlightSmall", LEFT, y - 4, W)
+  local hint = Label(pane, "|cff9d9d9dClick a spell to see all its ranks, and a rank to see its math|r", "GameFontHighlightSmall", LEFT, y - 4, W)
   hint:SetJustifyH("RIGHT")
   y = y - 22
   for _, c in ipairs(OV_COLS) do
@@ -638,6 +647,430 @@ local function BuildSpellsPane(pane)
   O.spellScroll, O.spellChild = sf, child
   O.spellRows = {}
   for i = 1, OVERVIEW_ROWS do SpellRow(i) end
+end
+
+-- Math: a sheet of how every number in the window is worked out, with your
+-- numbers in it and where each one comes from (Models/PriestMath.lua builds the
+-- rows; this lays them out). A boxed value can be typed over: a number the model
+-- uses becomes yours everywhere (db.overrides, until you put it back), a setting
+-- is the same setting as on the Settings tab.
+local MATH_COLS = {   -- title, x, width, justify; then the revert icon
+  { "Item", 0, 176, "LEFT" }, { "Formula", 176, 520, "LEFT" }, { "Value", 696, 90, "RIGHT" },
+}
+local REVERT_X = 790
+local PAD = 4                       -- text inset in a cell
+local MATH_TOP = TOP - 52           -- the sheet's first row (under the column titles)
+local MATH_BOTTOM = 40              -- room for the line about your values at the bottom
+local YOU = { 0.40, 0.73, 1.00 }
+
+-- A flat colour (the grid's lines, stripes and boxes).
+local function Flat(parent, layer, r, g, b, a)
+  local t = parent.CreateTexture and parent:CreateTexture(nil, layer or "BACKGROUND")
+  if not t then return nil end
+  if t.SetColorTexture then t:SetColorTexture(r, g, b, a)
+  elseif t.SetTexture then
+    t:SetTexture("Interface\\Buttons\\WHITE8x8")
+    if t.SetVertexColor then t:SetVertexColor(r, g, b, a) end
+  end
+  return t
+end
+local function Recolor(t, r, g, b, a)
+  if not t then return end
+  if t.SetColorTexture then t:SetColorTexture(r, g, b, a) elseif t.SetVertexColor then t:SetVertexColor(r, g, b, a) end
+end
+local function Vis(t, on) if t then if on then t:Show() else t:Hide() end end end
+
+-- A box around an editable value (an input cell): dark inside, a 1-pixel frame.
+local function Box(row)
+  local b = { bg = Flat(row, "BORDER", 0, 0, 0, 0.45) }
+  for _, side in ipairs({ "top", "bottom", "left", "right" }) do b[side] = Flat(row, "ARTWORK", 0.5, 0.44, 0.3, 0.9) end
+  return b
+end
+local function PlaceBox(b, row, h)
+  local x, w = MATH_COLS[3][2] + 3, MATH_COLS[3][3] - 6
+  local y, bh = -2, h - 4
+  local function at(t, tx, ty, tw, th)
+    if not t then return end
+    if t.ClearAllPoints then t:ClearAllPoints() end
+    t:SetPoint("TOPLEFT", row, "TOPLEFT", tx, ty)
+    t:SetSize(tw, th)
+  end
+  at(b.bg, x, y, w, bh)
+  at(b.top, x, y, w, 1); at(b.bottom, x, y - bh + 1, w, 1)
+  at(b.left, x, y, 1, bh); at(b.right, x + w - 1, y, 1, bh)
+end
+local function ShowBox(b, on, color)
+  for _, k in ipairs({ "bg", "top", "bottom", "left", "right" }) do Vis(b[k], on) end
+  if on then
+    local c = color or { 0.5, 0.44, 0.3 }
+    for _, k in ipairs({ "top", "bottom", "left", "right" }) do Recolor(b[k], c[1], c[2], c[3], 0.9) end
+  end
+end
+
+local function plainText(t) return ((t or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) end
+
+-- Hover: the whole row, its formula in full, where the number comes from, what a click does.
+local function MathTip(owner, row)
+  local r = row.data
+  if not (r and GameTooltip) or r.head or r.note then return end
+  GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+  GameTooltip:SetText((r[1] or ""):gsub("^%s+", ""), 1, 1, 1)
+  if r[2] and r[2] ~= "" then GameTooltip:AddLine(r[2] .. (r[3] ~= "" and (" = " .. r[3]) or ""), nil, nil, nil, true) end
+  local e = r.edit
+  if e and e.orig ~= nil then
+    GameTooltip:AddLine(string.format("Typed by you. Before: %s (%s).", E.MathFormat(e.unit, e.orig),
+      E.MATH_SOURCES[e.origSrc] or "worked out"), YOU[1], YOU[2], YOU[3], true)
+  elseif E.MATH_SOURCES[r[4]] then
+    GameTooltip:AddLine("Source: " .. E.MATH_SOURCES[r[4]], 0.62, 0.62, 0.62)
+  else
+    GameTooltip:AddLine("Worked out from the lines above.", 0.62, 0.62, 0.62)
+  end
+  if r.help then GameTooltip:AddLine(r.help, nil, nil, nil, true) end
+  if e and e.id then
+    GameTooltip:AddLine(e.orig ~= nil and "Click to change your value; right-click to put back the game's."
+      or "Click to type your own value. It is used everywhere: HPS, Your spells, item tooltips.", 0.25, 1, 0.25, true)
+  elseif e and e.setting then
+    GameTooltip:AddLine("Click to change this setting; right-click for its starting value.", 0.25, 1, 0.25, true)
+  end
+  GameTooltip:Show()
+end
+
+local function MathRow(i)
+  local row = CreateFrame("Frame", nil, O.mathChild)
+  row:SetSize(O.mathListW, ROW_GAP)
+  if row.EnableMouse then row:EnableMouse(true) end
+  -- the grid: a band behind section titles, every other row striped, lines between rows and columns
+  row.band = Flat(row, "BACKGROUND", 0.55, 0.42, 0.1, 0.30)
+  row.stripe = Flat(row, "BACKGROUND", 1, 1, 1, 0.04)
+  for _, t in ipairs({ row.band, row.stripe }) do if t then t:SetAllPoints(row) end end
+  row.hline = Flat(row, "BORDER", 1, 1, 1, 0.09)
+  if row.hline then row.hline:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0); row.hline:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0); row.hline:SetHeight(1) end
+  row.vlines = {}
+  for n = 2, #MATH_COLS + 1 do
+    local x = MATH_COLS[n] and MATH_COLS[n][2] or (MATH_COLS[#MATH_COLS][2] + MATH_COLS[#MATH_COLS][3])
+    local v = Flat(row, "BORDER", 1, 1, 1, 0.07)
+    if v then
+      v:SetPoint("TOPLEFT", row, "TOPLEFT", x, 0)
+      v:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", x, 0)
+      v:SetWidth(1)
+    end
+    row.vlines[#row.vlines + 1] = v
+  end
+  row.box = Box(row)
+  row.cells = {}
+  for n, c in ipairs(MATH_COLS) do
+    local fs = Cell(row, c[2] + PAD, -3, c[3] - 2 * PAD, c[4])
+    if fs.SetWordWrap then fs:SetWordWrap(n == 2) end      -- formulas wrap; the rest stay on one line
+    row.cells[n] = fs
+  end
+  row.wide = Cell(row, PAD, -3, O.mathListW - 2 * PAD, "LEFT")   -- section titles and notes
+  if row.wide.SetWordWrap then row.wide:SetWordWrap(true) end
+  -- the value cell: click to type, right-click to put back
+  local vb = CreateFrame("Button", nil, row)
+  vb:SetPoint("TOPLEFT", row, "TOPLEFT", MATH_COLS[3][2], 0)
+  vb:SetSize(MATH_COLS[3][3], ROW_GAP)
+  if vb.RegisterForClicks then vb:RegisterForClicks("LeftButtonUp", "RightButtonUp") end
+  vb:SetScript("OnClick", function(_, button)
+    if button == "RightButton" then O.MathReset(row) else O.MathEdit(row) end
+  end)
+  vb:SetScript("OnEnter", function(self) MathTip(self, row) end)
+  vb:SetScript("OnLeave", HideTip)
+  row.valueBtn = vb
+  -- the small revert arrow next to one of your values: puts the game's back
+  local x = CreateFrame("Button", nil, row)
+  x:SetSize(16, 16)
+  x:SetPoint("TOPLEFT", row, "TOPLEFT", REVERT_X, -1)
+  if x.SetNormalTexture then pcall(x.SetNormalTexture, x, "Interface\\Buttons\\UI-RefreshButton") end
+  if x.SetHighlightTexture then pcall(x.SetHighlightTexture, x, "Interface\\Buttons\\ButtonHilight-Square", "ADD") end
+  x:SetScript("OnClick", function() O.MathReset(row) end)
+  Tip(x, "Put back", function()
+    local e = row.data and row.data.edit
+    return e and e.orig ~= nil and ("Use the game's value again: " .. E.MathFormat(e.unit, e.orig) .. ".") or "Use the game's value again."
+  end)
+  row.resetBtn = x
+  row:SetScript("OnEnter", function(self) MathTip(self, row) end)
+  row:SetScript("OnLeave", HideTip)
+  O.mathRows[i] = row
+  return row
+end
+
+local function textHeight(fs)
+  local h = fs.GetStringHeight and fs:GetStringHeight() or 0
+  return (type(h) == "number" and h > 0) and h or 12
+end
+
+local function BuildMathPane(pane)
+  local W = MATH_WIDTH - 2 * MARGIN
+  local y = TOP
+  Header(pane, "How the numbers are worked out", LEFT, y)
+  Label(pane, "|cff9d9d9dClick a boxed value to type your own (|r|cff66bbffblue|r|cff9d9d9d: yours, used everywhere); " ..
+    "right-click it or its arrow to put it back. Hover a line for where its number comes from.|r",
+    "GameFontHighlightSmall", LEFT, y - 18, W)
+  O.mathListW = W - SCROLL_W
+  -- column titles, like a sheet's
+  for _, c in ipairs(MATH_COLS) do
+    Cell(pane, LEFT + c[2] + PAD, MATH_TOP + 15, c[3] - 2 * PAD, c[4], "GameFontNormalSmall"):SetText(c[1])
+  end
+  local under = Flat(pane, "BORDER", 1, 0.82, 0, 0.35)
+  if under then under:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT, MATH_TOP); under:SetSize(O.mathListW, 1) end
+  local sf = try("ScrollFrame", pane, "UIPanelScrollFrameTemplate") or CreateFrame("ScrollFrame", nil, pane)
+  sf:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT, MATH_TOP)
+  sf:SetSize(O.mathListW, HEIGHT + MATH_TOP - MATH_BOTTOM)
+  sf.scrollBarHideable = true
+  if not sf.ScrollBar and sf.EnableMouseWheel then
+    sf:EnableMouseWheel(true)
+    sf:SetScript("OnMouseWheel", function(self, d)
+      local maxS = self.GetVerticalScrollRange and self:GetVerticalScrollRange() or 0
+      local v = (self.GetVerticalScroll and self:GetVerticalScroll() or 0) - d * ROW_GAP * 3
+      self:SetVerticalScroll(math.max(0, math.min(maxS, v)))
+    end)
+  end
+  local child = CreateFrame("Frame", nil, sf)
+  child:SetSize(O.mathListW, ROW_GAP)
+  if sf.SetScrollChild then sf:SetScrollChild(child) end
+  O.mathScroll, O.mathChild, O.mathRows = sf, child, {}
+end
+
+-- One edit box for the whole sheet, moved onto the cell you click (the rows are
+-- refilled on every change, so a box per row would lose what you are typing).
+local function MathEditBox()
+  if O.mathEdit then return O.mathEdit end
+  local eb = try("EditBox", O.mathChild, "InputBoxTemplate") or CreateFrame("EditBox", nil, O.mathChild)
+  if eb.SetAutoFocus then eb:SetAutoFocus(false) end
+  if eb.SetFontObject then eb:SetFontObject("GameFontHighlightSmall") end
+  if eb.SetJustifyH then eb:SetJustifyH("RIGHT") end
+  if eb.SetMaxLetters then eb:SetMaxLetters(20) end
+  eb:SetScript("OnEnterPressed", function(self) O.MathCommit(self:GetText()) end)
+  eb:SetScript("OnTabPressed", function(self) O.MathCommit(self:GetText()) end)
+  eb:SetScript("OnEscapePressed", function() O.MathCancel() end)
+  eb:SetScript("OnEditFocusLost", function() O.MathCancel() end)
+  eb:Hide()
+  O.mathEdit = eb
+  return eb
+end
+
+local function editing() return O.mathEdit and O.mathEdit.row ~= nil end
+
+function O.MathEdit(row)
+  local e = row and row.data and row.data.edit
+  if not e then return end
+  local eb = MathEditBox()
+  if eb.row and eb.row ~= row and eb.row.cells then eb.row.cells[3]:SetText(eb.shown3) end   -- the cell it leaves gets its value back
+  eb.row, eb.shown3 = row, row.cells[3].text or (row.cells[3].GetText and row.cells[3]:GetText())
+  if eb.SetParent then eb:SetParent(row) end
+  if eb.ClearAllPoints then eb:ClearAllPoints() end
+  eb:SetPoint("TOPLEFT", row, "TOPLEFT", MATH_COLS[3][2] + 8, 0)   -- the template's frame reaches ~5 px past its text
+  eb:SetSize(MATH_COLS[3][3] - 14, math.max(18, row.h or ROW_GAP))
+  if eb.SetFrameLevel and row.GetFrameLevel then eb:SetFrameLevel(row:GetFrameLevel() + 5) end
+  eb:SetText(E.MathEditText(e.unit, e.raw))
+  row.cells[3]:SetText("")
+  eb:Show()
+  if eb.SetFocus then eb:SetFocus() end
+  if eb.HighlightText then eb:HighlightText() end
+end
+
+local function closeEdit()
+  local eb = O.mathEdit
+  if not (eb and eb.row) then return end
+  eb.row = nil                                   -- first, so losing focus doesn't cancel twice
+  if eb.ClearFocus then eb:ClearFocus() end
+  eb:Hide()
+end
+
+function O.MathCancel()
+  if not editing() then return end
+  closeEdit()
+  O.FillMath(O.mathState)                       -- puts the value back (and catches up if something changed)
+end
+
+local function setSetting(path, v)
+  local t = db().settings
+  for i = 1, #path - 1 do t[path[i]] = t[path[i]] or {}; t = t[path[i]] end
+  t[path[#path]] = v
+end
+
+local function complain(msg)
+  if UIErrorsFrame and UIErrorsFrame.AddMessage then UIErrorsFrame:AddMessage(msg, 1, 0.1, 0.1) end
+  if PlaySound then pcall(PlaySound, 846) end
+end
+
+-- What you typed into the box: your value, the game's again, or a setting.
+function O.MathCommit(text)
+  if not editing() then return end
+  local row = O.mathEdit.row
+  local e = row.data.edit
+  local blank = not text or text:match("^%s*$")
+  local v = not blank and E.MathParse(e.unit, text)
+  if e.id then
+    local game = e.orig ~= nil and e.orig or e.raw
+    local same = v and (E.MathFormat(e.unit, v) == E.MathFormat(e.unit, game))
+    if blank or same then
+      db().overrides[e.id] = nil                  -- empty, or the game's own number: back to the game's
+    elseif v and E.OverrideOK(e.id, v) then
+      db().overrides[e.id] = v
+    else
+      return complain("Holy Math: " .. tostring(text) .. " can't be used here.")
+    end
+  elseif e.setting then
+    local ok = v and E.MathSettingValue(e.setting, v)
+    if not ok then return complain("Holy Math: " .. tostring(text) .. " can't be used for this setting.") end
+    setSetting(e.setting, ok)
+  end
+  closeEdit()
+  O.Changed(true)
+end
+
+-- Right-click or the x: your value goes, or a setting goes back to its starting value.
+function O.MathReset(row)
+  local e = row and row.data and row.data.edit
+  if not e then return end
+  if editing() then closeEdit() end
+  if e.id then
+    if db().overrides[e.id] == nil then return end
+    db().overrides[e.id] = nil
+  elseif e.setting then
+    local d = ns.ClassDefaults(ns.model).settings
+    for _, k in ipairs(e.setting) do d = type(d) == "table" and d[k] or nil end
+    if d == nil then return end
+    setSetting(e.setting, d)
+  end
+  O.Changed(true)
+end
+
+function O.FillMath(S)
+  if not O.mathRows then return end
+  O.mathState = S
+  if editing() then O.mathStale = true; return end   -- never under your typing
+  O.mathStale = false
+  local pick = O.mathPick or {}
+  local ok, rows = pcall(E.MathPage, S, pick[1], pick[2])
+  if not ok then
+    if ns.LogError then ns.LogError("math", rows) end
+    rows = { { note = "Could not work this out (/hm dump saves the error)." } }
+  end
+  if #rows == 0 then rows = { { note = "No numbers yet." } } end
+  local y, stripe = 0, 0
+  O.mathAnchors = {}
+  for i, r in ipairs(rows) do
+    local row = O.mathRows[i] or MathRow(i)
+    row.data = r
+    for _, c in ipairs(row.cells) do c:SetText("") end
+    row.wide:SetText("")
+    local h
+    local data = not (r.head or r.note)
+    Vis(row.band, r.head); Vis(row.hline, data or r.head)
+    for _, v in ipairs(row.vlines) do Vis(v, data) end
+    row.valueBtn:Hide(); row.resetBtn:Hide()
+    if r.head then
+      if i > 1 then y = y + 6 end
+      if r.anchor then O.mathAnchors[r.anchor] = y end
+      row.wide:SetFontObject("GameFontNormal")
+      row.wide:SetText(r.head)
+      h = math.max(20, textHeight(row.wide) + 6)
+      stripe = 0
+      Vis(row.stripe, false); ShowBox(row.box, false)
+    elseif r.note then
+      row.wide:SetFontObject("GameFontHighlightSmall")
+      row.wide:SetText("|cff9d9d9d" .. r.note .. "|r")
+      h = textHeight(row.wide) + 6
+      Vis(row.stripe, false); ShowBox(row.box, false)
+    else
+      stripe = stripe + 1
+      Vis(row.stripe, stripe % 2 == 0)
+      local c, e = row.cells, r.edit
+      local mine = e and e.orig ~= nil
+      c[1]:SetText((r[1]:gsub("^%s+", ""))); c[2]:SetText("|cffc8c8c8" .. r[2] .. "|r")
+      c[3]:SetText(mine and ("|cff66bbff" .. r[3] .. "|r") or ("|cffffffff" .. r[3] .. "|r"))
+      row.src = r[4]
+      -- sub-lines (two leading spaces) sit indented under their line
+      if c[1].ClearAllPoints then c[1]:ClearAllPoints() end
+      local indent = r[1]:match("^%s%s") and 10 or 0
+      c[1]:SetPoint("TOPLEFT", PAD + indent, -3); c[1]:SetWidth(MATH_COLS[1][3] - 2 * PAD - indent)
+      h = math.max(ROW_GAP + 2, textHeight(c[2]) + 6)
+      if e then
+        PlaceBox(row.box, row, h)
+        ShowBox(row.box, true, mine and YOU or nil)
+        row.valueBtn:SetHeight(h); row.valueBtn:Show()
+        if mine then row.resetBtn:Show() end
+      else
+        ShowBox(row.box, false)
+      end
+    end
+    row.h = h
+    if row.ClearAllPoints then row:ClearAllPoints() end
+    row:SetPoint("TOPLEFT", O.mathChild, "TOPLEFT", 0, -y)
+    row:SetHeight(h)
+    row:Show()
+    y = y + h
+  end
+  for i = #rows + 1, #O.mathRows do O.mathRows[i]:Hide(); O.mathRows[i].data = nil end
+  O.mathChild:SetHeight(math.max(1, y))
+  O.mathSpellY = pick[1] and O.mathAnchors["spell:" .. pick[1] .. ":" .. tostring(pick[2])] or nil
+  return rows
+end
+
+-- Show the Math tab: a rank clicked on Your spells (key, rank), or a section
+-- ("settings": overheal and the other assumptions), scrolled to it.
+function O.ShowMath(key, rank, anchor)
+  if key then O.mathPick = { key, rank } end
+  O.ShowTab("math")
+  O.FillMath(O.spellState or ns.State())
+  local sf = O.mathScroll
+  local function scroll()
+    local y = O.mathAnchors and (anchor and O.mathAnchors[anchor] or (not anchor and O.mathSpellY))
+    if sf and sf.SetVerticalScroll and y then
+      local range = sf.GetVerticalScrollRange and sf:GetVerticalScrollRange() or y
+      sf:SetVerticalScroll(math.min(y, math.max(0, range or 0)))
+    end
+  end
+  if sf and sf.UpdateScrollChildRect then pcall(sf.UpdateScrollChildRect, sf) end
+  scroll()
+  if C_Timer and C_Timer.After then C_Timer.After(0, scroll) end   -- the range catches up a frame later
+end
+
+-- At the bottom of every tab while any of your values is in use.
+local function YourValuesLine(frame)
+  local b = CreateFrame("Frame", nil, frame)
+  b:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -MARGIN + 4, 14)
+  b:SetSize(470, 22)
+  local reset = Button(b, "Put all back", 104, 22, function()
+    if editing() then closeEdit() end
+    db().overrides = {}
+    O.Changed(true)
+  end)
+  reset:SetPoint("RIGHT", b, "RIGHT", 0, 0)
+  O.controls.ResetValues = reset
+  local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  fs:SetPoint("RIGHT", reset, "LEFT", -8, 0)
+  fs:SetJustifyH("RIGHT")
+  b.text = fs
+  local hit = CreateFrame("Frame", nil, b)
+  hit:SetPoint("TOPLEFT", b, "TOPLEFT", 0, 0)
+  hit:SetSize(470 - 110, 22)
+  if hit.EnableMouse then hit:EnableMouse(true) end
+  local function list()
+    local lines = {}
+    for id, v in pairs(db().overrides or {}) do
+      if E.OverrideOK(id, v) then lines[#lines + 1] = E.OverrideLabel(id) .. ": " .. E.MathFormat(E.OverrideUnit(id), v) end
+    end
+    table.sort(lines)
+    return "Values you typed on the Math tab, used instead of the game's in every number " ..
+      "(HPS, stat values, Your spells, item tooltips):\n\n" .. table.concat(lines, "\n")
+  end
+  Tip(hit, "Your values", list)
+  Tip(reset, "Put all back", "Use the game's own values again everywhere. Your settings stay as they are.")
+  b:Hide()
+  O.yourValues = b
+end
+
+function O.FillYourValues()
+  local b = O.yourValues
+  if not b then return end
+  local n = ns.OverrideCount and ns.OverrideCount() or 0
+  if n == 0 then b:Hide(); return end
+  b.text:SetText(string.format("|cff66bbff%d value%s typed by you on the Math tab %s in every number|r",
+    n, n == 1 and "" or "s", n == 1 and "is" or "are"))
+  b:Show()
 end
 
 local function BuildTooltipsPane(pane)
@@ -694,7 +1127,7 @@ local function Build()
   local ui = HolyMathDB.ui
   if ui and ui.point then p:ClearAllPoints(); p:SetPoint(ui.point, UIParent, ui.rel or ui.point, ui.x or 0, ui.y or 0) end
 
-  O.panes = { settings = Pane(p), spells = Pane(p), tooltips = Pane(p) }
+  O.panes = { settings = Pane(p), spells = Pane(p), math = Pane(p), tooltips = Pane(p) }
   local frame = p
   p = O.panes.settings
 
@@ -730,12 +1163,22 @@ local function Build()
     "When this is on, the damage that prevents is counted as healing. Only matters if you have the talent.",
     function() return db().settings.includeInspiration end, function(v) db().settings.includeInspiration = v end)
 
-  -- Result + check ------------------------------------------------------------
+  -- Overheal per spell lives on the Math tab, with every other number the model uses
   y = y - 40
-  Header(p, "Result", LEFT, y)
+  Header(p, "Overheal", LEFT, y)
+  Label(p, "Overheal per spell, and every other number the model uses, are on the Math tab.",
+    "GameFontHighlightSmall", LEFT, y - 20, COL_W)
+  local ohb = Button(p, "Set overheal", 130, 22, function() O.ShowMath(nil, nil, "settings") end)
+  ohb:SetPoint("TOPLEFT", p, "TOPLEFT", LEFT - 2, y - 52)
+  Tip(ohb, "Set overheal", "Opens the Math tab at your settings: overheal per spell, fight length and the model's other assumptions.")
+  O.controls.SetOverheal = ohb
+
+  -- Right column: the result -------------------------------------------------
+  y = TOP
+  Header(p, "Result", RIGHT, y)
   -- big "93 HPS", and what it was before overheal
   O.hps = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-  O.hps:SetPoint("TOPLEFT", LEFT, y - 22)
+  O.hps:SetPoint("TOPLEFT", RIGHT, y - 22)
   O.hps:SetJustifyH("LEFT")
   O.hps:SetText("")
   O.hpsNote = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -743,11 +1186,11 @@ local function Build()
   O.hpsNote:SetJustifyH("LEFT")
   O.hpsNote:SetText("")
   local rhit = CreateFrame("Frame", nil, p)
-  rhit:SetPoint("TOPLEFT", LEFT, y - 20)
+  rhit:SetPoint("TOPLEFT", RIGHT, y - 20)
   rhit:SetSize(COL_W, 22)
   rhit:EnableMouse(true)
   Tip(rhit, "HPS (healing per second)",
-    "What you heal per second over the fight described above, with your current stats, talents " ..
+    "What you heal per second over the fight set on the left, with your current stats, talents " ..
     "and spells, after the overheal you expect. Updates by itself when your gear, buffs, talents " ..
     "or these settings change; item tooltips use the same settings.")
 
@@ -758,10 +1201,10 @@ local function Build()
   --   MP5          1.39     Crit        6.84
   --   Intellect    1.04     Haste       0.35
   --   Spirit       0.31
-  O.result = Label(p, "", "GameFontNormalSmall", LEFT, y - 50, COL_W)
+  O.result = Label(p, "", "GameFontNormalSmall", RIGHT, y - 50, COL_W)
   O.result:SetText("Worth in healing power")
   local whit = CreateFrame("Frame", nil, p)
-  whit:SetPoint("TOPLEFT", LEFT, y - 48)
+  whit:SetPoint("TOPLEFT", RIGHT, y - 48)
   whit:SetSize(COL_W, 74)
   whit:EnableMouse(true)
   Tip(whit, "Stat values",
@@ -773,39 +1216,27 @@ local function Build()
   local half = math.floor(COL_W / 2)
   O.weightHeads = {}
   for g, title in ipairs({ "Per point", "Per 1%" }) do
-    O.weightHeads[g] = Cell(p, LEFT + (g - 1) * half, y - 66, half - 16, "LEFT")
+    O.weightHeads[g] = Cell(p, RIGHT + (g - 1) * half, y - 66, half - 16, "LEFT")
     O.weightHeads[g]:SetText("|cff9d9d9d" .. title .. "|r")
   end
   O.weightCells = {}
   for g = 1, 2 do
     for r = 1, 3 do
-      local x, ry = LEFT + (g - 1) * half, y - 80 - (r - 1) * 14
+      local x, ry = RIGHT + (g - 1) * half, y - 80 - (r - 1) * 14
       O.weightCells[#O.weightCells + 1] = { group = g, name = Cell(p, x, ry, 90, "LEFT"),
                                             value = Cell(p, x + 90, ry, half - 16 - 90, "RIGHT") }
     end
   end
 
-  O.status = Label(p, "", "GameFontHighlightSmall", LEFT, y - 128, COL_W)
+  O.status = Label(p, "", "GameFontHighlightSmall", RIGHT, y - 128, COL_W)
   -- only shown when some spell ranks differ from the game (see Status)
   local shit = CreateFrame("Frame", nil, p)
-  shit:SetPoint("TOPLEFT", LEFT, y - 124)
+  shit:SetPoint("TOPLEFT", RIGHT, y - 124)
   shit:SetSize(COL_W, 20)
   shit:EnableMouse(true)
   shit:Hide()
   Tip(shit, "Checked against the game", function() return O.statusHelp or "" end)
   O.statusHit = shit
-
-  -- Right column: overheal per spell ------------------------------------------
-  y = TOP
-  Header(p, "Overheal you expect", RIGHT, y)
-  y = y - 24
-  for _, key in ipairs(OVERHEAL_ORDER) do
-    local name = E.SPELLS[key] and E.SPELLS[key].name or key
-    Slider(p, "oh" .. key, RIGHT, y, name, overhealHelp(name),
-      function() return db().settings.overheal[key] or 0 end, function(v) db().settings.overheal[key] = v end,
-      0, 0.9, 0.05, function(v) return math.floor(v * 100 + 0.5) .. "%" end)
-    y = y - ROW
-  end
 
   -- Defaults, bottom left, as in the game's own options --------------------------
   local def = Button(p, "Defaults", 110, 22, function()
@@ -818,8 +1249,10 @@ local function Build()
   O.controls.Defaults = def
 
   BuildSpellsPane(O.panes.spells)
+  BuildMathPane(O.panes.math)
   BuildTooltipsPane(O.panes.tooltips)
   Tabs(frame)
+  YourValuesLine(frame)
   frame:Hide()
   O.frame = frame
   O.ShowTab("settings")
@@ -911,6 +1344,8 @@ function O.Refresh(force)
     end
   end
   if O.spellRows then O.FillSpells(S) end
+  if O.mathRows then O.FillMath(S) end
+  O.FillYourValues()
   local st, help = Status(S)
   O.status:SetText(st or "")
   O.statusHelp = help
@@ -966,7 +1401,7 @@ function O.FillSpells(S)
   for i, row in ipairs(O.spellRows) do
     local l, c = lines[i], row.cells
     for _, cell in ipairs(c) do cell:SetText("") end
-    row.key, row.spellID, row.title = nil, nil, nil
+    row.key, row.spellID, row.title, row.rankOf, row.rankNum = nil, nil, nil, nil, nil
     if row.toggle then row.toggle:Hide() end
     if l then row:Show() else row:Hide() end
     if l and not l.rank then
@@ -999,6 +1434,7 @@ function O.FillSpells(S)
       c[6]:SetText(fmtInt(rk.hps))
       c[7]:SetText(rankNote(rk))
       row.spellID, row.title = rk.id, l.spell.name .. " (Rank " .. rk.rank .. ")"
+      row.rankOf, row.rankNum = l.spell.key, rk.rank
     end
   end
 end

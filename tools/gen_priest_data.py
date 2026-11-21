@@ -20,10 +20,12 @@ root = sys.argv[1]
 SPELLS_GO = os.path.join(root, "sim/core/spelldata/spells_auto_gen.go")
 LADDERS_GO = os.path.join(root, "sim/priest/spell_data_auto_gen.go")
 MANA_GO = os.path.join(root, "sim/core/mana.go")
+BASE_STATS_GO = os.path.join(root, "sim/core/base_stats_auto_gen.go")
 
 src = open(SPELLS_GO).read()
 ladders = open(LADDERS_GO).read()
 mana = open(MANA_GO).read()
+base_stats = open(BASE_STATS_GO).read()
 
 # --- every spell row, one chunk per row -------------------------------------
 rows = {}
@@ -157,6 +159,10 @@ talents["holyBinding"] = [rows[ladder("HolyBinding")[0]]["effects"][0]["bp"]]
 regen = re.search(r"spiritRegenBase, character\.spiritRegenPerSpirit = ([\d.]+), ([\d.]+)/([\d.]+)", mana)
 regen_base, regen_per = float(regen.group(1)), float(regen.group(2)) / float(regen.group(3))
 
+# Spell crit per point of intellect at level 60 (PlayerExpectedStat), in percent
+crit_block = base_stats[base_stats.index("var CritPerIntMaxLevel"):]
+crit_per_int = float(re.search(r"Class_ClassPriest:\s*([\d.]+)", crit_block).group(1))
+
 try:
     commit = subprocess.run(["git", "-C", root, "log", "-1", "--format=%H %cs"], capture_output=True, text=True).stdout.strip()
 except Exception:
@@ -197,6 +203,7 @@ out.append("local _, ns = ...")
 out.append("local D = {")
 out.append("  source = %r," % ("wowsims/forever " + commit))
 out.append("  regen = { base = %s, perSpirit = %s },  -- mana per second from spirit: base + spirit x perSpirit" % (fmt(regen_base), fmt(regen_per)))
+out.append("  critPerInt60 = %s,  -- spell crit (percent) per point of intellect at level 60" % fmt(crit_per_int))
 out.append("  spells = {")
 for key in ["RENEW", "GH", "FLASH", "HEAL", "LESSER", "POH", "PWS", "POM", "NOVA", "PENANCE"]:
     out.append("    %s = { name = %r, ranks = {" % (key, NAMES[key]))

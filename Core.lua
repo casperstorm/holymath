@@ -44,6 +44,15 @@ local function say(msg, ...) print("|cffffd100Holy Math|r: " .. string.format(ms
 local state, dirty = nil, true
 function ns.MarkDirty() dirty = true end
 
+-- How many of your own values (Math tab) are in use.
+function ns.OverrideCount()
+  local n = 0
+  for id, v in pairs(ns.db and ns.db.overrides or {}) do
+    if not E.OverrideOK or E.OverrideOK(id, v) then n = n + 1 end
+  end
+  return n
+end
+
 local function Rebuild()
   local db = ns.db
   local input, st, info = G.BuildInput(db)
@@ -61,9 +70,17 @@ local function Rebuild()
   if not chosen or chosen.sheetOnly or (chosen.requires and (t[chosen.requires] or 0) <= 0) then
     db.rotation = E.DEFAULT_ROTATION
   end
+  -- Your own values from the Math tab: only now, after the check against the
+  -- game, so that check always uses the game's own numbers. gameSt keeps those.
+  local gameSt = st
+  if E.ApplyStatOverrides and type(db.overrides) == "table" and next(db.overrides) then
+    input.settings.overrides = db.overrides
+    t = E.Talents(input.talents, nil, db.overrides)
+    st = E.ApplyStatOverrides(st, db.overrides)
+  end
   local rot = db.rotation
   local weights = (not st.invalid) and E.Weights(rot, st, input) or nil
-  state = { input = input, st = st, t = t, info = info, rotation = rot, weights = weights, time = time() }
+  state = { input = input, st = st, gameSt = gameSt, t = t, info = info, rotation = rot, weights = weights, time = time() }
   -- "Your spells": plans compared, best mix, spell table (each on its own, so one
   -- failing doesn't take the others down)
   if weights then
@@ -105,6 +122,10 @@ local function Summary()
     st.healing, st.int, st.spirit, st.crit * 100, st.mp5, st.manaPool, st.oocRegen, st.combatRegen))
   if #S.info.how.missing > 0 then
     print("  |cffff5050Could not read:|r " .. table.concat(S.info.how.missing, ", "))
+  end
+  local mine = ns.OverrideCount and ns.OverrideCount() or 0
+  if mine > 0 then
+    print(string.format("  |cff66bbff%d value(s) typed by you on the Math tab are in these numbers|r (/hm reset puts back the game's)", mine))
   end
   if st.invalid then return print("  Not showing any numbers: a required stat could not be read. /hm dump, then /reload, saves details.") end
   local w = S.weights
@@ -268,6 +289,7 @@ local function Dump()
   section("model", function()
     if not S then return end
     d.model = { st = S.st, how = S.info.how, talents = S.input.talents, known = S.input.settings.known,
+                overrides = ns.db.overrides, gameSt = S.gameSt ~= S.st and S.gameSt or nil,
                 rotation = S.rotation, hps = S.weights and S.weights.base.hps, ehps = S.weights and S.weights.base.ehps }
     if S.weights then
       d.model.weights = {}
@@ -284,7 +306,8 @@ local function Dump()
     local h = HolyMathDB.history or {}
     local base, casting = G.safe(GetManaRegen)
     local snap = { time = d.time, level = d.level, inCombat = d.inCombat, healing = S and S.st.healing,
-                   int = S and S.st.int, spirit = S and S.st.spirit, regen = { base, casting }, tooltips = {} }
+                   int = S and S.st.int, spirit = S and S.st.spirit, regen = { base, casting }, tooltips = {},
+                   spellCrit = { G.safe(GetSpellCritChance, 2), G.safe(GetSpellCritChance, 6) } }
     for _, r in ipairs(S and S.info.client or {}) do
       if r.client then snap.tooltips[r.key .. " " .. r.rank] = r.client end
     end
@@ -341,7 +364,15 @@ SlashCmdList.HOLYMATH = function(msg)
   elseif cmd == "check" then Check()
   elseif cmd == "dump" then Dump()
   elseif cmd == "set" then Set(rest)
-  else say("/hm (options window) | /hm show (summary in chat) | /hm check | /hm dump | /hm set ...") end
+  elseif cmd == "reset" then
+    -- your own values from the Math tab (also the way out if one ever breaks the window)
+    local n = 0
+    for _ in pairs(ns.db.overrides or {}) do n = n + 1 end
+    ns.db.overrides = {}
+    ns.MarkDirty()
+    if ns.Options and ns.Options.frame and ns.Options.frame:IsShown() then ns.Options.Changed(true) end
+    say("%d value(s) you typed on the Math tab are back to the game's.", n)
+  else say("/hm (options window) | /hm show (summary in chat) | /hm check | /hm dump | /hm set ... | /hm reset (your Math tab values)") end
 end
 
 ---------------------------------------------------------------------------
@@ -359,6 +390,7 @@ f:SetScript("OnEvent", function(self, event, unit)
     HolyMathDB[class] = HolyMathDB[class] or {}
     merge(HolyMathDB[class], ClassDefaults(ns.model))
     merge(HolyMathDB[class], { tooltips = ns.TooltipDefaults() })
+    if type(HolyMathDB[class].overrides) ~= "table" then HolyMathDB[class].overrides = {} end
     ns.db = HolyMathDB[class]
     -- one-time: the old default fight length (300 s) becomes the new one (120 s)
     if not ns.db.fight120 then
