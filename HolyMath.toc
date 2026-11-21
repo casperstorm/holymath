@@ -1,9 +1,13 @@
 ## Interface: 16001
 ## Title: Holy Math
 ## Notes: The maths behind a healing priest, on your live stats and the game's own spell data (via wowsims): item upgrades in healing per second, and what each spell rank heals.
-## Version: 0.9.8
+## Author: casperstorm
+## Version: @project-version@
 ## SavedVariables: HolyMathDB
 ## X-Category: Combat
+## IconTexture: Interface\Icons\Spell_Holy_Renew
+## X-Curse-Project-ID: 1820821
+## X-License: GPL-3.0
 
 Models\PriestData.lua
 Models\Priest.lua

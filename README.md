@@ -61,3 +61,7 @@ python3 -I tools/gen_priest_data.py /tmp/wowsims-forever > Models/PriestData.lua
 
 - Spell data: [wowsims](https://github.com/wowsims/forever), MIT licence (notice in `Models/PriestData.lua`).
 - The original healing model: [the healer-priest spreadsheet for WoW: Forever](https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634) by **doublezug**. Its formulas, playstyles and in-game measurements (downranking, coefficients) are what Holy Math was built from.
+
+## Licence
+
+Holy Math is free software under the [GNU General Public License v3.0](LICENSE). The spell data in `Models/PriestData.lua` comes from wowsims under the MIT licence; its notice is kept in that file.
