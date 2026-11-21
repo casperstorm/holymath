@@ -182,8 +182,8 @@ local function talentsSection(rows, S)
         (" (game data" .. ((rank and rank > 0) and (", rank " .. rank) or "") .. ")"))
       local row = editable({ r[2], work, "", "data" }, "talent." .. r[1], r[3], v, tWas[r[1]])
       if r[1] == "litanyRefund" and tWas.litanyRefund == nil then
-        row.help = "The game data gives 10% at 2/2, but the talent's own text says 20%; not yet checked in game. " ..
-          "Type 20 to see what that would mean."
+        row.help = "Mana back equal to this share of the heal's base cost, when your previous heal was a different spell: " ..
+          "5% at 1/2, 10% at 2/2, as the talent's tooltip says in game."
       end
       rows[#rows + 1] = row
     end

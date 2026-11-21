@@ -437,6 +437,9 @@ do
   near("Holy Nova heal coefficient (sheet 0.24)", E.GAME_SPELLS.NOVA.ranks[6].coeff, 0.107)
   near("Spiritual Healing 3/3 = +10% (sheet 9%)", E.Talents({ spiritualHealing = 3 }).spiritualHealing, 1.10)
   near("Greater Heal r2 base at level 49 = 1099 + 3 x 5.8", E.BaseAt(E.GAME_SPELLS.GH.ranks[2], 49), 1116.4, 1e-9)
+  -- the talent's tooltip in game: 5% of the base cost at 1/2 (21 Nov 2026), so 10% at 2/2
+  near("Litany of Light 1/2 = 5% of the base cost back", E.Talents({ litanyOfLight = 1 }).litanyRefund, 0.05, 1e-12)
+  near("Litany of Light 2/2 = 10% of the base cost back", E.Talents({ litanyOfLight = 2 }).litanyRefund, 0.10, 1e-12)
 end
 
 print("-- Intellect -> crit by level (game data at 60, measured at 49 and 50)")
