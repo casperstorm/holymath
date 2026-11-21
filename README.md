@@ -2,7 +2,7 @@
 
 The maths behind a healing priest in **World of Warcraft: Forever**, worked out on your own live stats and the game's own spell data.
 
-![Holy Math options window](media/screenshot.webp)
+![Holy Math's Settings tab: the fight, the result and item tooltips](media/settings.webp)
 
 ## What it does
 
@@ -11,6 +11,9 @@ The maths behind a healing priest in **World of Warcraft: Forever**, worked out 
 - **Playstyles:** Renew filler, Greater Heal filler, Flash Heal filler, Prayer of Healing filler, PW:Shield on tank, and Renewed Hope tank (Discipline, with the talent). Each picks the spell ranks that heal the most for you.
 - **Spell overview:** every healing spell you know: heal, mana, healing per mana and per second, and its most mana-efficient rank. Click any spell to unfold all its ranks, with how much of your healing power each low rank still gets.
 - **Math tab:** a sheet of how every number is worked out, with your own numbers in it: your stats and talents, every spell the fight casts step by step (click a rank on Your spells to add any other), the fight's mana and casts, each stat value, and your overheal per spell. Every line says where its number comes from: the game, the game data, measured in game, your setting, or an assumption of the model.
+
+  ![The Math tab: every number worked out, with your own stats in it](media/math.webp)
+
 - **Type your own numbers:** click any boxed value on the Math tab (healing power, crit, a crit's size, regen, a talent's value, overheal, ...) and type over it. A spell rank's own data (base heal, coefficient, cost) is the game's, checked against its tooltips, so it isn't typed over. Your value is then used everywhere (HPS, stat values, Your spells, item tooltips) and shows in blue, with an arrow that puts the game's back. A line at the bottom of the window says how many are yours; right-click one, or **Put all back**, or `/hm reset`, to use the game's again.
 - **Checks itself against the game:** every spell rank you know is compared with the game's own spell tooltip. `/hm check` shows the comparison; the window only speaks up when something doesn't match.
 
