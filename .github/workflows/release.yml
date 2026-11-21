@@ -26,6 +26,9 @@ jobs:
 
       - name: Package and Release
         uses: BigWigsMods/packager@v2
+        with:
+          # WoW: Forever only (client 1.60.x, interface 16001 in the toc)
+          args: -g forever
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
