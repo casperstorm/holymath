@@ -258,23 +258,40 @@ function G.BuildInput(db)
   return input, st, { how = how, talentSource = talentSource, talentsByName = byName, buffs = buffs, spellIds = ids }
 end
 
+-- Inside a dungeon, raid or battleground? (inside, kind: "party", "raid", ...)
+function G.InInstance()
+  local inside, kind = safe(IsInInstance)
+  if issecretvalue and (issecretvalue(inside) or issecretvalue(kind)) then return false end
+  return inside == true or inside == 1, kind
+end
+
 -- Cost, cast time (ms) and tooltip text of each known healing spell rank, for E.ApplyClientData.
--- `pending` is true when the client hadn't loaded some tooltip text yet.
-function G.ClientSpells(ids)
-  local out, pending = {}, false
+-- `pending` is true when the client hadn't loaded some tooltip text yet; `missing`
+-- lists those spell IDs. inside (an instance): the tooltip text isn't read at all.
+-- In dungeons the client's tooltips can show low ranks healing far more than they
+-- do until you leave (doublezug, level-60 downranking video, Nov 2026), so the heals
+-- read outside are kept (ApplyClientData's session guard). Costs and cast times are
+-- still read.
+function G.ClientSpells(ids, inside)
+  local out, pending, missing = {}, false, {}
   for _, s in ipairs(ids or {}) do
     local cost
     local costs = (C_Spell and C_Spell.GetSpellPowerCost and safe(C_Spell.GetSpellPowerCost, s.id))
       or (GetSpellPowerCost and safe(GetSpellPowerCost, s.id))
     if type(costs) == "table" and costs[1] then cost = num(costs[1].cost) end
-    local desc = (C_Spell and C_Spell.GetSpellDescription and safe(C_Spell.GetSpellDescription, s.id))
-      or (GetSpellDescription and safe(GetSpellDescription, s.id))
-    if type(desc) ~= "string" or desc == "" or (issecretvalue and issecretvalue(desc)) then desc = nil; pending = true end
+    local desc
+    if not inside then
+      desc = (C_Spell and C_Spell.GetSpellDescription and safe(C_Spell.GetSpellDescription, s.id))
+        or (GetSpellDescription and safe(GetSpellDescription, s.id))
+      if type(desc) ~= "string" or desc == "" or (issecretvalue and issecretvalue(desc)) then
+        desc = nil; pending = true; missing[#missing + 1] = s.id
+      end
+    end
     local info = C_Spell and C_Spell.GetSpellInfo and safe(C_Spell.GetSpellInfo, s.id)
     local castTime = num(type(info) == "table" and info.castTime or (GetSpellInfo and select(4, safe(GetSpellInfo, s.id))))
     out[#out + 1] = { key = s.key, rank = s.rank, id = s.id, cost = cost, desc = desc, castTime = castTime }
   end
-  return out, pending
+  return out, pending, missing
 end
 
 ---------------------------------------------------------------------------

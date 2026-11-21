@@ -234,8 +234,99 @@ GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|Hitem
 postCalls[0](GameTooltip)
 realprint("item tooltip ->", table.concat(GameTooltip.lines, " / "))
 
--- spell tooltips: Holy Math adds nothing to them (no hook of any kind)
-expect(postCalls[1] == nil, "no spell tooltip hook registered")
+-- spell tooltips: per mana and per second of that rank, and your most efficient rank
+expect(postCalls[1] ~= nil, "spell tooltip hook registered")
+do
+  local function spellTip(id)
+    GameTooltip.lines = {}; GameTooltip.hmSpell = nil
+    postCalls[1](GameTooltip, { id = id })
+    return GameTooltip.lines
+  end
+  local S = ns.State()
+  local ranks = ns.model.SpellRanks("RENEW", S.st, S.t, S.input.settings)
+  local best
+  for _, rk in ipairs(ranks) do if rk.best then best = rk end end
+  local top = spellTip(109)
+  realprint("spell tooltip (Renew 9) ->", table.concat(top, " / "))
+  expect(top[1] and top[1]:find("Holy Math") and top[1]:find("healing per mana") and top[1]:find("per second"),
+    "a known healing rank gets a Holy Math line")
+  local r9
+  for _, rk in ipairs(ranks) do if rk.rank == 9 then r9 = rk end end
+  expect(top[1]:find(string.format("%.2f", r9.hpm), 1, true), "... with the rank's per mana from Your spells")
+  if best.rank == 9 then
+    expect(top[2] and top[2]:find("Your most efficient rank"), "... the top rank is the most efficient")
+  else
+    expect(top[2] and top[2]:find("Most efficient: Rank " .. best.rank, 1, true), "... and names the most efficient rank (" .. best.rank .. ")")
+    local b = spellTip(100 + best.rank)
+    expect(b[2] and b[2]:find("Your most efficient rank"), "the most efficient rank says so on its own tooltip")
+  end
+  expect(#spellTip(999) == 0, "a spell that isn't a known healing rank: no line")
+  spellTip(109); postCalls[1](GameTooltip, { id = 109 })
+  expect(#GameTooltip.lines == 2, "the line is added once per tooltip")
+  -- a hidden ("secret") spell ID in combat: comparing it errors in the real client
+  local secret = setmetatable({}, { __eq = function() error("compared a secret") end })
+  local realSecret = issecretvalue
+  issecretvalue = function(v) return v == nil and false or rawequal(v, secret) end
+  local okSecret = pcall(spellTip, secret)
+  expect(okSecret and #GameTooltip.lines == 0, "a secret spell ID: no line and no error")
+  issecretvalue = realSecret
+  HolyMathDB.PRIEST.tooltips.spells = false
+  expect(#spellTip(109) == 0, "spell tooltips off: no line")
+  HolyMathDB.PRIEST.tooltips.spells = true
+end
+
+-- inside an instance: tooltips aren't read for heals (the ones from outside are kept)
+do
+  local realDesc, realInside = C_Spell.GetSpellDescription, IsInInstance
+  ns.clientSeen = nil; ns.MarkDirty()
+  local S = ns.State()
+  local function gh4(state) for _, r in ipairs(state.info.client) do if r.key == "GH" and r.rank == 4 then return r end end end
+  local outside = gh4(S)
+  expect(outside.baseFrom == "client" and not S.info.inInstance, "outside: Greater Heal 4 read from its tooltip")
+  IsInInstance = function() return true, "party" end
+  C_Spell.GetSpellDescription = function(id)       -- a dungeon tooltip showing far more
+    if id == 204 then return "A slow casting spell that heals a single target for 3,960 to 4,314." end
+    return realDesc(id)
+  end
+  ns.MarkDirty(); S = ns.State()
+  local inside = gh4(S)
+  expect(S.info.inInstance and inside.client == nil and inside.baseFrom == "earlier" and inside.base == outside.base,
+    "inside an instance: the heal read outside is kept")
+  printed = {}
+  SlashCmdList.HOLYMATH("check")
+  local out = table.concat(printed, "\n")
+  expect(out:find("in an instance") and out:find("kept from outside the instance"), "/hm check says why")
+  SlashCmdList.HOLYMATH("dump")
+  expect(HolyMathDB.dump.inInstance == true and HolyMathDB.dump.instanceType == "party", "/hm dump records the instance")
+  IsInInstance = realInside; C_Spell.GetSpellDescription = realDesc
+  ns.MarkDirty(); S = ns.State()
+  expect(not S.info.inInstance and gh4(S).baseFrom == "client", "back outside: read again")
+  SlashCmdList.HOLYMATH("dump")
+  expect(HolyMathDB.dump.inInstance == false, "/hm dump outside says so")
+end
+
+-- tooltip text not loaded yet: ask the game for it once, and look again when it says it's there
+do
+  local asked = {}
+  C_Spell.RequestLoadSpellData = function(id) asked[#asked + 1] = id end
+  ns.requestedText = nil; ns.MarkDirty(); ns.State()
+  expect(ns.textPending and #asked > 0, "missing tooltip text is asked for (" .. #asked .. " spells)")
+  local n = #asked
+  ns.MarkDirty(); ns.State()
+  expect(#asked == n, "... once per spell per session")
+  expect(core.events.SPELL_TEXT_UPDATE and core.events.SPELL_DATA_LOAD_RESULT and core.events.PLAYER_ENTERING_WORLD,
+    "listens for spell text and for entering or leaving an instance")
+  ns.State()
+  core.scripts.OnEvent(core, "SPELL_DATA_LOAD_RESULT", 105, true)
+  local S0 = ns.State()
+  core.scripts.OnEvent(core, "SPELL_TEXT_UPDATE", 105)
+  expect(ns.State() ~= S0, "spell text arriving makes it look again")
+  ns.textPending = false
+  local S1 = ns.State()
+  core.scripts.OnEvent(core, "SPELL_TEXT_UPDATE", 105)
+  expect(ns.State() == S1, "... but not when nothing was missing")
+  C_Spell.RequestLoadSpellData = nil
+end
 
 -- Item text -> stats, on the real text of 18 items from the 20 Nov dump, plus
 -- the robe from the 20 Nov screenshot. Expected values read off the item text.
@@ -326,10 +417,11 @@ expect(chk:find("ranks known, read from the game"), "/hm check: says the spells'
 expect(not chk:find("Renew 9:") and not chk:find("Greater Heal 4:"), "/hm check: Renew r9 and GH r4 agree with the game data, so aren't listed")
 expect(chk:find("Greater Heal 1: costs 320 %(game data with your talents 315%), from the game"), "/hm check: the game's cost is used (talents taken out)")
 
--- action bars: no lines added to a spell's tooltip
+-- action bars: no hook of their own (the spell line comes through the tooltip
+-- pipeline's Spell post-call, which action-bar spell tooltips go through too)
 GameTooltip.lines = {}
 GameTooltip:SetAction(1)
-expect(#GameTooltip.lines == 0, "action-bar spell tooltips are left alone")
+expect(#GameTooltip.lines == 0, "no separate action-bar hook")
 
 -- settings change recalculates
 SlashCmdList.HOLYMATH("set fight 180")
@@ -756,6 +848,10 @@ do
   click(O.controls["tab:settings"])
   expect(not O.controls["tab:tooltips"] and not O.panes.tooltips, "no Tooltips tab")
   expect(O.controls.tipItems and O.controls.tipItemNumber and O.controls.tipItemPct, "Settings tab: show, number, % for item tooltips")
+  expect(O.controls.tipSpells, "Settings tab: spell tooltips on or off")
+  O.controls.tipSpells:SetChecked(false); click(O.controls.tipSpells)
+  expect(db.tooltips.spells == false, "unticking it turns the spell line off")
+  O.controls.tipSpells:SetChecked(true); click(O.controls.tipSpells)
   expect(not (O.controls.tipOnlyUp or O.controls.tipShift or O.controls.tipCantEquip or O.controls.tipUseNote),
     "... and no other tooltip options")
   local c
@@ -785,9 +881,10 @@ do
   c = O.controls.tipItems; c:SetChecked(false); click(c)
   expect(itemTip(better) == "", "item tooltips off: no line")
   c:SetChecked(true); click(c)
-  db.tooltips.itemPercent = false; db.tooltips.items = false
+  db.tooltips.itemPercent = false; db.tooltips.items = false; db.tooltips.spells = false
   click(O.controls.Defaults)
-  expect(db.tooltips.items and db.tooltips.itemPercent and db.tooltips.itemNumber, "Defaults puts the tooltip options back too")
+  expect(db.tooltips.items and db.tooltips.itemPercent and db.tooltips.itemNumber and db.tooltips.spells,
+    "Defaults puts the tooltip options back too")
   click(O.controls["tab:settings"])
   SlashCmdList.HOLYMATH("")
 end

@@ -18,9 +18,9 @@ local function ClassDefaults(model)
 end
 ns.ClassDefaults = ClassDefaults
 
--- What the item tooltips show (Settings tab of the window): the line at all,
--- the change in healing per second, and the change in %.
-local TOOLTIP_DEFAULTS = { items = true, itemNumber = true, itemPercent = true }
+-- What the tooltips show (Settings tab of the window): the item line at all,
+-- the change in healing per second, the change in %, and the spell line.
+local TOOLTIP_DEFAULTS = { items = true, itemNumber = true, itemPercent = true, spells = true }
 function ns.TooltipDefaults()
   local d = {}
   for k, v in pairs(TOOLTIP_DEFAULTS) do d[k] = v end
@@ -59,22 +59,40 @@ local function Rebuild()
   -- Take every known rank's cost, cast time and base heal from the game
   -- (Models/Priest.lua ApplyClientData). clientSeen: this session's first readings,
   -- so a buff that changes them for a moment isn't taken as the spell's own.
-  local spells, pending = G.ClientSpells(info.spellIds)
+  -- In an instance the spell tooltips aren't read (G.ClientSpells): the heals read
+  -- outside are kept.
+  info.inInstance = G.InInstance()
+  local spells, pending, missing = G.ClientSpells(info.spellIds, info.inInstance)
   ns.clientSeen = ns.clientSeen or {}
   info.client = E.ApplyClientData(st.invalid and {} or spells, st, t, input.settings, ns.clientSeen, GetTime and GetTime())
   -- a reading held back as a buff's: look again once a buff would be over, so a
   -- lasting change becomes the rank's own even if nothing else happens meanwhile
+  -- (a heal kept from outside an instance has no new reading to wait for)
   local held = false
   for _, r in ipairs(info.client) do
-    if r.baseFrom == "earlier" or r.costFrom == "earlier" or r.castFrom == "earlier" then held = true end
+    if (r.baseFrom == "earlier" and r.client) or r.costFrom == "earlier" or r.castFrom == "earlier" then held = true end
   end
   if held and not ns.heldTimer and C_Timer and C_Timer.After then
     ns.heldTimer = true
     C_Timer.After(E.HOLD + 1, function() ns.heldTimer = nil; ns.MarkDirty() end)
   end
-  if pending and not ns.retriedText then
-    ns.retriedText = true                    -- tooltip text loads late on login: look again once
-    if C_Timer and C_Timer.After then C_Timer.After(3, function() ns.MarkDirty() end) end
+  -- Tooltip text the client hasn't loaded yet (often at login): ask it to load
+  -- (once per spell per session); SPELL_DATA_LOAD_RESULT / SPELL_TEXT_UPDATE then
+  -- say it's there (events below). One look 3 s later as well, for clients
+  -- without that request.
+  ns.textPending = pending
+  if pending then
+    ns.requestedText = ns.requestedText or {}
+    for _, id in ipairs(missing or {}) do
+      if not ns.requestedText[id] and C_Spell and C_Spell.RequestLoadSpellData then
+        ns.requestedText[id] = true
+        G.safe(C_Spell.RequestLoadSpellData, id)
+      end
+    end
+    if not ns.retriedText then
+      ns.retriedText = true
+      if C_Timer and C_Timer.After then C_Timer.After(3, function() ns.MarkDirty() end) end
+    end
   end
   -- a playstyle that no longer exists (or is only kept for the sheet tests) -> the default
   local chosen = E.ROTATIONS[db.rotation]
@@ -175,13 +193,25 @@ local function Check()
   local rows, none, held, misread = S.info.client or {}, 0, 0, 0
   local WHERE = { client = "from the game", earlier = "the earlier reading (changed for a moment, e.g. a buff; a change that lasts 2 minutes is taken)",
                   misread = "|cffff5050the game's number looks misread, using the game data|r" }
+  local inside = S.info.inInstance
+  local kept = 0
   for _, r in ipairs(rows) do
-    if not r.client then none = none + 1 end
-    if r.baseFrom == "earlier" or r.costFrom == "earlier" or r.castFrom == "earlier" then held = held + 1 end
+    if not r.client then
+      if inside and r.baseFrom == "earlier" then kept = kept + 1 else none = none + 1 end
+    end
+    if (r.baseFrom == "earlier" and r.client) or r.costFrom == "earlier" or r.castFrom == "earlier" then held = held + 1 end
     if r.baseFrom == "misread" or r.costFrom == "misread" or r.castFrom == "misread" then misread = misread + 1 end
   end
+  if inside then
+    print("  You're in an instance: spell tooltips there can show low ranks healing more than they do, " ..
+      "so heals are the ones read outside (costs and cast times are still read).")
+  end
   local notes = {}
-  if none > 0 then notes[#notes + 1] = string.format("%d with no readable tooltip yet (game data used)", none) end
+  if kept > 0 then notes[#notes + 1] = string.format("%d heals kept from outside the instance", kept) end
+  if none > 0 then
+    notes[#notes + 1] = string.format(inside and "%d heals from the game data (not read outside yet this session)"
+      or "%d with no readable tooltip yet (game data used)", none)
+  end
   if held > 0 then notes[#notes + 1] = string.format("%d changed for a moment (the earlier reading used)", held) end
   if misread > 0 then notes[#notes + 1] = string.format("%d looked misread (game data used)", misread) end
   print(string.format("  Spells: %d ranks known, read from the game%s", #rows,
@@ -225,6 +255,13 @@ local function Dump()
   section("player", function()
     d.level = UnitLevel("player")
     d.race = select(2, UnitRace("player"))
+  end)
+  -- where it was taken: tooltips inside instances can differ from outside
+  section("where", function()
+    local inside, kind = G.InInstance()
+    d.inInstance, d.instanceType = inside, kind
+    if inside and GetInstanceInfo then d.instanceName = (G.safe(GetInstanceInfo)) end
+    d.zone = GetRealZoneText and G.safe(GetRealZoneText) or nil
   end)
   section("raw", function()
     local _, _, raw = G.KnownSpells()
@@ -321,7 +358,8 @@ local function Dump()
   section("history", function()
     local h = HolyMathDB.history or {}
     local base, casting = G.safe(GetManaRegen)
-    local snap = { time = d.time, level = d.level, inCombat = d.inCombat, healing = S and S.st.healing,
+    local snap = { time = d.time, level = d.level, inCombat = d.inCombat, inInstance = d.inInstance, zone = d.zone,
+                   healing = S and S.st.healing,
                    int = S and S.st.int, spirit = S and S.st.spirit, regen = { base, casting }, tooltips = {},
                    spellCrit = { G.safe(GetSpellCritChance, 2), G.safe(GetSpellCritChance, 6) } }
     for _, r in ipairs(S and S.info.client or {}) do
@@ -421,12 +459,16 @@ f:SetScript("OnEvent", function(self, event, unit)
     if not ok then ns.hookError = tostring(err); ns.LogError("hookTooltips", err) end
     for _, ev in ipairs({ "PLAYER_EQUIPMENT_CHANGED", "UNIT_AURA", "UNIT_STATS", "PLAYER_LEVEL_UP",
                           "SPELLS_CHANGED", "TRAIT_CONFIG_UPDATED", "CHARACTER_POINTS_CHANGED",
-                          "PLAYER_REGEN_ENABLED", "UNIT_MAXPOWER" }) do
+                          "PLAYER_REGEN_ENABLED", "UNIT_MAXPOWER",
+                          "PLAYER_ENTERING_WORLD",                          -- into or out of an instance
+                          "SPELL_DATA_LOAD_RESULT", "SPELL_TEXT_UPDATE" }) do -- tooltip text loaded
       pcall(self.RegisterEvent, self, ev)
     end
     return
   end
   if (event == "UNIT_AURA" or event == "UNIT_STATS" or event == "UNIT_MAXPOWER") and unit ~= "player" then return end
+  -- spell text arriving only matters while some was missing (these fire often)
+  if (event == "SPELL_DATA_LOAD_RESULT" or event == "SPELL_TEXT_UPDATE") and not ns.textPending then return end
   ns.MarkDirty()
   -- an open options window follows your gear/buffs/talents
   local O = ns.Options

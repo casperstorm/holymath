@@ -1,8 +1,10 @@
 --[[ Holy Math - Tooltips.lua
      Item tooltips: how much effective HPS the item gains or loses you, by running
      the whole model with the item swapped in (not a weight shortcut).
-     Holy Math adds nothing to spell tooltips: the game's own spell tooltip already
-     shows the heal at your healing power, and the rest is in the window.
+     Spell tooltips (healing spells you know): what the rank heals per mana and per
+     second after overheal, and which of your ranks is the most efficient - the same
+     numbers as Your spells on the Math tab. The game's own tooltip can leave out
+     downranking (and does in dungeons), so these come from the model, not from it.
 ]]--
 
 local ADDON, ns = ...
@@ -104,6 +106,61 @@ local function AddItemLine(tt, link)
 end
 
 ---------------------------------------------------------------------------
+-- Spells
+---------------------------------------------------------------------------
+-- Per state (rebuilt when gear, buffs, talents or settings change): spell ID ->
+-- the known rank, and each spell's ranks as Your spells works them out.
+local spellCache = { state = nil, byId = {}, ranks = {} }
+
+local function SpellRank(id)
+  local S = ns.State()
+  if not S or not S.weights or not S.info or not S.info.spellIds then return nil end
+  if spellCache.state ~= S then
+    spellCache = { state = S, byId = {}, ranks = {} }
+    for _, s in ipairs(S.info.spellIds) do spellCache.byId[s.id] = s end
+  end
+  local s = spellCache.byId[id]
+  if not s then return nil end
+  local ranks = spellCache.ranks[s.key]
+  if ranks == nil then
+    ranks = E.SpellRanks(s.key, S.st, S.t, S.input.settings) or {}
+    spellCache.ranks[s.key] = ranks
+  end
+  local this, best
+  for _, rk in ipairs(ranks) do
+    if rk.rank == s.rank then this = rk end
+    if rk.best then best = rk end
+  end
+  return this, best, #ranks
+end
+
+local function fmtHPM(v) return v == math.huge and "free" or string.format("%.2f", v) end
+
+-- The client can hide values in combat ("secret"): even comparing one errors, so
+-- that is checked before anything else.
+local function isSecret(v) return issecretvalue and issecretvalue(v) end
+
+local function AddSpellLine(tt, id)
+  ns.Count("spellHook")
+  if isSecret(id) or type(id) ~= "number" or not ns.enabled or tt.hmSpell == id then return end
+  local tip = ns.db and ns.db.tooltips or {}
+  if tip.spells == false then return end
+  local ok, this, best, n = pcall(SpellRank, id)
+  if not ok then ns.LogError("spellTooltip", this); return end
+  if not this then return end
+  tt.hmSpell = id
+  local hpm = this.hpm == math.huge and "free" or (fmtHPM(this.hpm) .. " healing per mana")
+  tt:AddLine(string.format("%s: %s, %s per second", TAG, hpm, fmtInt(this.hps)), 1, 1, 1)
+  if n > 1 and best then
+    if best.rank == this.rank then
+      tt:AddLine(GREEN .. "  Your most efficient rank|r")
+    else
+      tt:AddLine(string.format("%s  Most efficient: Rank %d (%s per mana)|r", GRAY, best.rank, fmtHPM(best.hpm)))
+    end
+  end
+end
+
+---------------------------------------------------------------------------
 -- Hooks: the newer tooltip pipeline when GameTooltip runs it (Forever does),
 -- otherwise the classic scripts. Same checks StatCap uses.
 ---------------------------------------------------------------------------
@@ -125,14 +182,32 @@ function ns.HookTooltips()
       elseif tt.GetItem then link = select(2, tt:GetItem()) end
       AddItemLine(tt, link)
     end)
+    -- spells: the spellbook, action bars and spell links
+    if Enum.TooltipDataType.Spell then
+      TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Spell, function(tt, data)
+        if tt ~= GameTooltip and tt ~= ItemRefTooltip then return end
+        local ok, err = pcall(function()
+          local id = type(data) == "table" and data.id or nil
+          if not isSecret(id) and id == nil and tt.GetSpell then id = select(2, tt:GetSpell()) end
+          AddSpellLine(tt, id)
+        end)
+        if not ok then ns.LogError("spellTooltip", err) end
+      end)
+    end
   else
     if hasScript(GameTooltip, "OnTooltipSetItem") then
       GameTooltip:HookScript("OnTooltipSetItem", function(tt) AddItemLine(tt, select(2, tt:GetItem())) end)
     end
+    if hasScript(GameTooltip, "OnTooltipSetSpell") then
+      GameTooltip:HookScript("OnTooltipSetSpell", function(tt)
+        local ok, err = pcall(function() AddSpellLine(tt, select(2, tt:GetSpell())) end)
+        if not ok then ns.LogError("spellTooltip", err) end
+      end)
+    end
   end
   for _, tt in ipairs({ GameTooltip, ItemRefTooltip }) do
     if tt and hasScript(tt, "OnTooltipCleared") then
-      tt:HookScript("OnTooltipCleared", function(t) t.fpLink = nil end)
+      tt:HookScript("OnTooltipCleared", function(t) t.fpLink = nil; t.hmSpell = nil end)
     end
   end
 end

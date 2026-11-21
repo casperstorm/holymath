@@ -1105,20 +1105,24 @@ function O.FillYourValues()
   b:Show()
 end
 
--- Item tooltips, on the Settings tab: the line, and what it shows.
--- (Holy Math leaves spell tooltips alone: the game's own already shows the heal.)
+-- Tooltips, on the Settings tab: the item line and what it shows, and the spell line.
 local function TooltipSettings(p, x, y)
   local tips = function() return db().tooltips end
   local function opt(id, oy, label, help, key)
     Check(p, id, x, oy, label, help,
       function() return tips()[key] ~= false end, function(v) tips()[key] = v end)
   end
-  Header(p, "Item tooltips", x, y)
+  Header(p, "Tooltips", x, y)
   opt("tipItems", y - 24, "Show Holy Math on item tooltips",
     "A line on item tooltips with how much the item gains or loses you in healing per second, " ..
     "worked out by running the whole model with it equipped.", "items")
   opt("tipItemNumber", y - 48, "Show the number (+16.2 HPS)", "The change in healing per second.", "itemNumber")
   opt("tipItemPct", y - 72, "Show it in % (+1.8%)", "The change as a share of your healing per second.", "itemPercent")
+  opt("tipSpells", y - 96, "Show Holy Math on spell tooltips",
+    "A line on the tooltips of the healing spells you know: what that rank heals per mana and per second " ..
+    "after the overheal you expect, and which of your ranks is the most efficient (heals the most per mana). " ..
+    "The same numbers as Your spells on the Math tab.\n\nThe game's own spell tooltip can leave out " ..
+    "downranking (in dungeons especially), so these are worked out by Holy Math, not read from it.", "spells")
 end
 
 -- "Holy Math 1.0.1", from the .toc (the packager writes the release's version
