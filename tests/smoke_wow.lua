@@ -631,6 +631,16 @@ do
   press(cellRow("overheal.RENEW")); eb:SetText("300"); eb.scripts.OnEnterPressed(eb)
   expect(eb:IsShown() and db.settings.overheal.RENEW == 0.4, "sheet: 300% overheal is refused")
   eb.scripts.OnEscapePressed(eb)
+  expect(not cellRow("fightLength").resetBtn:IsShown(), "sheet: no arrow on a setting at its starting value")
+  local ohRow = cellRow("overheal.RENEW")
+  expect(ohRow.resetBtn:IsShown(), "sheet: an arrow on a changed setting")
+  GameTooltip.lines = {}
+  ohRow.resetBtn.scripts.OnEnter(ohRow.resetBtn)
+  expect((GameTooltip.lines[2] or ""):find("starting value: 25%%"), "sheet: the arrow says the starting value")
+  ohRow.resetBtn.scripts.OnClick(ohRow.resetBtn)
+  expect(db.settings.overheal.RENEW == 0.25 and not cellRow("overheal.RENEW").resetBtn:IsShown(),
+    "sheet: the arrow puts it back, and goes")
+  press(cellRow("overheal.RENEW")); eb:SetText("30"); eb.scripts.OnEnterPressed(eb)
   press(cellRow("overheal.RENEW"), "RightButton")
   expect(db.settings.overheal.RENEW == 0.25, "sheet: right-click puts a setting back to its starting value")
   -- your values on a spell rank, then all put back at once

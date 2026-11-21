@@ -786,6 +786,7 @@ local function MathRow(i)
   x:SetScript("OnClick", function() O.MathReset(row) end)
   Tip(x, "Put back", function()
     local e = row.data and row.data.edit
+    if e and e.setting and e.default ~= nil then return "Back to its starting value: " .. E.MathFormat(e.unit, e.default) .. "." end
     return e and e.orig ~= nil and ("Use the game's value again: " .. E.MathFormat(e.unit, e.orig) .. ".") or "Use the game's value again."
   end)
   row.resetBtn = x
@@ -921,7 +922,14 @@ function O.MathCommit(text)
   O.Changed(true)
 end
 
--- Right-click or the x: your value goes, or a setting goes back to its starting value.
+-- A setting's starting value (what Defaults puts back), or nil.
+function O.SettingDefault(path)
+  local d = ns.ClassDefaults(ns.model).settings
+  for _, k in ipairs(path) do d = type(d) == "table" and d[k] or nil end
+  return type(d) == "number" and d or nil
+end
+
+-- Right-click or the arrow: your value goes, or a setting goes back to its starting value.
 function O.MathReset(row)
   local e = row and row.data and row.data.edit
   if not e then return end
@@ -930,8 +938,7 @@ function O.MathReset(row)
     if db().overrides[e.id] == nil then return end
     db().overrides[e.id] = nil
   elseif e.setting then
-    local d = ns.ClassDefaults(ns.model).settings
-    for _, k in ipairs(e.setting) do d = type(d) == "table" and d[k] or nil end
+    local d = O.SettingDefault(e.setting)
     if d == nil then return end
     setSetting(e.setting, d)
   end
@@ -992,7 +999,9 @@ function O.FillMath(S)
         PlaceBox(row.box, row, h)
         ShowBox(row.box, true, mine and YOU or nil)
         row.valueBtn:SetHeight(h); row.valueBtn:Show()
-        if mine then row.resetBtn:Show() end
+        -- the arrow: your value, or a setting changed from its starting value
+        if e.setting then e.default = O.SettingDefault(e.setting) end
+        if mine or (e.default ~= nil and math.abs(e.raw - e.default) > 1e-9) then row.resetBtn:Show() end
       else
         ShowBox(row.box, false)
       end
