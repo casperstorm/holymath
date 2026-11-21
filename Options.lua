@@ -8,7 +8,7 @@
                    knowing it once tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
                    on Search(), 20 Nov 2026); our look-alike is the fallback.
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
-     Tabs: Settings (the fight, item tooltips, the result), Your spells, Math.
+     Tabs: Settings (the fight, item tooltips, the result), Math (Your spells first).
        typing      InputBoxTemplate (the Math tab's cells)
      Each was checked against addons that already use it on this client (BugSack,
      OpenMap). Where a client lacks one, that widget falls back to a plain version,
@@ -21,8 +21,11 @@
      length) are the same settings the Settings tab has.
 
      Every setting explains itself on hover. Everything recalculates by itself
-     (settings, gear, buffs, talents), so there is no Recalculate button; the
-     check against the game's tooltips is a status line, not a button.
+     (settings, gear, buffs, talents), so there is no Recalculate button. Spell
+     numbers are taken from the game by themselves (/hm check shows them), so
+     the window never asks you to do anything about them. Your spells (every
+     rank, the most efficient one, overheal per spell) is the Math tab's first
+     section.
 ]]--
 
 local ADDON, ns = ...
@@ -493,8 +496,7 @@ local function Cell(parent, x, y, w, justify, font)
   return fs
 end
 
-local TABS = { { key = "settings", text = "Settings" }, { key = "spells", text = "Your spells" },
-               { key = "math", text = "Math" } }
+local TABS = { { key = "settings", text = "Settings" }, { key = "math", text = "Math" } }
 
 function O.ShowTab(key)
   O.tab = key
@@ -550,22 +552,10 @@ local function Block(pane, x, y, w, h, title, help)
   return fs
 end
 
--- Your spells: every healing spell you know, as facts. (The playstyle is picked on
--- the Settings tab.) Click a spell to unfold all its ranks under it, like the
--- game's own collapsible lists; as many as you like, in a list that scrolls.
-local OVERVIEW_ROWS, ROW_GAP = 20, 16   -- lines in view
-local NAME_X, RANK_X = 16, 30           -- spell names after the [+], rank names indented
+local ROW_GAP = 16                      -- a sheet row's height (taller when its formula wraps)
 local SCROLL_W = 26                     -- room for the game's scroll bar at the right
-local OV_COLS = {   -- title, x, width, justify, help
-  { "Spell", 0, 150, "LEFT", "Click a spell to see all its ranks." },
-  { "Rank", 150, 44, "RIGHT", "Your highest rank of it." },
-  { "Heal", 194, 66, "RIGHT", "One cast, all targets, after your overheal setting." },
-  { "Mana", 260, 56, "RIGHT", "What one cast costs, with your talents." },
-  { "Per mana", 316, 72, "RIGHT", "Healing per point of mana." },
-  { "Per second", 388, 80, "RIGHT", "Healing per second of casting (instants count a global cooldown)." },
-  { "Most efficient", 468, 166, "RIGHT", "The rank of it that heals the most per point of mana, and how much. Often not your highest.\n\nUnder a spell's ranks: how much of your healing power each rank gets. Ranks far below your level can get less (down to 10%); the game's tooltip may not show this, but real heals have it." },
-}
 
+-- The game's own tooltip for a spell rank (hovering a line of Your spells).
 local function ShowSpellTip(self)
   if not self.spellID or not GameTooltip then return end
   GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -575,79 +565,20 @@ local function ShowSpellTip(self)
   GameTooltip:Show()
 end
 
-O.expanded = O.expanded or {}   -- spell key -> open
+O.expanded = O.expanded or {}   -- spell key -> its ranks are open in Your spells
 
-local function SpellRow(i)
-  local child = O.spellChild
-  local row = CreateFrame("Button", nil, child)
-  row:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -(i - 1) * ROW_GAP)
-  row:SetSize(O.spellListW, ROW_GAP)
-  row:EnableMouse(true)
-  -- the game's own [+]/[-] buttons and list highlight (quest log, skills)
-  local tg = row:CreateTexture(nil, "ARTWORK")
-  if tg then tg:SetSize(14, 14); tg:SetPoint("LEFT", 0, 0) end
-  row.toggle = tg
-  local hl = row:CreateTexture(nil, "HIGHLIGHT")
-  if hl then hl:SetAllPoints(row); hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight"); hl:SetBlendMode("ADD") end
-  row:SetScript("OnEnter", ShowSpellTip)
-  row:SetScript("OnLeave", HideTip)
-  row:SetScript("OnClick", function(self)
-    if self.rankOf then
-      if PlaySound then pcall(PlaySound, 856) end
-      return O.ShowMath(self.rankOf, self.rankNum)
-    end
-    if not self.key then return end
-    O.expanded[self.key] = not O.expanded[self.key] or nil
-    if PlaySound then pcall(PlaySound, O.expanded[self.key] and 856 or 857) end
-    O.FillSpells(O.spellState)
-    if GameTooltip and GameTooltip.IsOwned and GameTooltip:IsOwned(self) then ShowSpellTip(self) end
-  end)
-  -- the text lives on the row, so the highlight sits under it
-  row.cells = {}
-  for n, c in ipairs(OV_COLS) do
-    row.cells[n] = Cell(row, c[2] + (n == 1 and NAME_X or 0), -2, c[3] - (n == 1 and NAME_X or 0), c[4])
-  end
-  O.spellRows[i] = row
-  return row
-end
+local function fmtInt(n) return tostring(math.floor((n or 0) + 0.5)) end
+local function fmtHPM(v) return v == math.huge and "free" or string.format("%.2f", v) end
 
-local function BuildSpellsPane(pane)
-  local W = WIDTH - 2 * MARGIN
-  local y = TOP
-  Header(pane, "Spell overview", LEFT, y)
-  local hint = Label(pane, "|cff9d9d9dClick a spell to see all its ranks, and a rank to see its math|r", "GameFontHighlightSmall", LEFT, y - 4, W)
-  hint:SetJustifyH("RIGHT")
-  y = y - 22
-  for _, c in ipairs(OV_COLS) do
-    Cell(pane, LEFT + c[2] + (c[2] == 0 and NAME_X or 0), y, c[3], c[4], "GameFontNormalSmall"):SetText(c[1])
-    if c[5] then
-      local h = CreateFrame("Frame", nil, pane)
-      h:SetPoint("TOPLEFT", LEFT + c[2], y)
-      h:SetSize(c[3], 16)
-      h:EnableMouse(true)
-      Tip(h, c[1], c[5])
-    end
+-- What a rank's line says in the last column: how much of your healing power
+-- it gets, and (green) whether it is the spell's most efficient rank.
+local function rankNote(rk)
+  local full = rk.power >= 0.995
+  local pct = math.floor(rk.power * 100 + 0.5)
+  if rk.best then
+    return "|cff40ff40most efficient|r|cff9d9d9d, " .. (full and "full power" or (pct .. "% power")) .. "|r"
   end
-  -- the lines scroll inside the game's own scroll frame (its bar at the right)
-  O.spellListW = W - SCROLL_W
-  local sf = try("ScrollFrame", pane, "UIPanelScrollFrameTemplate") or CreateFrame("ScrollFrame", nil, pane)
-  sf:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT, y - 16)
-  sf:SetSize(O.spellListW, OVERVIEW_ROWS * ROW_GAP)
-  sf.scrollBarHideable = true       -- the bar shows only when there is more than fits
-  if not sf.ScrollBar and sf.EnableMouseWheel then   -- no template: the wheel still scrolls
-    sf:EnableMouseWheel(true)
-    sf:SetScript("OnMouseWheel", function(self, d)
-      local maxS = self.GetVerticalScrollRange and self:GetVerticalScrollRange() or 0
-      local v = (self.GetVerticalScroll and self:GetVerticalScroll() or 0) - d * ROW_GAP * 3
-      self:SetVerticalScroll(math.max(0, math.min(maxS, v)))
-    end)
-  end
-  local child = CreateFrame("Frame", nil, sf)
-  child:SetSize(O.spellListW, OVERVIEW_ROWS * ROW_GAP)
-  if sf.SetScrollChild then sf:SetScrollChild(child) end
-  O.spellScroll, O.spellChild = sf, child
-  O.spellRows = {}
-  for i = 1, OVERVIEW_ROWS do SpellRow(i) end
+  return "|cff9d9d9d" .. (full and "full healing power" or (pct .. "% of your healing power")) .. "|r"
 end
 
 -- Math: a sheet of how every number in the window is worked out, with your
@@ -659,6 +590,20 @@ local MATH_COLS = {   -- title, x, width, justify; then the revert icon
   { "Item", 0, 176, "LEFT" }, { "Formula", 176, 520, "LEFT" }, { "Value", 696, 90, "RIGHT" },
 }
 local REVERT_X = 790
+-- Your spells (the sheet's first section) splits the Formula column into its own
+-- columns; a spell's overheal sits in the Value column, as a setting.
+local SPELL_COLS = {   -- title, x, width, justify, help
+  { "Rank", 176, 44, "RIGHT", "Your highest rank of it." },
+  { "Heal", 220, 64, "RIGHT", "One cast, all targets, after your overheal." },
+  { "Mana", 284, 56, "RIGHT", "What one cast costs, with your talents." },
+  { "Per mana", 340, 66, "RIGHT", "Healing per point of mana." },
+  { "Per second", 406, 74, "RIGHT", "Healing per second of casting (instants count a global cooldown)." },
+  { "Most efficient", 492, 200, "LEFT", "The rank of it that heals the most per point of mana. Often not your highest.\n\n" ..
+    "Under a spell's ranks: how much of your healing power each rank gets. Ranks far below your level get " ..
+    "less (down to 10%); the game's tooltip may not show this, but real heals have it." },
+}
+local SPELL_HELP = "Overheal: healing you expect to be wasted on players already at full health, for the whole spell " ..
+  "(every rank). Click it to type your own."
 local PAD = 4                       -- text inset in a cell
 local MATH_TOP = TOP - 52           -- the sheet's first row (under the column titles)
 local MATH_BOTTOM = 40              -- room for the line about your values at the bottom
@@ -715,7 +660,13 @@ local function MathTip(owner, row)
   local r = row.data
   if not (r and GameTooltip) or r.head or r.note then return end
   GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
-  GameTooltip:SetText((r[1] or ""):gsub("^%s+", ""), 1, 1, 1)
+  if r.tbl == "cols" then
+    GameTooltip:SetText("Your spells", 1, 1, 1)
+    for _, c in ipairs(SPELL_COLS) do GameTooltip:AddLine(c[1] .. ": " .. c[5], nil, nil, nil, true) end
+    GameTooltip:AddLine(SPELL_HELP, nil, nil, nil, true)
+    return GameTooltip:Show()
+  end
+  GameTooltip:SetText(r.tipTitle or (r[1] or ""):gsub("^%s+", ""), 1, 1, 1)
   if r[2] and r[2] ~= "" then GameTooltip:AddLine(r[2] .. (r[3] ~= "" and (" = " .. r[3]) or ""), nil, nil, nil, true) end
   local e = r.edit
   if e and e.orig ~= nil then
@@ -766,6 +717,21 @@ local function MathRow(i)
   end
   row.wide = Cell(row, PAD, -3, O.mathListW - 2 * PAD, "LEFT")   -- section titles and notes
   if row.wide.SetWordWrap then row.wide:SetWordWrap(true) end
+  -- Your spells: its own columns, the game's [+]/[-] and list highlight (quest log, skills)
+  row.tcells = {}
+  for n, c in ipairs(SPELL_COLS) do
+    local left = c[4] == "LEFT" and 12 or 0
+    row.tcells[n] = Cell(row, c[2] + PAD + left, -3, c[3] - 2 * PAD - left, c[4])
+  end
+  local tg = row:CreateTexture(nil, "ARTWORK")
+  if tg then tg:SetSize(14, 14); tg:SetPoint("TOPLEFT", row, "TOPLEFT", PAD, -1); tg:Hide() end
+  row.toggle = tg
+  local hl = row:CreateTexture(nil, "ARTWORK")   -- shown on hover by hand (a Frame, not a Button)
+  if hl then
+    hl:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0); hl:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -(O.mathListW - MATH_COLS[3][2]), 0)
+    hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight"); hl:SetBlendMode("ADD"); hl:Hide()
+  end
+  row.hl = hl
   -- the value cell: click to type, right-click to put back
   local vb = CreateFrame("Button", nil, row)
   vb:SetPoint("TOPLEFT", row, "TOPLEFT", MATH_COLS[3][2], 0)
@@ -790,8 +756,13 @@ local function MathRow(i)
     return e and e.orig ~= nil and ("Use the game's value again: " .. E.MathFormat(e.unit, e.orig) .. ".") or "Use the game's value again."
   end)
   row.resetBtn = x
-  row:SetScript("OnEnter", function(self) MathTip(self, row) end)
-  row:SetScript("OnLeave", HideTip)
+  -- a spell or rank line of Your spells: the game's tooltip; a spell's line also lights up and folds open
+  row:SetScript("OnEnter", function(self)
+    if self.click then Vis(self.hl, true) end
+    if self.spellID then ShowSpellTip(self) else MathTip(self, row) end
+  end)
+  row:SetScript("OnLeave", function(self) Vis(self.hl, false); HideTip() end)
+  row:SetScript("OnMouseUp", function(self) O.MathRowClick(self) end)
   O.mathRows[i] = row
   return row
 end
@@ -950,8 +921,7 @@ function O.FillMath(S)
   O.mathState = S
   if editing() then O.mathStale = true; return end   -- never under your typing
   O.mathStale = false
-  local pick = O.mathPick or {}
-  local ok, rows = pcall(E.MathPage, S, pick[1], pick[2])
+  local ok, rows = pcall(E.MathPage, S, nil, nil, O.expanded)
   if not ok then
     if ns.LogError then ns.LogError("math", rows) end
     rows = { { note = "Could not work this out (/hm dump saves the error)." } }
@@ -969,14 +939,34 @@ function O.FillMath(S)
     Vis(row.band, r.head); Vis(row.hline, data or r.head)
     for _, v in ipairs(row.vlines) do Vis(v, data) end
     row.valueBtn:Hide(); row.resetBtn:Hide()
+    -- rows are reused as the page changes: the spell table's bits start off
+    for _, tc in ipairs(row.tcells) do tc:SetText("") end
+    Vis(row.toggle, false); Vis(row.hl, false)
+    row.click, row.spellID, row.title = nil, nil, nil
+    if row.wide.ClearAllPoints then row.wide:ClearAllPoints() end
+    row.wide:SetPoint("TOPLEFT", PAD, -3)
     if r.head then
       if i > 1 then y = y + 6 end
       if r.anchor then O.mathAnchors[r.anchor] = y end
-      row.wide:SetFontObject("GameFontNormal")
+      -- a section inside the one before (one cast of each fight spell): lighter, indented
+      row.wide:SetFontObject(r.sub and "GameFontNormalSmall" or "GameFontNormal")
+      Recolor(row.band, 0.55, 0.42, 0.1, r.sub and 0.14 or 0.30)
+      if r.sub then row.wide:SetPoint("TOPLEFT", PAD + 12, -3) end
       row.wide:SetText(r.head)
       h = math.max(20, textHeight(row.wide) + 6)
       stripe = 0
       Vis(row.stripe, false); ShowBox(row.box, false)
+    elseif r.tbl == "cols" then
+      -- Your spells' column titles (hover: what each one means)
+      Vis(row.stripe, false); ShowBox(row.box, false)
+      for _, v in ipairs(row.vlines) do Vis(v, true) end
+      local c = row.cells
+      c[1]:SetText("|cffffd100Spell|r"); c[3]:SetText("|cffffd100Overheal|r")
+      if c[1].ClearAllPoints then c[1]:ClearAllPoints() end
+      c[1]:SetPoint("TOPLEFT", PAD, -3); c[1]:SetWidth(MATH_COLS[1][3] - 2 * PAD)
+      for n, col in ipairs(SPELL_COLS) do row.tcells[n]:SetText("|cffffd100" .. col[1] .. "|r") end
+      h = ROW_GAP + 2
+      stripe = 0
     elseif r.note then
       row.wide:SetFontObject("GameFontHighlightSmall")
       row.wide:SetText("|cff9d9d9d" .. r.note .. "|r")
@@ -993,6 +983,29 @@ function O.FillMath(S)
       -- sub-lines (two leading spaces) sit indented under their line
       if c[1].ClearAllPoints then c[1]:ClearAllPoints() end
       local indent = r[1]:match("^%s%s") and 10 or 0
+      if r.tbl then
+        -- Your spells: a spell (its highest rank) after its [+]/[-], or one of its ranks
+        local sr, rk = r.spell, r.rank
+        local v = rk or { heal = sr.topHeal, cost = sr.topCost, hpm = sr.topHPM, hps = sr.topHPS }
+        local tc = row.tcells
+        c[2]:SetText("")
+        if not rk then c[1]:SetText("|cffffffff" .. r[1] .. "|r") end
+        tc[1]:SetText(rk and "" or tostring(sr.top))
+        tc[2]:SetText(fmtInt(v.heal)); tc[3]:SetText(fmtInt(v.cost))
+        tc[4]:SetText((rk and rk.best) and ("|cff40ff40" .. fmtHPM(v.hpm) .. "|r") or fmtHPM(v.hpm))
+        tc[5]:SetText(fmtInt(v.hps))
+        if rk then tc[6]:SetText(rankNote(rk))
+        elseif sr.bestRank == sr.top then tc[6]:SetText("|cff9d9d9dyour highest|r")
+        else tc[6]:SetText(string.format("Rank %d  |cff40ff40%.2f|r per mana", sr.bestRank, sr.bestHPM)) end
+        indent = rk and 30 or 18
+        if not rk and row.toggle then
+          row.toggle:SetTexture(r.open and "Interface\\Buttons\\UI-MinusButton-Up" or "Interface\\Buttons\\UI-PlusButton-Up")
+          row.toggle:Show()
+        end
+        row.click = not rk and { "spell", sr.key } or nil
+        row.spellID = rk and rk.id or sr.id
+        row.title = sr.name .. (rk and (" (Rank " .. rk.rank .. ")") or "")
+      end
       c[1]:SetPoint("TOPLEFT", PAD + indent, -3); c[1]:SetWidth(MATH_COLS[1][3] - 2 * PAD - indent)
       h = math.max(ROW_GAP + 2, textHeight(c[2]) + 6)
       if e then
@@ -1015,19 +1028,28 @@ function O.FillMath(S)
   end
   for i = #rows + 1, #O.mathRows do O.mathRows[i]:Hide(); O.mathRows[i].data = nil end
   O.mathChild:SetHeight(math.max(1, y))
-  O.mathSpellY = pick[1] and O.mathAnchors["spell:" .. pick[1] .. ":" .. tostring(pick[2])] or nil
   return rows
 end
 
--- Show the Math tab: a rank clicked on Your spells (key, rank), or a section
--- ("settings": overheal and the other assumptions), scrolled to it.
-function O.ShowMath(key, rank, anchor)
-  if key then O.mathPick = { key, rank } end
+-- A click on a spell's line in Your spells folds its ranks out or in. (A rank's
+-- line is only looked at: hover it for the game's tooltip.)
+function O.MathRowClick(row)
+  local c = row and row.click
+  if not c then return end
+  if editing() then closeEdit() end
+  O.expanded[c[2]] = not O.expanded[c[2]] or nil
+  if PlaySound then pcall(PlaySound, O.expanded[c[2]] and 856 or 857) end
+  O.FillMath(O.mathState or ns.State())
+end
+
+-- Show the Math tab, scrolled to a section ("spells": Your spells; "settings":
+-- the fight's other assumptions), or where it was.
+function O.ShowMath(anchor)
   O.ShowTab("math")
-  O.FillMath(O.spellState or ns.State())
+  O.FillMath(O.mathState or ns.State())
   local sf = O.mathScroll
   local function scroll()
-    local y = O.mathAnchors and (anchor and O.mathAnchors[anchor] or (not anchor and O.mathSpellY))
+    local y = anchor and O.mathAnchors and O.mathAnchors[anchor]
     if sf and sf.SetVerticalScroll and y then
       local range = sf.GetVerticalScrollRange and sf:GetVerticalScrollRange() or y
       sf:SetVerticalScroll(math.min(y, math.max(0, range or 0)))
@@ -1099,6 +1121,17 @@ local function TooltipSettings(p, x, y)
   opt("tipItemPct", y - 72, "Show it in % (+1.8%)", "The change as a share of your healing per second.", "itemPercent")
 end
 
+-- "Holy Math 1.0.1", from the .toc (the packager writes the release's version
+-- there; a copy straight from the repository still has its placeholder).
+function O.VersionText()
+  local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+  local ok, v = false, nil
+  if get then ok, v = pcall(get, ADDON, "Version") end
+  if not ok or type(v) ~= "string" or v == "" then return "Holy Math" end
+  if v:find("@", 1, true) then return "Holy Math (development copy)" end
+  return "Holy Math " .. v
+end
+
 local function Build()
   if O.frame then return end
   local p = Window()
@@ -1117,7 +1150,7 @@ local function Build()
   local ui = HolyMathDB.ui
   if ui and ui.point then p:ClearAllPoints(); p:SetPoint(ui.point, UIParent, ui.rel or ui.point, ui.x or 0, ui.y or 0) end
 
-  O.panes = { settings = Pane(p), spells = Pane(p), math = Pane(p) }
+  O.panes = { settings = Pane(p), math = Pane(p) }
   local frame = p
   p = O.panes.settings
 
@@ -1156,15 +1189,16 @@ local function Build()
     end,
     function() return db().settings.includeInspiration end, function(v) db().settings.includeInspiration = v end)
 
-  -- Overheal per spell lives on the Math tab, with every other number the model uses
+  -- Your spells and their overheal live on the Math tab, with every other number the model uses
   y = y - 40
-  Header(p, "Overheal", LEFT, y)
-  Label(p, "Overheal per spell, and every other number the model uses, are on the Math tab.",
+  Header(p, "Spells and overheal", LEFT, y)
+  Label(p, "Your spells, their ranks and the overheal you expect per spell are at the top of the Math tab.",
     "GameFontHighlightSmall", LEFT, y - 20, COL_W)
-  local ohb = Button(p, "Set overheal", 130, 22, function() O.ShowMath(nil, nil, "settings") end)
+  local ohb = Button(p, "Your spells", 130, 22, function() O.ShowMath("spells") end)
   ohb:SetPoint("TOPLEFT", p, "TOPLEFT", LEFT - 2, y - 52)
-  Tip(ohb, "Set overheal", "Opens the Math tab at your settings: overheal per spell, fight length and the model's other assumptions.")
-  O.controls.SetOverheal = ohb
+  Tip(ohb, "Your spells", "Opens the Math tab at Your spells: every healing spell you know, all its ranks, " ..
+    "the most efficient one, and the overheal you expect for it.")
+  O.controls.YourSpells = ohb
 
   -- Right column: the result -------------------------------------------------
   y = TOP
@@ -1221,16 +1255,6 @@ local function Build()
     end
   end
 
-  O.status = Label(p, "", "GameFontHighlightSmall", RIGHT, y - 128, COL_W)
-  -- only shown when some spell ranks differ from the game (see Status)
-  local shit = CreateFrame("Frame", nil, p)
-  shit:SetPoint("TOPLEFT", RIGHT, y - 124)
-  shit:SetSize(COL_W, 20)
-  shit:EnableMouse(true)
-  shit:Hide()
-  Tip(shit, "Checked against the game", function() return O.statusHelp or "" end)
-  O.statusHit = shit
-
   TooltipSettings(p, RIGHT, TOP - 172)
 
   -- Defaults, bottom left, as in the game's own options --------------------------
@@ -1242,65 +1266,18 @@ local function Build()
   def:SetPoint("BOTTOMLEFT", MARGIN - 4, 14)
   Tip(def, "Defaults", "Put every setting in this window back to its starting value.")
   O.controls.Defaults = def
+  -- which version this is, next to it
+  local ver = p:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  ver:SetPoint("LEFT", def, "RIGHT", 12, 0)
+  ver:SetText(O.VersionText())
+  O.version = ver
 
-  BuildSpellsPane(O.panes.spells)
   BuildMathPane(O.panes.math)
   Tabs(frame)
   YourValuesLine(frame)
   frame:Hide()
   O.frame = frame
   O.ShowTab("settings")
-end
-
--- The status line: how many of your known spell ranks the model matches against
--- the game's own spell tooltips (the same check as /hm check).
--- A rank the model got within 1 healing, or within 5% and then took its base
--- heal from the game (so it now matches too), or neither.
-local function tooltipMatch(r)
-  if math.abs(r.client - r.model) <= 1 then return "match" end
-  if r.after and math.abs(r.client - r.after) <= 1 then return "corrected" end
-  return "off"
-end
-ns.TooltipMatch = tooltipMatch
-
-local function Status(S)
-  local rows = S and S.info and S.info.client or {}
-  local ok, fixed, off, none = 0, {}, {}, 0
-  for _, r in ipairs(rows) do
-    if not r.client then none = none + 1
-    else
-      local m = tooltipMatch(r)
-      if m == "match" then ok = ok + 1 elseif m == "corrected" then fixed[#fixed + 1] = r else off[#off + 1] = r end
-    end
-  end
-  local read = #rows - none
-  local help = "Every spell rank you know is compared with the game's own spell tooltip " ..
-    "(which includes your healing power and talents). A match means the model heals exactly " ..
-    "what the game says."
-  -- The line shows only when something is off: a match is the normal case, and
-  -- /hm check prints the whole comparison.
-  if read == 0 then return nil, help end
-  local function list(title, rs)
-    local lines = { title }
-    for _, r in ipairs(rs) do
-      lines[#lines + 1] = string.format("%s %d: game %.0f, model %.0f", E.SPELLS[r.key].name, r.rank, r.client, r.model)
-    end
-    return "\n\n" .. table.concat(lines, "\n")
-  end
-  local close, noPenalty = {}, {}
-  for _, r in ipairs(fixed) do if r.tooltipFull then noPenalty[#noPenalty + 1] = r else close[#close + 1] = r end end
-  if #noPenalty > 0 then
-    local names = {}
-    for _, r in ipairs(noPenalty) do names[#names + 1] = E.SPELLS[r.key].name .. " " .. r.rank end
-    help = help .. "\n\nThe game's tooltip shows these low ranks at full healing power, but their real heals " ..
-      "still get less (downranking). Holy Math uses what they really heal:\n" .. table.concat(names, ", ")
-  end
-  if #close > 0 then
-    help = help .. list("Close, so the game's number is used (the model was within 5%):", close)
-  end
-  if #off == 0 then return nil, help end
-  return string.format("|cffffb000%d of %d spell ranks differ from the game, so these numbers may be off|r (hover)", #off, read),
-    help .. list("Different:", off) .. "\n\n/hm check prints this in chat."
 end
 
 -- Fill in every control and the live result. force: rebuild from the game now.
@@ -1347,100 +1324,8 @@ function O.Refresh(force)
       end
     end
   end
-  if O.spellRows then O.FillSpells(S) end
   if O.mathRows then O.FillMath(S) end
   O.FillYourValues()
-  local st, help = Status(S)
-  O.status:SetText(st or "")
-  O.statusHelp = help
-  if st then O.statusHit:Show() else O.statusHit:Hide() end
-end
-
-local function fmtInt(n) return tostring(math.floor((n or 0) + 0.5)) end
-
--- The Your spells tab.
-local function spellName(key) return E.SPELLS[key] and E.SPELLS[key].name or key end
-
-local function fmtHPM(v) return v == math.huge and "free" or string.format("%.2f", v) end
-
--- What the open spell's ranks look like with your stats right now.
-local function ranksOf(key, S)
-  if not (key and S and S.st and E.SpellRanks) then return {} end
-  local ok, r = pcall(E.SpellRanks, key, S.st, S.t, S.input.settings)
-  if not ok then if ns.LogError then ns.LogError("spellRanks", r) end; return {} end
-  return r or {}
-end
-
-local function setNameX(row, x)
-  local fs = row.cells[1]
-  if row.nameX == x or not fs.ClearAllPoints then return end
-  fs:ClearAllPoints()
-  fs:SetPoint("TOPLEFT", x, -2)
-  row.nameX = x
-end
-
--- What a rank's line says in the last column: how much of your healing power
--- it gets, and (green) whether it is the spell's most efficient rank.
-local function rankNote(rk)
-  local full = rk.power >= 0.995
-  local pct = math.floor(rk.power * 100 + 0.5)
-  if rk.best then
-    return "|cff40ff40most efficient|r|cff9d9d9d, " .. (full and "full power" or (pct .. "% power")) .. "|r"
-  end
-  return "|cff9d9d9d" .. (full and "full healing power" or (pct .. "% of your healing power")) .. "|r"
-end
-
-function O.FillSpells(S)
-  O.spellState = S
-  -- one line per spell, and each open spell's ranks under it
-  local lines = {}
-  for _, sr in ipairs(S and S.spells or {}) do
-    lines[#lines + 1] = { spell = sr }
-    if O.expanded[sr.key] then
-      for _, rk in ipairs(ranksOf(sr.key, S)) do lines[#lines + 1] = { rank = rk, spell = sr } end
-    end
-  end
-  for i = #O.spellRows + 1, #lines do SpellRow(i) end
-  if O.spellChild then O.spellChild:SetHeight(math.max(1, #lines) * ROW_GAP) end
-  for i, row in ipairs(O.spellRows) do
-    local l, c = lines[i], row.cells
-    for _, cell in ipairs(c) do cell:SetText("") end
-    row.key, row.spellID, row.title, row.rankOf, row.rankNum = nil, nil, nil, nil, nil
-    if row.toggle then row.toggle:Hide() end
-    if l then row:Show() else row:Hide() end
-    if l and not l.rank then
-      local sr = l.spell
-      setNameX(row, NAME_X)
-      c[1]:SetText("|cffffffff" .. sr.name .. "|r")
-      c[2]:SetText(tostring(sr.top))
-      c[3]:SetText(fmtInt(sr.topHeal))
-      c[4]:SetText(fmtInt(sr.topCost))
-      c[5]:SetText(fmtHPM(sr.topHPM))
-      c[6]:SetText(fmtInt(sr.topHPS))
-      if sr.bestRank == sr.top then
-        c[7]:SetText("|cff9d9d9dyour highest|r")
-      else
-        c[7]:SetText(string.format("Rank %d  |cff40ff40%.2f|r per mana", sr.bestRank, sr.bestHPM))
-      end
-      row.key, row.spellID, row.title = sr.key, sr.id, sr.name
-      if row.toggle then
-        row.toggle:SetTexture(O.expanded[sr.key] and "Interface\\Buttons\\UI-MinusButton-Up"
-          or "Interface\\Buttons\\UI-PlusButton-Up")
-        row.toggle:Show()
-      end
-    elseif l then
-      local rk = l.rank
-      setNameX(row, RANK_X)
-      c[1]:SetText("Rank " .. rk.rank)
-      c[3]:SetText(fmtInt(rk.heal))
-      c[4]:SetText(fmtInt(rk.cost))
-      c[5]:SetText(rk.best and ("|cff40ff40" .. fmtHPM(rk.hpm) .. "|r") or fmtHPM(rk.hpm))
-      c[6]:SetText(fmtInt(rk.hps))
-      c[7]:SetText(rankNote(rk))
-      row.spellID, row.title = rk.id, l.spell.name .. " (Rank " .. rk.rank .. ")"
-      row.rankOf, row.rankNum = l.spell.key, rk.rank
-    end
-  end
 end
 
 -- A setting changed: recalculate (item tooltips too) and show it. Slider drags

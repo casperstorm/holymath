@@ -301,7 +301,7 @@ end
 --                                manaPool, mp5, oocRegen, castingShare, critPerInt
 --   talent.<field>               a value as E.Talents returns it (litanyRefund = 0.1)
 -- (A spell rank's own data - base heal, coefficient, cost - is not typed over: it is
--- the game's, checked against its tooltips; talents and stats cover every spell.)
+-- the game's, read from its tooltips; talents and stats cover every spell.)
 ---------------------------------------------------------------------------
 
 -- The range a typed value must be in (a bad saved value must never break a rebuild,
@@ -674,63 +674,159 @@ local function baseFromClient(key, rank, h, st, t, set)
   return h / talentMult(key, t) - coeff * healingFor(key, st, rules)
 end
 
--- spells = { { key=, rank=, cost=, desc= }, ... } read from the game.
--- Starts from the sheet's table every time, then takes the client's cost when it is
--- within 3% of the sheet's (a bigger gap may be a talent discount already applied,
--- which must not be applied twice) and the client's heal when the model is within
--- 5% of it (a bigger gap means a rule is wrong - reported, not hidden).
--- Returns one report row per spell rank.
-E.COST_TOLERANCE, E.HEAL_TOLERANCE = 0.03, 0.05
-function E.ApplyClientData(spells, st, t, set)
+-- spells = { { key=, rank=, cost=, desc=, castTime= (ms) }, ... } read from the game.
+-- The game's own numbers win: every rank you know takes its cost, base heal and
+-- cast time from the game, so a patch that changes a spell is picked up by itself.
+-- The game data (Models/PriestData.lua) is the starting point, and what a rank
+-- keeps when the game says nothing usable about it. Two guards, both quiet:
+--   * a reading outside half to double the game data's is a misread (say, a
+--     tooltip whose wording changed): the data stays;
+--   * seen: a table kept for the session (Core.lua). A rank's first reading is
+--     taken as it is. Later, a reading that jumps away from it is taken as a
+--     temporary effect (a buff that cuts costs or raises heals) and the earlier
+--     one stays - until the new reading has stayed the same for E.HOLD seconds
+--     (longer than such buffs last), when it becomes the rank's own. So a first
+--     reading taken under a buff, or a lasting change (a set bonus), still wins
+--     in the end. now = the game's clock (GetTime). A new level starts over,
+--     since base heals grow with level.
+-- Returns one report row per spell rank (/hm check prints it).
+E.SANE_LOW, E.SANE_HIGH = 0.5, 2
+E.JUMP = { cost = 0.03, base = 0.05, cast = 0.03 }
+E.HOLD = 120
+
+local function sane(v, data)
+  return type(v) == "number" and type(data) == "number" and data > 0
+    and v / data >= E.SANE_LOW and v / data <= E.SANE_HIGH
+end
+local function near(a, b, tol) return math.abs(a / b - 1) <= tol end
+
+-- v (a usable reading or nil) -> the value to use and where it came from:
+-- "client" (this reading), "earlier" (held: an earlier reading), "misread", or
+-- nil (the game data).
+local function take(seen, id, field, v, data, level, now)
+  local s = seen and seen[id]
+  if seen and (not s or s.level ~= level) then s = { level = level }; seen[id] = s end
+  if v ~= nil and sane(v, data) then
+    if not s then return v, "client" end
+    local was, tol = s[field], E.JUMP[field]
+    if was == nil or near(v, was, tol) then
+      s[field], s[field .. "New"], s[field .. "Since"] = v, nil, nil
+      return v, "client"
+    end
+    local new = s[field .. "New"]
+    if new and near(v, new, tol) then
+      if now and s[field .. "Since"] and now - s[field .. "Since"] >= E.HOLD then
+        s[field], s[field .. "New"], s[field .. "Since"] = v, nil, nil
+        return v, "client"
+      end
+    else
+      s[field .. "New"], s[field .. "Since"] = v, now
+    end
+    return was, "earlier"
+  end
+  if s and s[field] then return s[field], "earlier" end
+  return nil, (v ~= nil) and "misread" or nil
+end
+
+-- Downranking: does this client's tooltip show a low rank with the penalty, or at
+-- full power? Both have been seen: a level-50 Holy priest's (20 Nov 2026) showed
+-- every rank at FULL power while the real heal still had the penalty (Renew rank 1:
+-- tooltip 310, ticks of 17 = 85, the rule's number); level-49 dumps and a level-50
+-- Shadow priest's (21 Nov 2026, Renew rank 1: 62) showed the penalty exactly. It is
+-- how the client draws its tooltips, so it is decided once per reading, by the ranks
+-- where the two differ a lot. nil: no such rank (then the two are close, and each
+-- rank takes the nearer).
+local function tooltipShowsFull(spells, st, t, set)
+  local full, pen = 0, 0
+  for _, c in ipairs(spells) do
+    local rk = E.SPELLS[c.key] and E.SPELLS[c.key].ranks[c.rank]
+    local h = rk and E.ParseDesc(c.key, c.desc)
+    if h then
+      local m0 = E.ModelTooltipHeal(c.key, c.rank, st, t, set)
+      rk.power = 1
+      local m1 = E.ModelTooltipHeal(c.key, c.rank, st, t, set)
+      rk.power = nil
+      if m0 > 0 and m1 / m0 > 1.1 then
+        if math.abs(h - m1) < math.abs(h - m0) then full = full + 1 else pen = pen + 1 end
+      end
+    end
+  end
+  if full + pen == 0 then return nil end
+  return full >= pen
+end
+
+function E.ApplyClientData(spells, st, t, set, seen, now)
   E.SPELLS = E.copy(E.GAME_SPELLS)
+  local rules = set.rules or E.RULES
+  local showsFull = tooltipShowsFull(spells, st, t, set)
   local report = {}
   for _, c in ipairs(spells) do
     local def = E.SPELLS[c.key]
     local rk = def and def.ranks[c.rank]
     if rk then
-      -- The game's cost already has your talents in it (Improved Healing: 15% off
-      -- Lesser Heal, Heal, Greater Heal, Penance and Prayer of Mending), so it is
-      -- compared with the data's cost after those talents, and kept without them.
+      local id = c.key .. ":" .. c.rank
       local mult = costMult(c.key, t)
       local set4 = set.dungeon4set and 10 or 0
-      local expected = rk.cost * mult - set4
-      local row = { key = c.key, rank = c.rank, dataCost = expected, rawCost = rk.cost, clientCost = c.cost,
-                    dataBase = baseAt(rk, st.level) }
-      if c.cost and c.cost > 0 and mult > 0 and expected > 0 and math.abs(c.cost / expected - 1) <= E.COST_TOLERANCE then
-        rk.cost, row.costFrom = (c.cost + set4) / mult, "client"
+      local row = { key = c.key, rank = c.rank, dataCost = rk.cost * mult - set4, rawCost = rk.cost, clientCost = c.cost,
+                    dataBase = baseAt(rk, st.level), dataCast = rk.cast }
+
+      -- Cost. The game's already has your talents in it (Improved Healing: 15% off
+      -- Lesser Heal, Heal, Greater Heal, Penance and Prayer of Mending), so they are
+      -- taken back out and the model applies them again. 0 (Inner Focus) says nothing.
+      local raw = (c.cost and c.cost > 0 and mult > 0) and (c.cost + set4) / mult or nil
+      local cost, costFrom = take(seen, id, "cost", raw, rk.cost, st.level, now)
+      if cost then rk.cost = cost end
+      row.costFrom = costFrom
+
+      -- Cast time. The game's has your haste and Divine Fury in it; both are taken
+      -- back out. Instant and channelled spells say 0, and keep the data's.
+      local ct
+      if type(rk.cast) == "number" and c.castTime and c.castTime > 0 then
+        local df = (c.key == "GH" or c.key == "HEAL") and t.divineFury or 0
+        ct = c.castTime / 1000 * (1 + st.haste) + df
+        -- the game gives whole milliseconds after haste: within 1% is the data's
+        if math.abs(ct / rk.cast - 1) <= 0.01 then ct = rk.cast else ct = math.floor(ct * 100 + 0.5) / 100 end
+        row.clientCast = ct
       end
+      local cast, castFrom = take(seen, id, "cast", ct, type(rk.cast) == "number" and rk.cast or nil, st.level, now)
+      if cast then rk.cast = cast end
+      row.castFrom = castFrom
+
+      -- Base heal: what makes the model heal exactly what the tooltip says, at
+      -- your healing power and talents (the tooltip has both in it).
       local h = E.ParseDesc(c.key, c.desc)
+      local base
       if h then
         row.client = h
         row.model = E.ModelTooltipHeal(c.key, c.rank, st, t, set)
         row.diff = row.client / row.model - 1
-        -- Downranking: a rank the rule gives less than your full healing power.
-        -- At level 49 (20 Nov 2026) its tooltip showed the penalty exactly; from
-        -- level 50 the tooltip showed every rank at FULL power while the real heal
-        -- still had the penalty (Renew rank 1: tooltip 310, ticks of 17 = 85, the
-        -- rule's number). So a tooltip that matches the rank at full power is read
-        -- as "the tooltip leaves the penalty out": its base heal is taken at full
-        -- power and the rule still applies to what the rank really heals.
         local full = rk.coeff or def.coeff
-        local rulePower = (full and full > 0) and E.Downrank(full, rk, st.level, set.rules or E.RULES) / full or 1
-        if math.abs(h - row.model) > 1 and rulePower < 0.999 then
-          rk.power = 1
-          local top = E.ModelTooltipHeal(c.key, c.rank, st, t, set)
-          if math.abs(h / top - 1) <= E.HEAL_TOLERANCE then
-            rk.base = baseFromClient(c.key, c.rank, h, st, t, set)
-            row.tooltipFull, row.rulePower, row.baseFrom = true, rulePower, "client"
-            row.after = E.ModelTooltipHeal(c.key, c.rank, st, t, set)   -- as the tooltip shows it
+        local rulePower = (full and full > 0) and E.Downrank(full, rk, st.level, rules) / full or 1
+        local atFull = false
+        if rulePower < 0.999 then
+          if showsFull == nil then
+            rk.power = 1
+            local top = E.ModelTooltipHeal(c.key, c.rank, st, t, set)
+            rk.power = nil
+            atFull = math.abs(h - top) < math.abs(h - row.model)
+          else
+            atFull = showsFull
           end
-          rk.power = nil
         end
-        -- otherwise the base heal, when the model is within 5% of the game
-        if not row.tooltipFull and math.abs(row.diff) <= E.HEAL_TOLERANCE then
-          rk.base = baseFromClient(c.key, c.rank, h, st, t, set)
-          row.baseFrom = "client"
-          row.after = E.ModelTooltipHeal(c.key, c.rank, st, t, set)   -- the model once corrected
-        end
-        row.base = baseAt(rk, st.level)
+        if atFull then rk.power = 1 end
+        base = baseFromClient(c.key, c.rank, h, st, t, set)
+        rk.power = nil
+        if atFull then row.tooltipFull, row.rulePower = true, rulePower end
       end
+      local b, baseFrom = take(seen, id, "base", base, row.dataBase, st.level, now)
+      if b then rk.base = b end
+      row.baseFrom = baseFrom
+      if h then
+        if row.tooltipFull then rk.power = 1 end
+        row.after = E.ModelTooltipHeal(c.key, c.rank, st, t, set)   -- as the tooltip shows it
+        rk.power = nil
+      end
+      row.base = baseAt(rk, st.level)
       report[#report + 1] = row
     end
   end

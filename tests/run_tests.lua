@@ -177,9 +177,9 @@ do
   near("GH r2 after calibration", E.ModelTooltipHeal("GH", 2, cst, ct, cset), 1266.5, 1e-9)
   near("POH r1 after calibration", E.ModelTooltipHeal("POH", 1, cst, ct, cset), 235.5, 1e-9)
   near("GH r1 cost (370 in game data and client)", E.SPELLS.GH.ranks[1].cost, 370)
-  -- a cost 15% below the data (could be a talent discount already applied) is NOT taken
+  -- the game's cost always wins (talents taken back out): 15% under the data is taken too
   E.ApplyClientData({ { key = "GH", rank = 1, cost = 315 } }, cst, ct, cset)
-  near("cost 15% off the data is not taken", E.SPELLS.GH.ranks[1].cost, 370)
+  near("a cost 15% off the data is taken (a patch)", E.SPELLS.GH.ranks[1].cost * (1 - ct.impHealing), 315, 1e-9)
   E.SPELLS = E.copy(E.GAME_SPELLS)
 
   -- Downranking: "12 after max level" vs "17 after learned". They differ only for a
@@ -419,6 +419,135 @@ do
   near("level 50: Renew's most efficient rank is a high one, not rank 1", best >= 6 and 1 or 0, 1)
   near("level 50: every game cost explained by data + talents", costsOff, 0)
   E.SPELLS = E.copy(E.GAME_SPELLS)
+
+  -- Cast times as the game gave them in that dump (ms; 15% haste, Divine Fury 5/5 on
+  -- Heal and Greater Heal): with both taken back out, every one is the data's.
+  local CAST = { FLASH = 1304, GH = 2174, HEAL = 2174, LESSER = { 1304, 1739, 2174 }, POH = 2609 }
+  local spells = {}
+  for _, c in ipairs(F.spells) do
+    local ms = CAST[c.key]; if type(ms) == "table" then ms = ms[c.rank] end
+    spells[#spells + 1] = { key = c.key, rank = c.rank, cost = c.cost, desc = c.desc, castTime = ms or 0 }
+  end
+  near("level 50: Divine Fury 5/5 = 0.5 s", t.divineFury, 0.5, 1e-9)
+  local castOff, castRead = {}, 0
+  for _, r in ipairs(E.ApplyClientData(spells, st, t, set)) do
+    if r.clientCast then
+      castRead = castRead + 1
+      if r.castFrom ~= "client" or E.SPELLS[r.key].ranks[r.rank].cast ~= E.GAME_SPELLS[r.key].ranks[r.rank].cast then
+        castOff[#castOff + 1] = r.key .. r.rank
+      end
+    end
+  end
+  near("level 50: cast times read (Flash, Heal, Greater Heal, Lesser Heal, Prayer of Healing)", castRead > 10 and 1 or 0, 1)
+  near("level 50: every game cast time is the data's once haste and Divine Fury are out (off: " .. table.concat(castOff, " ") .. ")", #castOff, 0)
+
+  -- A patch: every Flash Heal rank heals 20% more, costs 20% more, casts in 1.3 s.
+  -- All of it is taken, no warning (the rule for low ranks still applies).
+  local function patched(mult, castMs, onlyRank)
+    local out = {}
+    for _, c in ipairs(spells) do
+      local d = E.copy(c)
+      if c.key == "FLASH" and (not onlyRank or c.rank == onlyRank) then
+        local a, b = c.desc:match("for ([%d,]+) to ([%d,]+)")
+        local mid = (tonumber((a:gsub(",", ""))) + tonumber((b:gsub(",", "")))) / 2 * mult
+        d.desc = string.format("Heals a friendly target for %d to %d.", math.floor(mid - 10), math.floor(mid - 10) + 20)
+        d.cost = math.floor(c.cost * mult + 0.5)
+        d.castTime = castMs
+      end
+      out[#out + 1] = d
+    end
+    return out
+  end
+  local function flashTop(rep)
+    for _, r in ipairs(rep) do if r.key == "FLASH" and r.rank == E.MaxRank("FLASH", st.level, nil, set) then return r end end
+  end
+  local top = flashTop(E.ApplyClientData(patched(1.2, math.floor(1300 / 1.15 + 0.5)), st, t, set))
+  near("patch: Flash Heal +20% is taken", top.after, top.client, 1)
+  near("patch: ... from the game, no warning", top.baseFrom == "client" and top.costFrom == "client" and 1 or 0, 1)
+  near("patch: Flash Heal's new cast time (1.3 s) is taken", E.SPELLS.FLASH.ranks[top.rank].cast, 1.3, 1e-9)
+
+  -- The same jump later in one session is a temporary effect: the first reading stays.
+  local seen = {}
+  E.ApplyClientData(spells, st, t, set, seen)
+  local first = E.SPELLS.FLASH.ranks[top.rank].base
+  local firstCost = E.SPELLS.FLASH.ranks[top.rank].cost
+  top = flashTop(E.ApplyClientData(patched(1.2, 1304), st, t, set, seen))
+  near("session: a heal 20% up for a moment isn't taken", E.SPELLS.FLASH.ranks[top.rank].base, first, 1e-9)
+  near("session: ... nor a cost 20% up", E.SPELLS.FLASH.ranks[top.rank].cost, firstCost, 1e-9)
+  near("session: ... the first reading is used", top.baseFrom == "earlier" and top.costFrom == "earlier" and 1 or 0, 1)
+  -- Inner Focus: cost 0 says nothing; the session's reading is used
+  local free = E.copy(spells)
+  for _, c in ipairs(free) do c.cost = 0 end
+  E.ApplyClientData(free, st, t, set, seen)
+  near("session: a free cast (Inner Focus) keeps the cost read before", E.SPELLS.FLASH.ranks[top.rank].cost, firstCost, 1e-9)
+  -- A first reading taken under a buff: the real number is held back at first, and
+  -- becomes the rank's own once it has stayed for E.HOLD seconds.
+  local seen2 = {}
+  E.ApplyClientData(patched(1.2, 1304), st, t, set, seen2, 1000)        -- buffed at login
+  top = flashTop(E.ApplyClientData(spells, st, t, set, seen2, 1010))   -- the buff is over
+  near("buffed login: the real reading is held back at first", top.baseFrom == "earlier" and 1 or 0, 1)
+  top = flashTop(E.ApplyClientData(spells, st, t, set, seen2, 1010 + E.HOLD - 1))
+  near("buffed login: ... still held just before the hold is over", top.baseFrom == "earlier" and 1 or 0, 1)
+  top = flashTop(E.ApplyClientData(spells, st, t, set, seen2, 1010 + E.HOLD))
+  near("buffed login: ... taken once it has stayed " .. E.HOLD .. " s", top.baseFrom == "client" and top.costFrom == "client" and 1 or 0, 1)
+  near("buffed login: ... and the model heals what the game says", top.after, top.client, 1)
+  -- a lasting change mid-session (a set bonus that cuts the cost) is taken after the hold too
+  local cheaper = E.copy(spells)
+  for _, c in ipairs(cheaper) do if c.key == "FLASH" then c.cost = math.floor(c.cost * 0.9 + 0.5) end end
+  top = flashTop(E.ApplyClientData(cheaper, st, t, set, seen2, 2000))
+  near("lasting change: held at first", top.costFrom == "earlier" and 1 or 0, 1)
+  top = flashTop(E.ApplyClientData(cheaper, st, t, set, seen2, 2000 + E.HOLD))
+  near("lasting change: taken after " .. E.HOLD .. " s", top.costFrom == "client" and 1 or 0, 1)
+  -- a reading that keeps moving (one buff, then another) restarts the hold
+  local seen3 = {}
+  E.ApplyClientData(spells, st, t, set, seen3, 0)
+  E.ApplyClientData(patched(1.2, 1304), st, t, set, seen3, 10)
+  top = flashTop(E.ApplyClientData(patched(1.4, 1304), st, t, set, seen3, 10 + E.HOLD))
+  near("a different jump restarts the hold", top.baseFrom == "earlier" and 1 or 0, 1)
+  -- a new level starts over
+  local st51 = E.copy(st); st51.level = 51
+  top = flashTop(E.ApplyClientData(patched(1.2, 1304), st51, t, set, seen))
+  near("session: after a level-up the new reading is taken", top.baseFrom == "client" and 1 or 0, 1)
+
+  -- A misread (a tooltip whose wording changed into another number): the data stays, quietly.
+  top = flashTop(E.ApplyClientData(patched(5, 1304), st, t, set))
+  near("misread: a heal 5x the data's is not taken", top.base, top.dataBase, 1e-9)
+  near("misread: ... and is reported as one (/hm check)", top.baseFrom == "misread" and 1 or 0, 1)
+  -- one rank patched far off doesn't flip how the client draws its tooltips
+  local rep = E.ApplyClientData(patched(1.3, 1304, 1), st, t, set)
+  local fullRanks = 0
+  for _, r in ipairs(rep) do if r.tooltipFull then fullRanks = fullRanks + 1 end end
+  near("one odd rank: the other downranked tooltips still read at full power", fullRanks, 19)
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+end
+
+print("-- Client tooltips, Shadow priest at level 50 (21 Nov 2026): low ranks shown WITH the penalty")
+do
+  local F = dofile("tests/fixture_client_shadow50.lua")
+  local t = E.Talents(F.talents)
+  local st = { level = F.level, healing = F.healing, crit = F.crit, haste = F.haste, critMulti = 1.5,
+               spirit = F.spirit, healingFromSpirit = 0 }
+  local set = E.copy(E.DEFAULTS.settings)
+  -- intellect to crit at 50, measured again: 0.8% + 216 x 0.0208 = 5.2928%, as the game said
+  near("shadow 50: crit = 0.8% + 216 int x the measured 0.0208%", 0.8 + F.int * E.CritPerInt(50), F.crit * 100, 1e-6)
+  local within, full, costs, casts, n = 0, 0, 0, 0, 0
+  for _, r in ipairs(E.ApplyClientData(F.spells, st, t, set)) do
+    if r.client then
+      n = n + 1
+      if math.abs(r.client - r.model) <= 1 then within = within + 1 end
+      if r.tooltipFull then full = full + 1 end
+    end
+    if r.costFrom == "client" and math.abs(r.clientCost - r.dataCost) < 0.5 then costs = costs + 1 end
+    if r.clientCast == nil or (r.castFrom == "client" and r.clientCast == r.dataCast) then casts = casts + 1 end
+  end
+  near("shadow 50: every tooltip read (" .. n .. " ranks)", n, #F.spells)
+  near("shadow 50: the game data alone heals what every tooltip says, within 1", within, n)
+  near("shadow 50: the tooltips show the penalty, and Holy Math sees that (no rank read at full power)", full, 0)
+  near("shadow 50: every cost is the game data's", costs, #F.spells)
+  near("shadow 50: every cast time is the game data's", casts, #F.spells)
+  local rk = E.SpellRanks("RENEW", st, t, set)
+  near("shadow 50: Renew 1 gets 10% of healing power", rk[#rk].power, 0.1, 1e-9)
+  E.SPELLS = E.copy(E.GAME_SPELLS)
 end
 
 print("-- Game data vs the client: mana regen")
@@ -514,6 +643,35 @@ do
     end
   end
   near("math: every rank you pick gets its section; outside the fight = Your spells (" .. ranks .. " ranks)", bad, 0)
+  -- Your spells, the sheet's first section: each spell you know with its overheal (a
+  -- setting for every rank); open ones list all their ranks, one the most efficient
+  local all = {}
+  for _, sr in ipairs(S.spells) do all[sr.key] = true end
+  local rws = E.MathPage(S, nil, nil, all)
+  near("math: Your spells comes first", rws[1].head == "Your spells" and 1 or 0, 1)
+  local spellsSeen, rankRows, bestPer, ohOK, valuesOK = 0, 0, {}, 0, 0
+  for _, row in ipairs(rws) do
+    if row.tbl == "spell" then
+      spellsSeen = spellsSeen + 1
+      local e = row.edit
+      if e and e.setting[1] == "overheal" and e.setting[2] == row.spell.key and e.raw == (set.overheal[row.spell.key] or 0) then ohOK = ohOK + 1 end
+    elseif row.tbl == "rank" then
+      rankRows = rankRows + 1
+      local heal, cost = E.CastValue(row.spell.key, row.rank.rank, st, t, set)
+      if math.abs(row.rank.heal - heal) < 1e-9 and math.abs(row.rank.cost - cost) < 1e-9 then valuesOK = valuesOK + 1 end
+      if row.rank.best then bestPer[row.spell.key] = (bestPer[row.spell.key] or 0) + 1 end
+    end
+  end
+  local oneBest = 0
+  for _, n in pairs(bestPer) do if n == 1 then oneBest = oneBest + 1 end end
+  near("math: Your spells lists every spell you know (" .. #S.spells .. ")", spellsSeen, #S.spells)
+  near("math: ... each with its overheal as a setting for the whole spell", ohOK, #S.spells)
+  near("math: ... open, every rank of every spell (" .. ranks .. ")", rankRows, ranks)
+  near("math: ... each rank's heal and mana as the model works them out", valuesOK, ranks)
+  near("math: ... exactly one most efficient rank per spell", oneBest, #S.spells)
+  local folded = 0
+  for _, row in ipairs((E.MathPage(S))) do if row.tbl == "rank" then folded = folded + 1 end end
+  near("math: ... folded up, no rank lines", folded, 0)
   near("math: Renew 1 says its tooltip leaves downranking out", note and 1 or 0, 1)
   local _, gone = E.MathPage(S, "SMITE", 1)
   near("math: a spell you don't know: just the fight's spells", (gone.spell == gone.spells[1] and #gone.spells == nSteps) and 1 or 0, 1)

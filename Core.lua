@@ -56,10 +56,22 @@ local function Rebuild()
   local db = ns.db
   local input, st, info = G.BuildInput(db)
   local t = E.Talents(input.talents)
-  -- Check every known rank against the game's own tooltip, and take the game's
-  -- costs and base heals where they agree closely (Models/Priest.lua ApplyClientData).
+  -- Take every known rank's cost, cast time and base heal from the game
+  -- (Models/Priest.lua ApplyClientData). clientSeen: this session's first readings,
+  -- so a buff that changes them for a moment isn't taken as the spell's own.
   local spells, pending = G.ClientSpells(info.spellIds)
-  info.client = E.ApplyClientData(st.invalid and {} or spells, st, t, input.settings)
+  ns.clientSeen = ns.clientSeen or {}
+  info.client = E.ApplyClientData(st.invalid and {} or spells, st, t, input.settings, ns.clientSeen, GetTime and GetTime())
+  -- a reading held back as a buff's: look again once a buff would be over, so a
+  -- lasting change becomes the rank's own even if nothing else happens meanwhile
+  local held = false
+  for _, r in ipairs(info.client) do
+    if r.baseFrom == "earlier" or r.costFrom == "earlier" or r.castFrom == "earlier" then held = true end
+  end
+  if held and not ns.heldTimer and C_Timer and C_Timer.After then
+    ns.heldTimer = true
+    C_Timer.After(E.HOLD + 1, function() ns.heldTimer = nil; ns.MarkDirty() end)
+  end
   if pending and not ns.retriedText then
     ns.retriedText = true                    -- tooltip text loads late on login: look again once
     if C_Timer and C_Timer.After then C_Timer.After(3, function() ns.MarkDirty() end) end
@@ -158,38 +170,43 @@ local function Check()
   print("  Highest ranks known: " .. (#ks > 0 and table.concat(ks, ", ") or "none"))
   print("  Kings: " .. tostring(S.input.buffs.kings) .. "  Human: " .. tostring(S.input.race.human))
 
-  -- Model vs the game's own spell tooltips
-  local rows, ok, off, none, fixed = S.info.client or {}, 0, {}, 0, 0
+  -- What was taken from the game: every known rank's cost, cast time and base heal
+  -- (Models/Priest.lua ApplyClientData). "data" = the game data, kept.
+  local rows, none, held, misread = S.info.client or {}, 0, 0, 0
+  local WHERE = { client = "from the game", earlier = "the earlier reading (changed for a moment, e.g. a buff; a change that lasts 2 minutes is taken)",
+                  misread = "|cffff5050the game's number looks misread, using the game data|r" }
   for _, r in ipairs(rows) do
-    if not r.client then none = none + 1
-    elseif math.abs(r.client - r.model) <= 1 then ok = ok + 1
-    else
-      off[#off + 1] = r
-      if r.after and math.abs(r.client - r.after) <= 1 then fixed = fixed + 1 end
+    if not r.client then none = none + 1 end
+    if r.baseFrom == "earlier" or r.costFrom == "earlier" or r.castFrom == "earlier" then held = held + 1 end
+    if r.baseFrom == "misread" or r.costFrom == "misread" or r.castFrom == "misread" then misread = misread + 1 end
+  end
+  local notes = {}
+  if none > 0 then notes[#notes + 1] = string.format("%d with no readable tooltip yet (game data used)", none) end
+  if held > 0 then notes[#notes + 1] = string.format("%d changed for a moment (the earlier reading used)", held) end
+  if misread > 0 then notes[#notes + 1] = string.format("%d looked misread (game data used)", misread) end
+  print(string.format("  Spells: %d ranks known, read from the game%s", #rows,
+    #notes > 0 and (": " .. table.concat(notes, "; ")) or ", all of them"))
+  for _, r in ipairs(rows) do
+    local parts, name = {}, E.SPELLS[r.key].name .. " " .. r.rank
+    if r.client and (math.abs(r.client - r.model) > 1 or r.baseFrom ~= "client" or r.tooltipFull) then
+      local was = math.abs(r.client - r.model) <= 1 and "the game data agrees"
+        or string.format("the game data said %.0f", r.model)
+      parts[#parts + 1] = string.format("heals %.0f, %s; base %s", r.client, was, WHERE[r.baseFrom] or "from the game data")
+      if r.tooltipFull then
+        parts[#parts + 1] = string.format("the tooltip leaves out downranking: real heals get %d%% of your healing power",
+          math.floor(r.rulePower * 100 + 0.5))
+      end
     end
-  end
-  print(string.format("  Spell tooltips: %d of %d ranks match the model within 1 healing%s%s",
-    ok, #rows, fixed > 0 and string.format(", %d more once corrected from the game", fixed) or "",
-    none > 0 and string.format(" (%d had no readable tooltip yet)", none) or ""))
-  for _, r in ipairs(off) do
-    local how = {}
-    if r.tooltipFull then
-      how[#how + 1] = string.format("the game's tooltip leaves out downranking; real heals get %d%% of your healing power, and so does the model",
-        math.floor(r.rulePower * 100 + 0.5))
-    elseif r.baseFrom == "client" then how[#how + 1] = "base heal taken from the game" end
-    local fixed = r.after and math.abs(r.client - r.after) <= 1
-    print(string.format("    %s %d: game %.0f, model %.0f (%+.1f%%) - %s", E.SPELLS[r.key].name, r.rank, r.client, r.model,
-      r.diff * 100, #how > 0 and (table.concat(how, "; ") .. (fixed and ", now matches" or ""))
-        or "|cffff5050too far apart, not corrected|r"))
-  end
-  for _, r in ipairs(rows) do
-    -- dataCost: the data's cost after your talents, as the game would show it
     local data = r.dataCost and math.floor(r.dataCost + 0.5)
-    if r.costFrom == "client" and data and math.abs(r.clientCost - r.dataCost) >= 1 then
-      print(string.format("    %s %d costs %d in game (game data with your talents %d) - using the game's", E.SPELLS[r.key].name, r.rank, r.clientCost, data))
-    elseif r.clientCost and data and r.costFrom ~= "client" then
-      print(string.format("    %s %d costs %d in game, game data with your talents %d - |cffff5050not taken (gap over 3%%)|r", E.SPELLS[r.key].name, r.rank, r.clientCost, data))
+    if r.clientCost and data and (math.abs(r.clientCost - r.dataCost) >= 1 or r.costFrom ~= "client") then
+      parts[#parts + 1] = string.format("costs %d (game data with your talents %d), %s", r.clientCost, data,
+        WHERE[r.costFrom] or "from the game data")
     end
+    if r.clientCast and type(r.dataCast) == "number" and (math.abs(r.clientCast - r.dataCast) > 0.001 or r.castFrom ~= "client") then
+      parts[#parts + 1] = string.format("casts in %.2f s before haste (game data %.2f s), %s", r.clientCast, r.dataCast,
+        WHERE[r.castFrom] or "from the game data")
+    end
+    if #parts > 0 then print("    " .. name .. ": " .. table.concat(parts, "; ")) end
   end
 end
 

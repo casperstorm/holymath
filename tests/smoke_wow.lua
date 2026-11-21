@@ -44,6 +44,7 @@ local function newFrame(name)
     local t = { shown = true }
     for _, m in ipairs({ "SetColorTexture", "SetTexture", "SetVertexColor", "SetPoint", "SetAllPoints", "SetSize",
                          "SetWidth", "SetHeight", "ClearAllPoints", "SetBlendMode", "SetTexCoord", "SetAlpha" }) do t[m] = noop end
+    function t:SetTexture(x) self.texture = x end
     function t:Show() self.shown = true end
     function t:Hide() self.shown = false end
     return t
@@ -171,7 +172,8 @@ C_Spell = {
     return ""
   end,
   GetSpellPowerCost = function(id) if id == 201 then return { { cost = 320 } } end return {} end, -- data: 370, 315 with Improved Healing
-  GetSpellInfo = function(id) return { castTime = 1500 } end,
+  -- cast times as the game gives them: haste and Divine Fury 5/5 (Greater Heal 3 - 0.5 s) in them; instants 0
+  GetSpellInfo = function(id) return { castTime = ({ 0, 2500, 1500, 1500, 3000, 0, 0, 0 })[math.floor(id / 100)] } end,
 }
 C_SpellBook = {
   GetNumSpellBookSkillLines = function() return 1 end,
@@ -320,8 +322,9 @@ end
 printed = {}
 SlashCmdList.HOLYMATH("check")
 local chk = table.concat(printed, "\n")
-expect(chk:find("2 of %d+ ranks match the model"), "/hm check: Renew r9 and GH r4 tooltips match the model")
-expect(chk:find("Greater Heal 1 costs 320 in game %(game data with your talents 315%)"), "/hm check: a client cost within 3% of the data (after talents) is used")
+expect(chk:find("ranks known, read from the game"), "/hm check: says the spells' numbers come from the game")
+expect(not chk:find("Renew 9:") and not chk:find("Greater Heal 4:"), "/hm check: Renew r9 and GH r4 agree with the game data, so aren't listed")
+expect(chk:find("Greater Heal 1: costs 320 %(game data with your talents 315%), from the game"), "/hm check: the game's cost is used (talents taken out)")
 
 -- action bars: no lines added to a spell's tooltip
 GameTooltip.lines = {}
@@ -469,15 +472,27 @@ do
   for _, r in ipairs(radios) do if r.data == "flashFill" then r.setSel(r.data) end end
   expect(HolyMathDB.PRIEST.rotation == "flashFill", "menu: picking a playstyle sets it")
   HolyMathDB.PRIEST.rotation = "renew"; O.Changed(true)
-  expect(O.status.text == "" and not O.statusHit:IsShown(), "check line: hidden while the model matches the game")
-  -- a rank that differs: the window warns
+  expect(O.status == nil and O.statusHit == nil, "no warning line in the window: spell numbers are taken from the game")
+  -- a patch: Greater Heal 4 heals 20% more in game (a new session); taken by itself
+  local realDesc = C_Spell.GetSpellDescription
+  C_Spell.GetSpellDescription = function(id)
+    if id == 204 then return "A slow casting spell that heals a single target for 3,168 to 3,452." end
+    return realDesc(id)
+  end
+  ns.clientSeen = nil
+  O.Changed(true)
   local S = ns.State()
-  for _, r in ipairs(S.info.client) do if r.client then r.client = r.model + 50; r.after = nil; break end end
-  O.Refresh()
-  expect((O.status.text or ""):find("1 of %d+ spell ranks differ from the game") and O.statusHit:IsShown(), "check line: shown when a rank differs")
-  expect((O.statusHelp or ""):find("Different:"), "check line: hover names the rank")
-  O.Refresh(true)
-  expect(O.status.text == "", "check line: gone again once it matches")
+  local gh4
+  for _, r in ipairs(S.info.client) do if r.key == "GH" and r.rank == 4 then gh4 = r end end
+  expect(gh4 and gh4.baseFrom == "client" and math.abs(gh4.after - 3310) <= 1, "patch: Greater Heal 4 +20% in game is used, no warning")
+  -- later in the same session the same jump back is a buff ending... the session's reading stays
+  C_Spell.GetSpellDescription = realDesc
+  O.Changed(true)
+  S = ns.State()
+  for _, r in ipairs(S.info.client) do if r.key == "GH" and r.rank == 4 then gh4 = r end end
+  expect(gh4.baseFrom == "earlier", "session: a jump later in the session keeps the first reading")
+  ns.clientSeen = nil
+  O.Changed(true)
   expect(not O.controls.Recalculate and not O.controls.Dump and not O.controls.Check, "only one button left (Defaults)")
   GameTooltip.lines = {}
   O.controls.Defaults.scripts.OnEnter(O.controls.Defaults)
@@ -499,39 +514,65 @@ do
   SlashCmdList.HOLYMATH("")
   expect(O.frame:IsShown() and O.panes.settings:IsShown(), "window opens on the Settings tab")
   local function click(b) b.scripts.OnClick(b) end
-  click(O.controls["tab:spells"])
-  expect(O.panes.spells:IsShown() and not O.panes.settings:IsShown(), "Your spells tab shows its own page")
+  expect(not O.controls["tab:spells"] and not O.panes.spells, "no Your spells tab: it is the Math tab's first section")
+  expect((O.version and O.version.text or ""):find("^Holy Math"), "Settings tab: the version at the bottom (" .. tostring(O.version and O.version.text) .. ")")
+  local hadAddOns = C_AddOns
+  C_AddOns = { GetAddOnMetadata = function(name, field) return name == "HolyMath" and field == "Version" and "1.2.3" or nil end }
+  expect(O.VersionText() == "Holy Math 1.2.3", "version: a release shows its number")
+  C_AddOns.GetAddOnMetadata = function() return "@project-version@" end
+  expect(O.VersionText() == "Holy Math (development copy)", "version: a copy from the repository says so")
+  C_AddOns.GetAddOnMetadata = function() error("no") end
+  expect(O.VersionText() == "Holy Math", "version: an API that fails shows just the name")
+  C_AddOns = hadAddOns
+  click(O.controls["tab:math"])
+  expect(O.panes.math:IsShown() and not O.panes.settings:IsShown(), "Math tab shows its own page")
   local function plain(t) return ((t or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("\n", " / ")) end
-  local function rowText(row) local t = {} for _, c in ipairs(row.cells) do t[#t + 1] = plain(c.text) end return table.concat(t, " | ") end
-  -- Spell overview
-  expect(plain(O.spellRows[1].cells[1].text) ~= "" and tonumber(O.spellRows[1].cells[3].text), "overview: spells with heal per cast")
+  local function rowText(row)
+    local t = { plain(row.cells[1].text) }
+    for _, c in ipairs(row.tcells) do t[#t + 1] = plain(c.text) end
+    t[#t + 1] = plain(row.cells[3].text)
+    return table.concat(t, " | ")
+  end
+  -- Your spells: the sheet's first section
+  local function lines(kind)
+    local t = {}
+    for _, row in ipairs(O.mathRows) do if row.shown and row.data and row.data.tbl == kind then t[#t + 1] = row end end
+    return t
+  end
+  local spellLines = lines("spell")
+  expect(O.mathRows[1].data.head == "Your spells", "Math tab: Your spells is its first section")
+  expect(#lines("cols") == 1 and plain(lines("cols")[1].tcells[2].text) == "Heal", "Your spells: its own column titles")
+  expect(#spellLines >= 6 and tonumber(spellLines[1].tcells[2].text), "Your spells: every known spell, with heal per cast")
   local ov = {}
-  for _, row in ipairs(O.spellRows) do if plain(row.cells[1].text) ~= "" then ov[#ov + 1] = rowText(row) end end
-  expect(#ov >= 6, "overview: every known spell listed")
+  for _, row in ipairs(spellLines) do ov[#ov + 1] = rowText(row) end
   for _, l in ipairs(ov) do realprint("    spell: " .. l) end
   GameTooltip.lines = {}
-  O.spellRows[1].scripts.OnEnter(O.spellRows[1])
-  expect((GameTooltip.lines[1] or "") ~= "", "overview: hovering a spell shows its tooltip")
+  spellLines[1].scripts.OnEnter(spellLines[1])
+  expect((GameTooltip.lines[1] or "") ~= "" and spellLines[1].hl.shown, "Your spells: hovering a spell shows its tooltip and highlights it")
+  spellLines[1].scripts.OnLeave(spellLines[1])
+  -- a spell's overheal: its value cell, a setting for every rank
+  local renew
+  for _, row in ipairs(spellLines) do if row.data.spell.key == "RENEW" then renew = row end end
+  expect(renew and renew.data.edit and renew.data.edit.setting[2] == "RENEW" and renew.valueBtn:IsShown()
+    and plain(renew.cells[3].text) == "25%", "Your spells: Renew's overheal (25%) is a boxed value on its line")
+  GameTooltip.lines = {}
+  renew.valueBtn.scripts.OnEnter(renew.valueBtn)
+  expect(GameTooltip.lines[1] == "Overheal: Renew", "Your spells: hovering the overheal says what it is")
   -- click a spell: its ranks fold down under it; again: they fold up
-  local function lines() local t = {} for _, row in ipairs(O.spellRows) do if plain(row.cells[1].text) ~= "" then t[#t + 1] = row end end return t end
-  local renewAt
-  for i, row in ipairs(O.spellRows) do if row.key == "RENEW" then renewAt = i end end
-  expect(renewAt and #lines() == #ov, "overview starts folded up")
-  click(O.spellRows[renewAt])
-  local rk = {}
-  for i = renewAt + 1, #O.spellRows do
-    local t = plain(O.spellRows[i].cells[1].text)
-    if not t:match("^Rank %d+$") then break end
-    rk[#rk + 1] = O.spellRows[i]
-  end
-  local renewTop = tonumber(O.spellRows[renewAt].cells[2].text)
+  expect(#lines("rank") == 0, "Your spells starts folded up")
+  renew.scripts.OnMouseUp(renew)
+  local rk = lines("rank")
+  local renewTop = tonumber(renew.tcells[1].text)
   expect(O.expanded.RENEW and #rk == renewTop and plain(rk[1].cells[1].text) == "Rank " .. renewTop
     and plain(rk[#rk].cells[1].text) == "Rank 1", "click Renew: all its ranks fold down, highest first")
-  expect(rk[1].cells[3].text == O.spellRows[renewAt].cells[3].text and rk[1].cells[4].text == O.spellRows[renewAt].cells[4].text,
+  for _, row in ipairs(O.mathRows) do if row.data and row.data.spell and row.data.spell.key == "RENEW" and row.data.tbl == "spell" then renew = row end end
+  expect(renew.toggle.shown and (renew.toggle.texture or ""):find("Minus"), "Renew's [+] became a [-]")
+  expect(rk[1].tcells[2].text == renew.tcells[2].text and rk[1].tcells[3].text == renew.tcells[3].text,
     "the highest rank's line matches the spell's line")
+  expect(not rk[1].valueBtn:IsShown(), "a rank line has no overheal of its own (it is the spell's)")
   local best, low, blank = 0, 0, 0
   for _, r in ipairs(rk) do
-    local t = plain(r.cells[7].text)
+    local t = plain(r.tcells[6].text)
     if t:find("most efficient") then best = best + 1 end
     if t:find("%d+%% of your healing power") then low = low + 1 end
     if t == "" then blank = blank + 1 end
@@ -542,17 +583,27 @@ do
   for _, r in ipairs(rk) do realprint("    renew: " .. rowText(r)) end
   GameTooltip.lines = {}
   rk[#rk].scripts.OnEnter(rk[#rk])
-  expect(rk[#rk].spellID and rk[#rk].spellID ~= O.spellRows[renewAt].spellID, "hovering a rank shows that rank's tooltip")
-  rk[1].scripts.OnClick(rk[1])
-  expect(O.expanded.RENEW, "clicking a rank line keeps the spell open")
-  -- ... and opens the Math tab on that rank
-  expect(O.panes.math:IsShown() and not O.panes.spells:IsShown(), "clicking a rank opens the Math tab")
+  expect(rk[#rk].spellID and rk[#rk].spellID ~= renew.spellID, "hovering a rank shows that rank's tooltip")
+  -- a rank's line is only looked at: a click does nothing, and it doesn't light up
+  local realShow, jumped = O.ShowMath, false
+  O.ShowMath = function(...) jumped = true; return realShow(...) end
+  rk[1].scripts.OnMouseUp(rk[1])
+  O.ShowMath = realShow
+  expect(not jumped and O.expanded.RENEW and #lines("rank") == renewTop, "clicking a rank does nothing (no jump down the sheet)")
+  rk[1].scripts.OnEnter(rk[1])
+  expect(not rk[1].hl.shown and (GameTooltip.lines[1] or "") ~= "", "hovering a rank shows its tooltip, no highlight")
+  rk[1].scripts.OnLeave(rk[1])
+  -- typing while a spell is clicked: the box closes and the click still works
+  renew.valueBtn.scripts.OnClick(renew.valueBtn, "LeftButton")
+  expect(O.mathEdit:IsShown(), "the overheal box opens")
+  renew.scripts.OnMouseUp(renew)
+  expect(not O.mathEdit:IsShown() and not O.expanded.RENEW, "clicking a spell closes the box and folds it up")
   local E_SOURCES = ns.model.MATH_SOURCES
   local mathLines, head, hpsLine, srcs = {}, nil, nil, 0
   for _, row in ipairs(O.mathRows) do
     if row.shown then
       local w = plain(row.wide.text)
-      if w ~= "" then mathLines[#mathLines + 1] = w; if w:find("^Renew rank " .. renewTop .. "%f[^%d]") then head = true end
+      if w ~= "" then mathLines[#mathLines + 1] = w; if w:find("^Renew rank %d+: the filler") then head = true end
       else
         mathLines[#mathLines + 1] = rowText(row)
         if plain(row.cells[1].text) == "Healing per second" then hpsLine = plain(row.cells[3].text) end
@@ -561,14 +612,13 @@ do
     end
   end
   for _, l in ipairs(mathLines) do realprint("    math: " .. l) end
-  expect(head, "Math tab works out the rank that was clicked (Renew " .. renewTop .. ")")
+  expect(head, "Math tab works out the fight's spells (Renew, the filler)")
   expect(hpsLine and (hpsLine .. " HPS") == plain(O.hps.text), "Math tab's HPS = the Settings tab's (" .. tostring(hpsLine) .. ")")
   expect(srcs >= 10, "Math lines know where their numbers come from (shown on hover)")
   expect(not O.mathRows[1].cells[4], "no Source column")
-  expect(O.mathSpellY ~= nil, "clicking a rank scrolls the sheet to its section")
   expect(O.frame.width == 880, "the Math tab makes the window wider")
-  click(O.controls["tab:spells"])
-  expect(O.frame.width ~= 880, "... and the other tabs make it narrow again")
+  click(O.controls["tab:settings"])
+  expect(O.frame.width ~= 880, "... and the Settings tab makes it narrow again")
   click(O.controls["tab:math"])
   expect(O.panes.math:IsShown(), "Math tab opens from its tab too")
 
@@ -657,8 +707,8 @@ do
   expect(O.yourValues:IsShown(), "the bottom line shows on the Settings tab too")
   click(O.controls.ResetValues)
   expect(mine() == 0 and not O.yourValues:IsShown() and O.hps.text == hpsBefore, "Put all back: the game's values everywhere")
-  click(O.controls.SetOverheal)
-  expect(O.panes.math:IsShown() and O.mathAnchors.settings, "Settings tab's 'Set overheal' opens the sheet at the settings")
+  click(O.controls.YourSpells)
+  expect(O.panes.math:IsShown() and O.mathAnchors.spells == 0, "Settings tab's 'Your spells' opens the sheet at Your spells")
   click(O.controls["tab:settings"])
   local insp = O.controls.insp
   expect(insp.enabled ~= false, "Inspiration's checkbox works: you have the talent")
@@ -680,20 +730,26 @@ do
   db.overrides = {}
   O.Changed(true)
   expect(tipLine("|Hitem:1002:0:|h") == tipBefore, "item tooltips back to the game's values")
-  click(O.controls["tab:spells"])
-  -- open every spell: all stay open, the list grows past the 20 lines in view (it scrolls)
+  click(O.controls["tab:math"])
+  -- open every spell: all stay open, the sheet grows (it scrolls)
   local total = 0
   for _, sr in ipairs(ns.State().spells) do total = total + 1 + sr.top end
-  for pass = 1, 2 do
-    for _, row in ipairs(O.spellRows) do if row.key and not O.expanded[row.key] then click(row) end end
-  end
+  -- (clicking refills the sheet, so each spell's line is looked up again)
+  local function spellRow(key) for _, row in ipairs(lines("spell")) do if row.data.spell.key == key then return row end end end
+  local keys = {}
+  for _, row in ipairs(lines("spell")) do keys[#keys + 1] = row.data.spell.key end
+  for _, k in ipairs(keys) do if not O.expanded[k] then local row = spellRow(k); row.scripts.OnMouseUp(row) end end
   local open = 0
   for _ in pairs(O.expanded) do open = open + 1 end
-  expect(open == #ov and #lines() == total and total > 20, "every spell open at once: " .. total .. " lines")
-  expect(O.spellRows[total].shown and not (O.spellRows[total + 1] and O.spellRows[total + 1].shown), "only the lines in use are shown")
-  for _, row in ipairs(O.spellRows) do if row.key and O.expanded[row.key] then click(row) end end
-  expect(next(O.expanded) == nil and #lines() == #ov, "click them again: all folded up")
-  expect(not O.styleRows, "Your spells: no playstyle comparison, just your spells")
+  expect(open == #ov and #lines("spell") + #lines("rank") == total, "every spell open at once: " .. total .. " lines")
+  for _, k in ipairs(keys) do if O.expanded[k] then local row = spellRow(k); row.scripts.OnMouseUp(row) end end
+  expect(next(O.expanded) == nil and #lines("rank") == 0, "click them again: all folded up")
+  -- rows reused for other lines lose the table's bits
+  local leftover = 0
+  for _, row in ipairs(O.mathRows) do
+    if row.shown and row.data and not row.data.tbl and (row.click or row.toggle.shown or plain(row.tcells[2].text) ~= "") then leftover = leftover + 1 end
+  end
+  expect(leftover == 0, "sheet lines below Your spells show none of its columns")
   expect(not (O.castRows or O.notesText or O.controls.useBest), "no 'how to play' instructions left")
 
   -- item tooltips: three options on the Settings tab, no Tooltips tab

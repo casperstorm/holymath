@@ -258,7 +258,7 @@ function G.BuildInput(db)
   return input, st, { how = how, talentSource = talentSource, talentsByName = byName, buffs = buffs, spellIds = ids }
 end
 
--- Cost and tooltip text of each known healing spell rank, for E.ApplyClientData.
+-- Cost, cast time (ms) and tooltip text of each known healing spell rank, for E.ApplyClientData.
 -- `pending` is true when the client hadn't loaded some tooltip text yet.
 function G.ClientSpells(ids)
   local out, pending = {}, false
@@ -270,7 +270,9 @@ function G.ClientSpells(ids)
     local desc = (C_Spell and C_Spell.GetSpellDescription and safe(C_Spell.GetSpellDescription, s.id))
       or (GetSpellDescription and safe(GetSpellDescription, s.id))
     if type(desc) ~= "string" or desc == "" or (issecretvalue and issecretvalue(desc)) then desc = nil; pending = true end
-    out[#out + 1] = { key = s.key, rank = s.rank, id = s.id, cost = cost, desc = desc }
+    local info = C_Spell and C_Spell.GetSpellInfo and safe(C_Spell.GetSpellInfo, s.id)
+    local castTime = num(type(info) == "table" and info.castTime or (GetSpellInfo and select(4, safe(GetSpellInfo, s.id))))
+    out[#out + 1] = { key = s.key, rank = s.rank, id = s.id, cost = cost, desc = desc, castTime = castTime }
   end
   return out, pending
 end

@@ -6,7 +6,8 @@
      show; tests/run_tests.lua checks that it does.
 
      E.MathPage(S, key, rank) -> rows, check
-       row: { head = text } | { note = text } | { label, work, value, src }
+       row: { head = text, sub = (a section inside the one before) } | { note = text }
+            | { label, work, value, src }
        src: "game" (read from the game now), "data" (game data via wowsims),
             "measured" (measured in game), "setting" (your setting),
             "assumption" (an assumption of the fight model), "" (worked out)
@@ -93,16 +94,6 @@ local function setting(row, path, unit, raw)
 end
 
 local function spellName(key, set) return E.tableFor(set)[key] and E.tableFor(set)[key].name or key end
-
--- The rank to show when none is picked: the playstyle's main (filler) spell.
-function E.MathDefaultPick(S)
-  local base = S and S.weights and S.weights.base
-  for _, s in ipairs(base and base.steps or {}) do
-    if s.fill then return s.key, s.rank end
-  end
-  local first = S and S.spells and S.spells[1]
-  if first then return first.key, first.top end
-end
 
 local function statsSection(rows, S)
   local st, how = S.st, S.info and S.info.how or {}
@@ -201,7 +192,7 @@ COST_TALENTS.HEAL, COST_TALENTS.LESSER, COST_TALENTS.PENANCE = COST_TALENTS.GH, 
 
 -- One spell rank, worked out. `step`: its line in the fight (then the numbers are
 -- the fight's own: its Litany of Light share, Renewed Hope); nil for a rank you
--- picked on Your spells that the playstyle doesn't cast (then: as on Your spells).
+-- picked in Your spells that the playstyle doesn't cast (then: as in Your spells).
 local function spellSection(rows, S, key, rank, step, why)
   local st, t, set = S.st, S.t, S.input.settings
   local def = E.tableFor(set)[key]
@@ -220,9 +211,10 @@ local function spellSection(rows, S, key, rank, step, why)
   local p = sp.parts
   local rh = step and step.rh
   local cr = clientRow(S, key, rank)
-  add({ head = def.name .. " rank " .. rank .. (why and (": " .. why) or ""), anchor = "spell:" .. key .. ":" .. rank })
+  add({ head = def.name .. " rank " .. rank .. (why and (": " .. why) or ""), sub = true, anchor = "spell:" .. key .. ":" .. rank })
 
-  -- base heal and coefficient (the game's data, checked against its tooltips)
+  -- base heal and coefficient (read from the game's tooltip; the game data otherwise)
+  local fromGame = function(f) return cr and (cr[f] == "client" or cr[f] == "earlier") end
   local bw
   if p.baseCalc and abs(p.baseCalc - p.base) > 0.05 then
     bw = "from the game's tooltip (game data: " .. n1(p.baseCalc) .. ")"
@@ -241,7 +233,7 @@ local function spellSection(rows, S, key, rank, step, why)
     elseif cr.tooltipFull then bw = bw .. "; the game's tooltip shows this rank at full power"
     else bw = bw .. "; differs from the game's tooltip (" .. n0(cr.client) .. ")" end
   end
-  add({ "Base heal", bw, n1(p.base), cr and cr.baseFrom == "client" and "game" or "data" })
+  add({ "Base heal", bw, n1(p.base), fromGame("baseFrom") and "game" or "data" })
   if p.power < 0.999 then
     local rk = def.ranks[rank]
     local cap = (rk.ml and rk.ml > 0) and rk.ml or (rk.lvl + 5)
@@ -305,11 +297,11 @@ local function spellSection(rows, S, key, rank, step, why)
   for _, f in ipairs(COST_TALENTS[key] or { "litany" }) do
     if (t[f] or 0) > 1e-9 then cut[#cut + 1] = pct(t[f], 1) .. " " .. TALENT_NAME[f] end
   end
-  local mw = trim(p.rankCost, 1) .. (cr and cr.costFrom == "client" and " (the game's cost)" or " (game data)")
+  local mw = trim(p.rankCost, 1) .. (fromGame("costFrom") and " (the game's cost)" or " (game data)")
   if #cut > 0 then mw = mw .. " x (1 - " .. table.concat(cut, " - ") .. ")" end
   if p.set4 > 0 then mw = mw .. " - " .. p.set4 .. " (dungeon set)" end
   local before = p.rankCost * p.costMult - p.set4
-  add({ "Mana", mw, n1(before), cr and cr.costFrom == "client" and "game" or "data" })
+  add({ "Mana", mw, n1(before), fromGame("costFrom") and "game" or "data" })
   if p.refund > 0 then
     add({ "  Litany of Light", trim(p.rankCost, 1) .. " x " .. pct(p.litanyRefund, 1) .. " back x " .. pct(p.litanyShare, 0) ..
           (step and " of its casts follow a different heal in this fight" or " of casts after a different heal (your setting, on its own)"),
@@ -323,12 +315,12 @@ local function spellSection(rows, S, key, rank, step, why)
   if p.castBase == "gcd" then cw = "instant: one global cooldown, 1.5 s"
   elseif p.castBase == "gh" then cw = "(3 s - " .. trim(p.divineFury, 2) .. " s Divine Fury)"
   else
-    cw = trim(p.castBase, 2) .. " s (game data)"
+    cw = trim(p.castBase, 2) .. (fromGame("castFrom") and " s (the game's)" or " s (game data)")
     if p.divineFury > 0 then cw = "(" .. cw .. " - " .. trim(p.divineFury, 2) .. " s Divine Fury)" end
   end
   if (st.haste or 0) > 0 then cw = cw .. " / (1 + " .. pct(st.haste, 1) .. " haste)" end
   if sp.cast < gcd - 1e-9 then cw = cw .. "; at least a global cooldown" end
-  add({ "Time per cast", cw, trim(time, 2) .. " s", "data" })
+  add({ "Time per cast", cw, trim(time, 2) .. " s", fromGame("castFrom") and "game" or "data" })
   add({ "Per mana", n0(perCast) .. " / " .. n1(cost), cost > 0 and n2(perCast / cost) or "free", "" })
   add({ "Per second", n0(perCast) .. " / " .. trim(time, 2) .. " s", n0(perCast / time), "" })
   return { heal = perCast, cost = cost, time = time, key = key, rank = rank, step = step }
@@ -353,7 +345,8 @@ local function fightSection(rows, S)
   local fl = set.fightLength
   local add = function(r) rows[#rows + 1] = r end
   add({ head = "The fight: " .. base.name .. ", " .. fl .. " s", anchor = "fight" })
-  add({ note = "Healing you can sustain if there is always someone to heal; mana is the limit." })
+  add({ note = "Healing you can sustain if there is always someone to heal; mana is the limit. " ..
+    "What one cast of each spell heals is worked out under the fight." })
   local manaSum = 0
   for _, part in ipairs(E.ManaParts(st, t, set)) do
     manaSum = manaSum + part.mana
@@ -472,20 +465,12 @@ end
 local function assumptionsSection(rows, S)
   local set, st = S.input.settings, S.st
   local add = function(r) rows[#rows + 1] = r end
-  add({ head = "Overheal and other assumptions", anchor = "settings" })
-  add({ note = "Your settings: the same as on the Settings tab. Right-click one to put back its starting value." })
+  add({ head = "The fight's other assumptions", anchor = "settings" })
+  add({ note = "Your settings (overheal is in Your spells, at the top). Right-click one to put back its starting value." })
   add(setting({ "Fight length", "how long the fights you heal usually last", "", "setting",
                 help = "In long fights you run out of mana, so mana (MP5, spirit, intellect) is worth more; " ..
                        "in short fights healing power counts most. A typical raid boss: about 2 minutes." },
               { "fightLength" }, "sec", set.fightLength))
-  for _, k in ipairs(E.OVERHEAL_ORDER) do
-    local known = E.tableFor(set)[k] and E.MaxRank(k, st.level, set.known, set)
-    if set.overheal[k] and known then
-      local name = spellName(k, set)
-      add(setting({ "Overheal: " .. name, "healing wasted on players already at full health", "", "setting",
-                    help = E.OverhealHelp(name) }, { "overheal", k }, "pct0", set.overheal[k]))
-    end
-  end
   add(setting({ "Downtime used", "out of mana, how much of the time left you spend regenerating and casting again (an assumption)",
                 "", "assumption",
                 help = "When your mana runs out before the fight ends, the time left is spent waiting out the 5-second " ..
@@ -493,7 +478,7 @@ local function assumptionsSection(rows, S)
                        "that way; the rest goes to moving, waiting for someone to need a heal, and so on. 100% = all of it." },
               { "imperfectPlay" }, "pct0", set.imperfectPlay))
   if (S.t.litanyRefund or 0) > 0 then
-    add(setting({ "Litany of Light, on its own", "share of a spell's casts after a different heal, on Your spells " ..
+    add(setting({ "Litany of Light, on its own", "share of a spell's casts after a different heal, in Your spells " ..
                   "(the fight works out its own)", "", "assumption",
                   help = "Your spells looks at each spell on its own, so it can't know how often you switch spells; " ..
                          "it assumes this share. The fight above counts it from its own casts." },
@@ -506,6 +491,34 @@ local function assumptionsSection(rows, S)
   end
   if #caps > 0 then
     add({ "Playstyle", base.name .. ": at most " .. table.concat(caps, ", ") .. "; the rest is filler", "", "assumption" })
+  end
+end
+
+-- Your spells: every healing spell you know, one line each (its highest rank),
+-- with its overheal - a setting for the whole spell, every rank - in the value
+-- cell. A spell in `expanded` has all its ranks under it, highest first; the rank
+-- that heals the most per point of mana is the most efficient. Rows:
+--   { "Spell", "", "Overheal", "", tbl = "cols" }      the table's column titles
+--   { name, "", overheal, "setting", tbl = "spell", spell = {...}, edit = ... }
+--   { "Rank N", "", "", "", tbl = "rank", spell = {...}, rank = {...} }
+local function spellsSection(rows, S, expanded)
+  local set = S.input.settings
+  rows[#rows + 1] = { head = "Your spells", anchor = "spells" }
+  rows[#rows + 1] = { note = "Every healing spell you know, with your stats now. Click a spell for all its ranks. " ..
+    "Overheal is set per spell, for all its ranks. The spells the fight casts are worked out below." }
+  rows[#rows + 1] = { "Spell", "", "Overheal", "", tbl = "cols" }
+  for _, sr in ipairs(S.spells or {}) do
+    local row = setting({ sr.name, "healing wasted on players already at full health, for every rank", "", "setting",
+                          help = E.OverhealHelp(sr.name) }, { "overheal", sr.key }, "pct0", set.overheal[sr.key] or 0)
+    row.tbl, row.spell, row.open = "spell", sr, expanded and expanded[sr.key] and true or false
+    row.tipTitle = "Overheal: " .. sr.name
+    rows[#rows + 1] = row
+    if row.open then
+      local ok, ranks = pcall(E.SpellRanks, sr.key, S.st, S.t, set)
+      for _, rk in ipairs(ok and ranks or {}) do
+        rows[#rows + 1] = { "Rank " .. rk.rank, "", "", "", tbl = "rank", spell = sr, rank = rk }
+      end
+    end
   end
 end
 
@@ -558,18 +571,20 @@ end
 
 -- Why a spell is in the fight: its line's limit.
 local function stepWhy(s)
-  if s.fill then return "the filler" end
-  if s.cap then return "at most every " .. s.cap .. " s" end
+  if s.fill then return "the filler, whenever nothing else is due" end
+  if s.cap then return ((s.tank or 0) > 0 and "on the tank, " or "") .. "at most every " .. s.cap .. " s" end
   return nil
 end
 
--- The whole sheet. key, rank: a rank picked on Your spells (shown first when the
--- playstyle doesn't cast it; otherwise the fight's own section for it is where
--- the window scrolls to). check: the page's numbers, for the tests.
-function E.MathPage(S, key, rank)
+-- The whole sheet. key, rank (the tests only): also work out that rank, when the
+-- playstyle doesn't cast it, so every rank's section can be checked against the
+-- model. expanded: spell key -> its ranks are open in Your spells.
+-- check: the page's numbers, for the tests.
+function E.MathPage(S, key, rank, expanded)
   local rows = {}
   if not (S and S.st and S.input) then return rows, {} end
   local check = { spells = {} }
+  spellsSection(rows, S, expanded)
   statsSection(rows, S)
   talentsSection(rows, S)
   local base = S.weights and S.weights.base
@@ -579,13 +594,20 @@ function E.MathPage(S, key, rank)
     if s.enabled and s.casts > 0.01 and not inFight[id] then inFight[id] = s; steps[#steps + 1] = s end
   end
   local set = S.input.settings
+  -- the fight first (casts x heal per cast = HPS), then one cast of each of its spells
+  check.fight = fightSection(rows, S)
+  if base then
+    rows[#rows + 1] = { head = "One cast of each spell the fight casts", anchor = "casts" }
+    rows[#rows + 1] = { note = base.name .. " casts these. Each works out what one cast heals, costs and takes, " ..
+      "with your stats; the fight above counts the casts." }
+  end
   if key then
     local def = E.tableFor(set)[key]
     local top = def and E.MaxRank(key, S.st.level, set.known, set)
     if top then
       rank = min(max(1, rank or top), top)
       if not inFight[key .. ":" .. rank] then
-        check.spell = spellSection(rows, S, key, rank, nil, "picked on Your spells (this playstyle doesn't cast it)")
+        check.spell = spellSection(rows, S, key, rank, nil, "not cast in this fight")
       end
     end
   end
@@ -596,7 +618,6 @@ function E.MathPage(S, key, rank)
   end
   if not check.spell then check.spell = check.spells[1] end
   check.anchor = check.spell and ("spell:" .. check.spell.key .. ":" .. check.spell.rank)
-  check.fight = fightSection(rows, S)
   statSection(rows, S)
   assumptionsSection(rows, S)
   return rows, check
