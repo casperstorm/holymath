@@ -44,7 +44,7 @@ local WIDTH = RIGHT + COL_W + MARGIN
 -- The Math tab makes the window wider (like the game's character window does for
 -- some of its tabs): its formulas need the room.
 local MATH_WIDTH = 880
-local HEIGHT = 470
+local HEIGHT = 530
 local TOP, ROW, ROW_H = -66, 30, 28
 
 local function db() return ns.db end
@@ -1106,6 +1106,295 @@ function O.FillYourValues()
   b:Show()
 end
 
+---------------------------------------------------------------------------
+-- Potions, on the Settings tab (left column): the potions and runes you drink in
+-- a fight and how many of each, grouped by the cooldown they share:
+--   Potions
+--   Potion cooldown: 3 fit in a 300 s fight
+--     Major Mender's Potion     [-]  1  [+]  [Remove]
+--     Major Mana Potion         [-]  2  [+]  [Remove]
+--   Rune cooldown: 3 fit in a 300 s fight
+--     Demonic Rune              [-]  3  [+]  [Remove]
+--   [ Add potion...  v ]
+--   Best for you: Major Mender's Potion x1, ... (+12.3 HPS)   [Use it]
+-- Counts stop at what fits; reaching it means "as many as fit", which then follows
+-- the fight length. The model: E.PotionPlan, E.BestPotions (Models/Priest.lua).
+---------------------------------------------------------------------------
+local MAX_POTIONS = 5
+local POTION_HELP = "The potions and runes you drink in a fight. Potions share one cooldown " ..
+  "(2 minutes), so together they fit only so many times in a fight: the first in the list gets its count, " ..
+  "the next what is left. Runes have their own cooldown, so they come on top.\n\n" ..
+  "Mana potions add their average mana to the fight; a Mender's Potion adds its healing for 30 seconds, " ..
+  "counted as healing power on average over the fight.\n\nThe best mix of your potions for this fight is " ..
+  "shown below the list."
+
+local function potionList() local s = db().settings; s.potions = s.potions or {}; return s.potions end
+
+-- The plan for the list now (how many of each really fit), or nil.
+local function potionPlan()
+  local S = ns.State()
+  if not (S and S.st) then return nil end
+  local set = {}
+  for k, v in pairs(S.input.settings) do set[k] = v end
+  set.potions = potionList()
+  return E.PotionPlan(S.st, set)
+end
+
+local function planItem(plan, i)
+  for _, it in ipairs(plan and plan.items or {}) do if it.index == i then return it end end
+end
+
+-- [-] / [+] on row i: up to what is left on its cooldown; reaching that is "all".
+function O.PotionStep(i, d)
+  local list = potionList()
+  local e = list[i]
+  if not e then return end
+  local plan = potionPlan()
+  local it = planItem(plan, i)
+  local n = it and it.n or 0
+  if d > 0 then
+    local g = it and plan.groups[it.def.group]
+    local room = g and (g.fits - g.used + n) or n
+    if n + 1 >= room then e.n = E.POTION_ALL else e.n = n + 1 end
+  else
+    e.n = math.max(0, n - 1)
+  end
+  O.Changed(true)
+end
+
+function O.PotionRemove(i)
+  table.remove(potionList(), i)
+  O.Changed(true)
+end
+
+function O.PotionAdd(key)
+  local list = potionList()
+  if #list >= MAX_POTIONS then return end
+  for _, e in ipairs(list) do if e.key == key then return end end
+  list[#list + 1] = { key = key, n = E.POTION_ALL }
+  O.Changed(true)
+end
+
+-- The best counts for your list (cached per state), and how much more they heal.
+local bestCache = {}
+function O.PotionBest()
+  local S = ns.State()
+  if not (S and S.weights) then return nil end
+  if bestCache.state ~= S then
+    local set = {}
+    for k, v in pairs(S.input.settings) do set[k] = v end
+    set.potions = potionList()
+    local ok, best, hps = pcall(E.BestPotions, S.rotation, S.st, S.t, set)
+    bestCache = { state = S, best = ok and best or nil, gain = ok and hps and (hps - S.weights.base.ehps) or nil }
+    if not ok then ns.LogError("bestPotions", best) end
+  end
+  return bestCache.best, bestCache.gain
+end
+
+function O.PotionUseBest()
+  local best = O.PotionBest()
+  if not best then return end
+  local list = potionList()
+  for i, b in ipairs(best) do if list[i] and list[i].key == b.key then list[i].n = b.n end end
+  -- an item that takes all that is left on its cooldown follows the fight length
+  local plan = potionPlan()
+  for i, e in ipairs(list) do
+    local it = planItem(plan, i)
+    local g = it and plan.groups[it.def.group]
+    if g and e.n > 0 and g.used == g.fits and it.n == e.n then
+      local after = false
+      for j = i + 1, #list do local o = planItem(plan, j); if o and o.def.group == it.def.group and o.n > 0 then after = true end end
+      if not after then e.n = E.POTION_ALL end
+    end
+  end
+  O.Changed(true)
+end
+
+local function PotionSettings(p, x, y)
+  local head = Header(p, "Potions", x, y)
+  local hit = CreateFrame("Frame", nil, p)
+  hit:SetPoint("TOPLEFT", x, y + 2)
+  hit:SetSize(COL_W, 18)
+  if hit.EnableMouse then hit:EnableMouse(true) end
+  Tip(hit, "Potions", POTION_HELP)
+  local rows, groupLines = {}, {}
+  for i = 1, MAX_POTIONS do
+    local r = { name = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"),
+                count = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall") }
+    r.name:SetWidth(160); r.name:SetJustifyH("LEFT")
+    r.count:SetWidth(30); r.count:SetJustifyH("CENTER")
+    r.minus = Button(p, "-", 22, 20, function() O.PotionStep(r.index, -1) end)
+    r.plus = Button(p, "+", 22, 20, function() O.PotionStep(r.index, 1) end)
+    r.remove = Button(p, "Remove", 62, 20, function() O.PotionRemove(r.index) end)
+    r.hit = CreateFrame("Frame", nil, p)
+    r.hit:SetSize(160, 20)
+    if r.hit.EnableMouse then r.hit:EnableMouse(true) end
+    r.hit:SetScript("OnEnter", function(self)
+      if not r.item then return end
+      local it, def = r.item, r.item.def
+      local lines = def.text .. ". " .. (E.POTION_GROUPS[def.group] and E.POTION_GROUPS[def.group].name or "") .. " (2 minutes)."
+      if it.tooLow then lines = lines .. "\n\n|cffff5050Needs level " .. def.lvl .. ".|r"
+      elseif it.want >= E.POTION_ALL then lines = lines .. "\n\nAs many as fit in the fight (follows the fight length)."
+      elseif it.want > it.n then lines = lines .. "\n\n" .. it.want .. " set, " .. it.n .. " fit after the potions above it." end
+      ShowTip(self, def.name, lines)
+    end)
+    r.hit:SetScript("OnLeave", HideTip)
+    rows[i] = r
+    O.controls["potion:" .. i] = r
+  end
+  for g = 1, 2 do groupLines[g] = p:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall") end
+  O.controls.potionGroups = groupLines
+
+  -- Add potion...: the game's dropdown; every potion you can use, with its worth
+  local add = try("DropdownButton", p, "WowStyle1DropdownTemplate")
+  if add and add.SetupMenu then
+    add:SetWidth(190)
+    if add.SetDefaultText then add:SetDefaultText("Add potion...") end
+    add:SetupMenu(function(_, root)
+      local list = potionList()
+      if #list >= MAX_POTIONS then
+        if root.CreateTitle then root:CreateTitle("At most " .. MAX_POTIONS .. " potions") end
+        return
+      end
+      local S = ns.State()
+      local level = S and S.st and S.st.level or 60
+      local have = {}
+      for _, e in ipairs(list) do have[e.key] = true end
+      local groups = {}
+      for key, g in pairs(E.POTION_GROUPS) do groups[#groups + 1] = { key = key, g = g } end
+      table.sort(groups, function(a, b) return a.g.order < b.g.order end)
+      for _, gr in ipairs(groups) do
+        local any = false
+        for _, def in ipairs(E.POTIONS) do
+          if def.group == gr.key and not have[def.key] and (def.lvl or 1) <= level then
+            if not any and root.CreateTitle then root:CreateTitle(gr.g.name) end
+            any = true
+            local label = def.name
+            if not O.quietMenu and S and S.weights then
+              local ok, v = pcall(E.PotionValue, S.rotation, S.st, S.t, S.input.settings, def.key)
+              if ok and v then label = string.format("%s  |cff9d9d9d%+.1f HPS|r", def.name, v) end
+            end
+            local b = root:CreateButton(label, function() O.PotionAdd(def.key) end)
+            if b and b.SetTooltip then
+              b:SetTooltip(function(tooltip)
+                tooltip:SetText(def.name, 1, 1, 1)
+                tooltip:AddLine(def.text .. ".", nil, nil, nil, true)
+                tooltip:AddLine("HPS: what it adds used as often as it fits, instead of the others on its cooldown.", 0.6, 0.6, 0.6, true)
+              end)
+            end
+          end
+        end
+      end
+    end)
+    O.controls.potionAdd = add
+  end
+
+  -- Best for you: ... [Use it]
+  local best = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  best:SetWidth(COL_W - 70); best:SetJustifyH("LEFT")
+  local use = Button(p, "Use it", 62, 20, function() O.PotionUseBest() end)
+  Tip(use, "Use it", "Set the counts to the best mix of your potions for this fight.")
+  O.controls.potionBest, O.controls.potionUseBest, O.potionBestText = best, use, best
+
+  O.rows[#O.rows + 1] = function()
+    local list = potionList()
+    local plan = potionPlan()
+    local fl = db().settings.fightLength
+    -- display order: by cooldown group, then as listed
+    local order = {}
+    for i, e in ipairs(list) do
+      local def = E.POTION_BY_KEY[e.key]
+      if def then order[#order + 1] = { i = i, def = def } end
+    end
+    table.sort(order, function(a, b)
+      local ga, gb = E.POTION_GROUPS[a.def.group].order, E.POTION_GROUPS[b.def.group].order
+      if ga ~= gb then return ga < gb end
+      return a.i < b.i
+    end)
+    for _, r in ipairs(rows) do
+      r.index, r.item = nil, nil
+      for _, w in ipairs({ r.name, r.count, r.minus, r.plus, r.remove, r.hit }) do w:Hide() end
+    end
+    for _, gl in ipairs(groupLines) do gl:Hide() end
+    local ly, gi, lastGroup = y - 22, 0, nil
+    for n, o in ipairs(order) do
+      if n > MAX_POTIONS then break end
+      if o.def.group ~= lastGroup then
+        lastGroup = o.def.group
+        gi = gi + 1
+        local gl = groupLines[gi]
+        if gl then
+          local g = plan and plan.groups[o.def.group]
+          gl:ClearAllPoints(); gl:SetPoint("TOPLEFT", p, "TOPLEFT", x, ly)
+          gl:SetText(string.format("%s: %d fit in a %d s fight", E.POTION_GROUPS[o.def.group].name,
+            g and g.fits or E.PotionFits(fl, o.def.group), fl))
+          gl:Show()
+          ly = ly - 16
+        end
+      end
+      local r, it = rows[n], planItem(plan, o.i)
+      r.index, r.item = o.i, it
+      r.name:ClearAllPoints(); r.name:SetPoint("TOPLEFT", p, "TOPLEFT", x + 8, ly - 4)
+      r.hit:ClearAllPoints(); r.hit:SetPoint("TOPLEFT", p, "TOPLEFT", x + 8, ly)
+      r.minus:ClearAllPoints(); r.minus:SetPoint("TOPLEFT", p, "TOPLEFT", x + 170, ly)
+      r.count:ClearAllPoints(); r.count:SetPoint("TOPLEFT", p, "TOPLEFT", x + 192, ly - 4)
+      r.plus:ClearAllPoints(); r.plus:SetPoint("TOPLEFT", p, "TOPLEFT", x + 222, ly)
+      r.remove:ClearAllPoints(); r.remove:SetPoint("TOPLEFT", p, "TOPLEFT", x + 250, ly)
+      if it and it.tooLow then
+        r.name:SetText("|cff9d9d9d" .. o.def.name .. " (level " .. o.def.lvl .. ")|r")
+        r.count:SetText("")
+      else
+        r.name:SetText(o.def.name)
+        r.count:SetText(tostring(it and it.n or 0))
+        r.minus:Show(); r.plus:Show(); r.count:Show()
+        local g = it and plan.groups[o.def.group]
+        if r.plus.SetEnabled then r.plus:SetEnabled(g ~= nil and g.used < g.fits) end
+        if r.minus.SetEnabled then r.minus:SetEnabled((it and it.n or 0) > 0) end
+      end
+      r.name:Show(); r.remove:Show(); r.hit:Show()
+      ly = ly - 22
+    end
+    if #order == 0 then
+      groupLines[1]:ClearAllPoints(); groupLines[1]:SetPoint("TOPLEFT", p, "TOPLEFT", x, ly)
+      groupLines[1]:SetText("No potions: add the ones you drink in a fight."); groupLines[1]:Show()
+      ly = ly - 16
+    end
+    if add and add.SetupMenu then
+      add:ClearAllPoints(); add:SetPoint("TOPLEFT", p, "TOPLEFT", x, ly - 4)
+      if add.SetEnabled then add:SetEnabled(#list < MAX_POTIONS) end
+      if add.GenerateMenu then O.quietMenu = true; pcall(add.GenerateMenu, add); O.quietMenu = false end
+      ly = ly - 32
+    end
+    -- the best mix of these potions, when it differs from yours
+    best:Hide(); use:Hide()
+    local b, gain = O.PotionBest()
+    if b and plan then
+      local differs = false
+      for _, e in ipairs(b) do
+        local idx
+        for i, l in ipairs(list) do if l.key == e.key then idx = i end end
+        local it = idx and planItem(plan, idx)
+        if (it and it.n or 0) ~= e.n then differs = true end
+      end
+      best:ClearAllPoints(); best:SetPoint("TOPLEFT", p, "TOPLEFT", x, ly - 4)
+      if differs and gain and gain > 0.05 then
+        local parts = {}
+        for _, e in ipairs(b) do
+          local def = E.POTION_BY_KEY[e.key]
+          if def and e.n > 0 then parts[#parts + 1] = def.name .. " x" .. e.n end
+        end
+        best:SetText(string.format("Best for you: %s |cff40ff40(%+.1f HPS)|r",
+          #parts > 0 and table.concat(parts, ", ") or "none", gain))
+        use:ClearAllPoints(); use:SetPoint("TOPLEFT", p, "TOPLEFT", x + COL_W - 62, ly)
+        use:Show()
+      else
+        best:SetText("|cff9d9d9dThese counts are the best mix of your potions for this fight.|r")
+      end
+      best:Show()
+    end
+  end
+end
+
 -- Tooltips, on the Settings tab: the item line and what it shows, and the spell line.
 local function TooltipSettings(p, x, y)
   local tips = function() return db().tooltips end
@@ -1325,10 +1614,6 @@ local function Build()
     function() return db().settings.manaTidesInGroup end, function(v) db().settings.manaTidesInGroup = v end,
     0, 3, 1, tostring)
   y = y - ROW - 2
-  Check(p, "pots", LEFT, y, "Mana potion on cooldown",
-    "Drink a Major Mana Potion every 2 minutes (1,800 mana each). Turn off if you don't.",
-    function() return db().settings.majorManaPotions end, function(v) db().settings.majorManaPotions = v end)
-  y = y - 24
   Check(p, "insp", LEFT, y, "Count Inspiration (tank armor after crits)",
     function()
       return "Inspiration (a Holy talent) raises the tank's armor for a while after your heals crit. " ..
@@ -1337,13 +1622,18 @@ local function Build()
     end,
     function() return db().settings.includeInspiration end, function(v) db().settings.includeInspiration = v end)
 
-  -- Your spells and their overheal live on the Math tab, with every other number the model uses
+  -- the potions and runes you drink, and how many of each
   y = y - 40
-  Header(p, "Spells and overheal", LEFT, y)
+  PotionSettings(p, LEFT, y)
+
+  -- Your spells and their overheal live on the Math tab, with every other number
+  -- the model uses (right column, under the tooltips)
+  y = TOP - 172 - 140
+  Header(p, "Spells and overheal", RIGHT, y)
   Label(p, "Your spells, their ranks and the overheal you expect per spell are at the top of the Math tab.",
-    "GameFontHighlightSmall", LEFT, y - 20, COL_W)
+    "GameFontHighlightSmall", RIGHT, y - 20, COL_W)
   local ohb = Button(p, "Your spells", 130, 22, function() O.ShowMath("spells") end)
-  ohb:SetPoint("TOPLEFT", p, "TOPLEFT", LEFT - 2, y - 52)
+  ohb:SetPoint("TOPLEFT", p, "TOPLEFT", RIGHT - 2, y - 52)
   Tip(ohb, "Your spells", "Opens the Math tab at Your spells: every healing spell you know, all its ranks, " ..
     "the most efficient one, and the overheal you expect for it.")
   O.controls.YourSpells = ohb

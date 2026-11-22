@@ -850,5 +850,104 @@ do
   E.SPELLS = E.copy(E.GAME_SPELLS)
 end
 
+print("-- Potions: your list, shared cooldowns, mana, healing, time asleep")
+do
+  local inp = E.copy(E.DEFAULTS); inp.settings.rules = E.RULES; inp.level = 60
+  local st = E.Derive(inp)
+  local t = E.Talents(inp.talents, inp.settings.rules)
+  local base = E.copy(inp.settings)
+  base.fightLength = 300
+  local function with(list, fl)
+    local s = E.copy(base); s.potions = list; s.fightLength = fl or 300
+    return s
+  end
+  local function plan(list, fl) return E.PotionPlan(st, with(list, fl)) end
+  local ALL = E.POTION_ALL
+
+  near("fits: 300 s on a 2 min cooldown (0:15, 2:15, 4:15)", E.PotionFits(300, "potion"), 3)
+  near("fits: 120 s", E.PotionFits(120, "potion"), 1)
+  near("Major Mana, as many as fit: 3 x 1800", plan({ { key = "majorMana", n = ALL } }).mana, 5400)
+  local p = plan({ { key = "majorMenders", n = 1 }, { key = "majorMana", n = ALL } })
+  near("Mender's 1, Major Mana the rest: 2 x 1800 mana", p.mana, 3600)
+  near("... Mender's: +88 for 30 s of 300 s = +8.8 healing power", p.healing, 8.8)
+  near("2 + 2 on a cooldown that fits 3: 2 x 1800 + 1 x 1200 (the list's order)",
+       plan({ { key = "majorMana", n = 2 }, { key = "superiorMana", n = 2 } }).mana, 4800)
+  near("runes have their own cooldown: 3 x 1800 + 3 x 1200",
+       plan({ { key = "majorMana", n = ALL }, { key = "demonicRune", n = ALL } }).mana, 9000)
+  near("Restored Mana Potion: 20% of your max mana", plan({ { key = "restoredMana", n = 1 } }).mana, 0.2 * st.manaPool)
+  near("a Mender's Potion in a 20 s fight: up the whole fight", plan({ { key = "majorMenders", n = 1 } }, 20).healing, 88)
+  local low = {}
+  for k, v in pairs(st) do low[k] = v end
+  low.level = 40
+  near("too low a level for it: none", E.PotionPlan(low, with({ { key = "majorMana", n = ALL } })).count, 0)
+  local sheet = E.copy(base); sheet.potions = nil
+  near("no list (the sheet's switches): 1800 per potion, as before", E.PotionPlan(st, sheet).mana, 5400)
+
+  -- in the fight: a Mender's Potion heals exactly like its average healing power
+  local stH = {}
+  for k, v in pairs(st) do stH[k] = v end
+  stH.healing = st.healing + 8.8
+  local rH = E.Rotation("renew", stH, t, with({}))
+  local rM = E.Rotation("renew", st, t, with({ { key = "majorMenders", n = 1 } }))
+  near("Mender's in the fight = +8.8 healing power all fight", rM.ehps, rH.ehps, 1e-9)
+  -- Dreamless Sleep: the same mana as a plain 2100 potion, but 12 s less to cast
+  E.POTION_BY_KEY.test2100 = { key = "test2100", name = "test", group = "potion", mana = 2100, lvl = 1, text = "" }
+  local rD = E.Rotation("renew", st, t, with({ { key = "greaterDreamless", n = 1 } }, 600))
+  local rP = E.Rotation("renew", st, t, with({ { key = "test2100", n = 1 } }, 600))
+  E.POTION_BY_KEY.test2100 = nil
+  near("Dreamless Sleep: same mana as a 2100 potion", rD.mana, rP.mana, 1e-9)
+  near("... but asleep 12 s: heals less", rD.ehps < rP.ehps and 1 or 0, 1)
+
+  -- the best mix of your list: no split of the cooldowns heals more
+  local list = { { key = "majorMenders", n = 0 }, { key = "majorMana", n = ALL } }
+  for _, fl in ipairs({ 60, 300, 600 }) do
+    local best, hps = E.BestPotions("renew", st, t, with(list, fl))
+    local fits, top = E.PotionFits(fl, "potion"), -math.huge
+    for m = 0, fits do
+      local r = E.Rotation("renew", st, t, with({ { key = "majorMenders", n = m }, { key = "majorMana", n = fits - m } }, fl))
+      top = math.max(top, r.ehps)
+    end
+    near(string.format("best mix, %d s fight: as good as every split (%d Mender's)", fl, best[1].n), hps, top, 1e-6)
+  end
+  local short = E.BestPotions("renew", st, t, with(list, 60))
+  near("a short fight with mana to spare: Mender's", short[1].n, 1)
+  near("Major Mana Potion is worth something in a 5 min fight",
+       (E.PotionValue("renew", st, t, with({}), "majorMana") or 0) > 0 and 1 or 0, 1)
+
+  -- settings from before the list
+  local m1 = { majorManaPotions = true }; E.MigratePotions(m1)
+  near("old 'mana potion on cooldown' on: Major Mana as many as fit",
+       (#m1.potions == 1 and m1.potions[1].key == "majorMana" and m1.potions[1].n == ALL and m1.majorManaPotions == nil) and 1 or 0, 1)
+  local m2 = { majorManaPotions = false }; E.MigratePotions(m2)
+  near("old switch off: no potions", #m2.potions, 0)
+  local m3 = {}; E.MigratePotions(m3)
+  near("no old switch saved (its default was on): Major Mana", #m3.potions, 1)
+  local m4 = { potions = {} }
+  near("a list already there is left alone", E.MigratePotions(m4) and 1 or 0, 0)
+
+  -- the Math tab with potions: each spell's section = its fight line (healing power included)
+  assert(loadfile("Models/PriestMath.lua"))(nil, { Models = { PRIEST = E } })
+  local pinp = E.copy(inp); pinp.settings = with({ { key = "majorMenders", n = 1 }, { key = "majorMana", n = ALL } })
+  pinp.settings.known = nil
+  local PS = { st = st, t = t, input = pinp, rotation = "renew" }
+  PS.weights = E.Weights("renew", st, pinp)
+  PS.spells = E.SpellTable(st, t, pinp.settings)
+  local rows, ck = E.MathPage(PS)
+  local good, n = 0, 0
+  for _, sc in ipairs(ck.spells) do
+    local s2 = sc.step
+    n = n + 1
+    local want = s2.perCast * (1 - (s2.overheal or 0)) + s2.aegis * (1 - (pinp.settings.overheal.PWS or 0))
+    if math.abs(sc.heal - want) < 1e-9 then good = good + 1 end
+  end
+  near("math with a Mender's Potion: each spell's section = its fight line", (n > 0 and good == n) and 1 or 0, 1)
+  near("... and the fight adds up", (math.abs(ck.fight.eff - PS.weights.base.eff) < 1e-6 and ck.fight.worst < 1e-6) and 1 or 0, 1)
+  local text = {}
+  for _, r in ipairs(rows) do text[#text + 1] = (r[1] or r.note or r.head or "") .. " | " .. (r[2] or "") end
+  text = table.concat(text, "\n")
+  near("math shows each potion: Major Mana x2, Mender's healing",
+       (text:find("Major Mana Potion | 2 x 1800") and text:find("Major Mender's Potion | %+88 healing for 30 s x 1, over 300 s")) and 1 or 0, 1)
+end
+
 print(string.format("\n%d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

@@ -13,7 +13,9 @@ local frames = {}
 local noop = function() end
 local function newFontString()
   local fs = {}
-  for _, m in ipairs({ "SetPoint", "SetWidth", "SetHeight", "SetJustifyH", "SetJustifyV", "SetFontObject", "Hide", "Show" }) do fs[m] = noop end
+  for _, m in ipairs({ "SetPoint", "ClearAllPoints", "SetWidth", "SetHeight", "SetJustifyH", "SetJustifyV", "SetFontObject" }) do fs[m] = noop end
+  function fs:Show() self.shown = true end
+  function fs:Hide() self.shown = false end
   function fs:SetText(t) self.text = t end
   function fs:GetText() return self.text end
   return fs
@@ -534,8 +536,8 @@ do
   expect(HolyMathDB.PRIEST.settings.fightLength == 240, "slider sets the fight length")
   expect(O.hps.text ~= before, "result updates after a change")
   expect(not O.controls.ohRENEW, "no overheal sliders on the Settings tab (they are on the Math tab)")
-  O.controls.pots:SetChecked(false); O.controls.pots.scripts.OnClick(O.controls.pots)
-  expect(HolyMathDB.PRIEST.settings.majorManaPotions == false, "Blizzard checkbox turns mana potions off")
+  O.controls.insp:SetChecked(false); O.controls.insp.scripts.OnClick(O.controls.insp)
+  expect(HolyMathDB.PRIEST.settings.includeInspiration == false, "Blizzard checkbox turns Inspiration off")
   -- playstyle: the game's dropdown (WowStyle1), one radio per playstyle, no HPS
   local dd = O.controls.rot
   expect(requestedTemplates.WowStyle1DropdownTemplate and type(dd.gen) == "function", "playstyle uses the game's dropdown")
@@ -589,11 +591,12 @@ do
   GameTooltip.lines = {}
   O.controls.Defaults.scripts.OnEnter(O.controls.Defaults)
   expect(GameTooltip.lines[1] == "Defaults" and (GameTooltip.lines[2] or ""):find("starting value"), "hovering Defaults explains it")
-  O.controls.pots.scripts.OnEnter(O.controls.pots)
-  expect((GameTooltip.lines[2] or ""):find("Major Mana Potion"), "hovering a setting explains it")
+  O.controls.insp.scripts.OnEnter(O.controls.insp)
+  expect((GameTooltip.lines[2] or ""):find("armor"), "hovering a setting explains it")
   O.controls.Defaults.scripts.OnClick(O.controls.Defaults)
   local s = HolyMathDB.PRIEST.settings
-  expect(s.fightLength == 120 and s.overheal.RENEW == 0.25 and s.majorManaPotions and HolyMathDB.PRIEST.rotation == "renew",
+  expect(s.fightLength == 120 and s.overheal.RENEW == 0.25 and #s.potions == 1 and s.potions[1].key == "majorMana"
+    and s.potions[1].n == ns.model.POTION_ALL and HolyMathDB.PRIEST.rotation == "renew",
     "Defaults restores the settings")
   SlashCmdList.HOLYMATH("")
   expect(not O.frame:IsShown(), "/hm again closes it")
@@ -971,18 +974,18 @@ do
   expect(math.abs(shown - h1) < 0.01, "its HPS in the menu is what you get when it's loaded")
 
   -- auto-save: a change goes into the loaded profile by itself, and only into it
-  O.controls.pots:SetChecked(false); O.controls.pots.scripts.OnClick(O.controls.pots)
-  expect(db.profiles["1 bounce"].settings.majorManaPotions == false and closed() == "1 bounce",
+  O.controls.insp:SetChecked(false); O.controls.insp.scripts.OnClick(O.controls.insp)
+  expect(db.profiles["1 bounce"].settings.includeInspiration == false and closed() == "1 bounce",
     "a change on the Settings tab is saved into the loaded profile")
-  expect(db.profiles["3 bounces"].settings.majorManaPotions == true, "... and not into the others")
+  expect(db.profiles["3 bounces"].settings.includeInspiration == true, "... and not into the others")
   db.settings.overheal.GH = 0.5; O.Changed(true)
   expect(db.profiles["1 bounce"].settings.overheal.GH == 0.5, "overheal set on the Math tab is saved into it too")
   expect(not button(menu(), "Save changes"), "nothing to save by hand")
   P.Load("3 bounces")
-  expect(db.settings.majorManaPotions == true and db.settings.overheal.GH == 0.25 and db.profiles["1 bounce"].settings.pomHits == 1,
+  expect(db.settings.includeInspiration == true and db.settings.overheal.GH == 0.25 and db.profiles["1 bounce"].settings.pomHits == 1,
     "switching profiles: each keeps its own settings")
   P.Load("1 bounce")
-  expect(db.settings.majorManaPotions == false and db.settings.overheal.GH == 0.5, "... and switching back brings them back")
+  expect(db.settings.includeInspiration == false and db.settings.overheal.GH == 0.5, "... and switching back brings them back")
   -- profiles hold no typed Math-tab values
   db.overrides["stat.healing"] = 1000
   P.Save("1 bounce")
@@ -1064,6 +1067,193 @@ do
   StaticPopupDialogs, StaticPopup_Show, StaticPopup_Hide = nil, nil, nil
 end
 
+-- Potions on the Settings tab: the list by cooldown, counts, add, remove, best mix
+do
+  local O, M = ns.Options, ns.model
+  local db = HolyMathDB.PRIEST
+  local function click(b) b.scripts.OnClick(b) end
+  click(O.controls.Defaults)
+  local function row(i) return O.controls["potion:" .. i] end
+  local function shownRows()
+    local out = {}
+    for i = 1, 5 do local r = row(i); if r.index then out[#out + 1] = r end end
+    return out
+  end
+  O.Refresh(true)
+  local r1 = row(1)
+  expect(r1.index == 1 and r1.name.text == "Major Mana Potion" and r1.count.text == "1",
+    "default: Major Mana Potion, 1 in a 120 s fight (" .. tostring(r1.name.text) .. " " .. tostring(r1.count.text) .. ")")
+  expect(O.controls.potionGroups[1].text:find("Potion cooldown: 1 fit in a 120 s fight"), "its cooldown line: " .. tostring(O.controls.potionGroups[1].text))
+  -- "as many as fit" follows the fight length
+  db.settings.fightLength = 300; O.Changed(true)
+  expect(row(1).count.text == "3", "as many as fit follows the fight: 3 in 300 s")
+  local manaBefore = ns.State().weights.base.mana
+
+  -- Add potion: the game's dropdown, grouped by cooldown, each with its worth
+  local add = O.controls.potionAdd
+  expect(add and type(add.gen) == "function", "Add potion uses the game's dropdown")
+  local m = { buttons = {}, titles = {} }
+  add.gen(add, { CreateTitle = function(_, t) m.titles[#m.titles + 1] = t end,
+                 CreateButton = function(_, t, fn) local b = { text = t, fn = fn }; function b:SetTooltip(f) self.tip = f end
+                   m.buttons[#m.buttons + 1] = b; return b end })
+  expect(m.titles[1] == "Potion cooldown" and m.titles[2] == "Rune cooldown", "menu: grouped by cooldown")
+  local names = {}
+  for _, b in ipairs(m.buttons) do names[#names + 1] = b.text end
+  local all = table.concat(names, "\n")
+  expect(not all:find("Major Mana Potion") and all:find("Major Mender's Potion") and all:find("Demonic Rune"),
+    "menu: the ones not in your list yet")
+  expect(all:find("Major Mender's Potion  |cff9d9d9d[+-]%d"), "menu: each with what it adds in HPS")
+  local function pick(prefix) for _, b in ipairs(m.buttons) do if b.text:find(prefix, 1, true) == 1 then return b end end end
+  pick("Major Mender's Potion").fn()
+  pick("Demonic Rune").fn()
+  local list = db.settings.potions
+  expect(#list == 3 and list[2].key == "majorMenders" and list[3].key == "demonicRune", "added to the list")
+  -- the Mender's comes after the Major Mana: nothing left on the potion cooldown for it
+  local rows = shownRows()
+  expect(#rows == 3 and rows[1].name.text == "Major Mana Potion" and rows[2].name.text == "Major Mender's Potion"
+    and rows[2].count.text == "0" and rows[3].name.text == "Demonic Rune" and rows[3].count.text == "3",
+    "shown by cooldown: Major Mana 3, Mender's 0 (no room), Demonic Rune 3 (its own cooldown)")
+  expect(O.controls.potionGroups[2].text:find("Rune cooldown: 3 fit"), "the runes' cooldown line")
+  expect(ns.State().weights.base.mana > manaBefore, "runes add mana on top of the potions")
+
+  -- [-] on Major Mana frees a cooldown; [+] on Mender's takes it
+  click(row(1).minus)
+  expect(list[1].n == 2 and row(1).count.text == "2", "[-] takes one away")
+  click(row(2).plus)
+  expect(row(2).count.text == "1" and list[2].n == M.POTION_ALL, "[+] up to what fits: then it's as many as fit")
+  local S = ns.State()
+  expect(S.weights.base.potions.healing > 0, "the Mender's Potion adds healing power on average")
+  click(row(2).minus); click(row(2).minus)
+  expect(list[2].n == 0 and row(2).count.text == "0", "[-] down to 0")
+
+  -- best for you, and Use it
+  db.settings.fightLength = 60; O.Changed(true)
+  local best, gain = O.PotionBest()
+  expect(best and gain, "a best mix is worked out")
+  realprint("     potions, 60 s fight: " .. tostring(O.potionBestText.text))
+  if gain and gain > 0.05 then
+    expect(O.potionBestText.text:find("Best for you:") and O.controls.potionUseBest.shown, "best mix shown with Use it")
+    click(O.controls.potionUseBest)
+    local _, after = O.PotionBest()
+    expect(math.abs(after or 1) < 0.05 and O.potionBestText.text:find("best mix"), "Use it: the counts are the best mix")
+  end
+  -- Remove
+  click(row(3).remove)
+  expect(#list == 2 and list[2].key ~= "demonicRune" and list[1].key ~= "demonicRune", "Remove takes it out of the list")
+  -- level: a potion you can't use yet says so
+  local realLevel = UnitLevel
+  UnitLevel = function() return 40 end
+  ns.MarkDirty(); O.Refresh(true)
+  local lowRow
+  for _, r in ipairs(shownRows()) do if r.name.text:find("Major Mana Potion") then lowRow = r end end
+  expect(lowRow and lowRow.name.text:find("level 49"), "a potion above your level: shown with the level it needs")
+  UnitLevel = realLevel
+  ns.MarkDirty(); O.Refresh(true)
+  -- the Math tab lists them
+  db.settings.fightLength = 300
+  db.settings.potions = { { key = "majorMenders", n = 1 }, { key = "majorMana", n = M.POTION_ALL } }
+  O.Changed(true)
+  local text = {}
+  for _, r in ipairs(ns.model.MathPage(ns.State())) do text[#text + 1] = (r[1] or r.note or "") .. " | " .. (r[2] or "") end
+  text = table.concat(text, "\n")
+  expect(text:find("Major Mana Potion | 2 x 1800") and text:find("Major Mender's Potion | %+88 healing")
+    and text:find("Healing power here"), "Math tab: a line for each potion, and the healing power the casts use")
+  -- profiles keep their own potions, and say how they differ
+  local P = ns.Profiles
+  P.Save("menders"); P.Save("no pots"); db.settings.potions = {}; O.Changed(true)   -- (the loaded one saves itself)
+  local diff = table.concat(P.Diff("menders"), "\n")
+  expect(diff:find("Potions: Major Mender's Potion x1, Major Mana Potion %(all%) %(now none%)"), "profile difference: " .. diff)
+  P.Load("menders")
+  expect(#db.settings.potions == 2, "loading a profile brings its potions back")
+  P.Delete("menders"); P.Delete("no pots")
+  -- speed: a refresh works out the best mix again (3 potions, a 5 min fight)
+  db.settings.potions = { { key = "majorMenders", n = 1 }, { key = "majorMana", n = M.POTION_ALL }, { key = "demonicRune", n = M.POTION_ALL } }
+  db.settings.fightLength = 300
+  local t0 = os.clock()
+  for _ = 1, 5 do O.Changed(true) end
+  local ms = (os.clock() - t0) / 5 * 1000
+  realprint(string.format("     potions: %.0f ms per window refresh with the best mix (desktop Lua)", ms))
+  expect(ms < 300, "a refresh with 3 potions stays quick")
+  -- /hm set pots on|off
+  SlashCmdList.HOLYMATH("set pots off")
+  expect(#db.settings.potions == 0, "/hm set pots off: no potions")
+  SlashCmdList.HOLYMATH("set pots on")
+  expect(#db.settings.potions == 1 and db.settings.potions[1].key == "majorMana", "/hm set pots on: Major Mana Potions")
+  click(O.controls.Defaults)
+end
+
+-- A Mender's Potion's buff active when the stats are read: its healing is taken out
+-- of healing power, but only after the tooltips (which have it in them) are read
+do
+  local M = ns.model
+  local realAuras, realGetItemSpell, realDesc, realHeal = C_UnitAuras.GetAuraDataByIndex, C_Item.GetItemSpell,
+    C_Spell.GetSpellDescription, GetSpellBonusHealing
+  local function rk(S, key, rank) for _, r in ipairs(S.info.client) do if r.key == key and r.rank == rank then return r end end end
+  ns.clientSeen = nil; ns.MarkDirty()
+  local S0 = ns.State(true)
+  local before, renewBase, ghBase = S0.st.healing, rk(S0, "RENEW", 9).base, rk(S0, "GH", 4).base
+  -- the buff: the game's healing power and its spell tooltips are 88 higher
+  local up = {}
+  for k, v in pairs(S0.st) do up[k] = v end
+  up.healing = before + 88
+  local renewUp = M.ModelTooltipHeal("RENEW", 9, up, S0.t, S0.input.settings)
+  local ghUp = M.ModelTooltipHeal("GH", 4, up, S0.t, S0.input.settings)
+  C_Item.GetItemSpell = function(id) if id == 250949 then return "Healing Brew", 555001 end end
+  C_UnitAuras.GetAuraDataByIndex = function(_, i)
+    return ({ { name = "Greater Blessing of Kings" }, { name = "Healing Brew", spellId = 555001 } })[i]
+  end
+  GetSpellBonusHealing = function() return realHeal() + 88 end
+  C_Spell.GetSpellDescription = function(id)
+    if id == 109 then return string.format("Heals the target of %d damage over 15 sec.", math.floor(renewUp + 0.5)) end
+    if id == 204 then
+      return string.format("A slow casting spell that heals a single target for %d to %d.", math.floor(ghUp - 118 + 0.5), math.floor(ghUp + 118 + 0.5))
+    end
+    return realDesc(id)
+  end
+  ns.clientSeen = nil; ns.MarkDirty()
+  local S = ns.State(true)
+  expect(math.abs(S.st.healing - before) < 1e-6 and S.info.how.potionBuff and S.info.how.potionBuff:find("Major Mender's Potion"),
+    "Major Mender's buff active: its +88 is taken out of the game's healing power")
+  expect(math.abs(rk(S, "RENEW", 9).base - renewBase) < 1 and math.abs(rk(S, "GH", 4).base - ghBase) < 1,
+    string.format("... after the tooltips are read: base heals unchanged (Renew %.1f/%.1f, GH %.1f/%.1f)",
+      rk(S, "RENEW", 9).base, renewBase, rk(S, "GH", 4).base, ghBase))
+  printed = {}
+  SlashCmdList.HOLYMATH("check")
+  expect(table.concat(printed, "\n"):find("Potion: Major Mender's Potion active"), "/hm check says so")
+  SlashCmdList.HOLYMATH("dump")
+  local found = false
+  for _, b in ipairs(HolyMathDB.dump.buffIds or {}) do if b.spellId == 555001 then found = true end end
+  expect(found and HolyMathDB.dump.potionSpells.majorMenders.spellId == 555001, "/hm dump keeps buff and potion spell IDs")
+  C_UnitAuras.GetAuraDataByIndex, C_Item.GetItemSpell, GetSpellBonusHealing, C_Spell.GetSpellDescription =
+    realAuras, realGetItemSpell, realHeal, realDesc
+  ns.clientSeen = nil; ns.MarkDirty(); ns.State(true)
+end
+
+-- Saved settings from before the potion list
+do
+  local function login(saved)
+    HolyMathDB = { PRIEST = saved }
+    local ns5 = {}
+    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
+      assert(loadfile(f))("HolyMath", ns5)
+    end
+    local core5 = frames[#frames]
+    core5.scripts.OnEvent(core5, "PLAYER_LOGIN")
+    return HolyMathDB.PRIEST
+  end
+  local keep, keepSlash = HolyMathDB, SlashCmdList.HOLYMATH
+  local a = login({ settings = { majorManaPotions = true, fightLength = 120 } })
+  expect(#a.settings.potions == 1 and a.settings.potions[1].key == "majorMana" and a.settings.majorManaPotions == nil,
+    "saved 'mana potion on cooldown' on: Major Mana Potions")
+  local b = login({ settings = { majorManaPotions = false, fightLength = 120 },
+                    profiles = { old = { settings = { majorManaPotions = true, pomHits = 2 }, rotation = "renew" } } })
+  expect(#b.settings.potions == 0, "saved off: no potions, and it stays empty (not refilled from the default)")
+  expect(#b.profiles.old.settings.potions == 1 and b.profiles.old.settings.majorManaPotions == nil, "an old profile's switch moves over too")
+  local c = login({ settings = { potions = {}, fightLength = 120 } })
+  expect(#c.settings.potions == 0, "an emptied list stays empty at the next login")
+  HolyMathDB, SlashCmdList.HOLYMATH = keep, keepSlash
+end
+
 -- The window closes in combat: close button, /hm and Esc
 do
   local O = ns.Options
@@ -1104,8 +1294,8 @@ do
   local it = O.controls["rot:1"]
   it.scripts.OnClick(it)
   expect(HolyMathDB.PRIEST.rotation == it.key, "dropdown works without the game's art too")
-  O.controls.pots.scripts.OnClick(O.controls.pots)
-  expect(HolyMathDB.PRIEST.settings.majorManaPotions == false, "fallback toggle turns mana potions off")
+  O.controls.insp.scripts.OnClick(O.controls.insp)
+  expect(HolyMathDB.PRIEST.settings.includeInspiration == false, "fallback toggle turns Inspiration off")
   expect(O.hps.text and O.hps.text:find("HPS"), "fallback window shows the result")
   O.controls.Defaults.scripts.OnClick(O.controls.Defaults)
   missingTemplates = {}

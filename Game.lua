@@ -168,6 +168,32 @@ function G.BuffNames()
   return names
 end
 
+-- A Mender's Potion's buff on you right now: its extra healing is in the game's
+-- healing power, and the fight model adds the potions' own average, so it is taken
+-- out. Found by the potion's spell (the item's "Use:"), by ID or name. Returns the
+-- healing and the potion's name, or 0.
+function G.PotionHealingBuff()
+  local getItemSpell = (C_Item and C_Item.GetItemSpell) or GetItemSpell
+  if not getItemSpell or not E.POTIONS then return 0 end
+  local ids, names = {}, {}
+  for i = 1, 60 do
+    local a = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex and safe(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+    if type(a) ~= "table" then break end
+    if num(a.spellId) then ids[a.spellId] = true end
+    if type(a.name) == "string" and not (issecretvalue and issecretvalue(a.name)) then names[a.name] = true end
+  end
+  local best, which = 0, nil
+  for _, def in ipairs(E.POTIONS) do
+    if def.healing then
+      local spellName, spellID = safe(getItemSpell, def.id)
+      if (spellID and ids[spellID]) or (type(spellName) == "string" and names[spellName]) then
+        if def.healing > best then best, which = def.healing, def.name end
+      end
+    end
+  end
+  return best, which
+end
+
 local function hasBuff(names, pattern)
   for _, n in ipairs(names) do if n:find(pattern) then return true end end
   return false
@@ -245,6 +271,13 @@ function G.BuildInput(db)
   E.AdjustTalents(ranks, known, byName)
   local st, how = G.ReadStats(ranks)
   local buffs = G.BuffNames()
+  -- A Mender's Potion's buff: noted here, taken out of healing power in Core.lua's
+  -- Rebuild only after the spell tooltips are read (they have it in them).
+  local potHeal, potName = G.PotionHealingBuff()
+  if potHeal > 0 and not st.invalid then
+    st.potionBuff = potHeal
+    how.potionBuff = string.format("%s active: its +%d healing taken out (potions are counted over the fight)", potName, potHeal)
+  end
   local _, race = UnitRace("player")
   local settings = E.copy(db.settings)
   settings.known = known

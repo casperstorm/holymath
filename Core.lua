@@ -14,6 +14,9 @@ local function ClassDefaults(model)
   d.settings.shadowSpiritBuff = false
   -- A typical Classic raid boss lasts about 2 minutes (the sheet assumed 5).
   d.settings.fightLength = 120
+  -- Potions: a list (Settings tab); the sheet's two switches are only for its tests.
+  d.settings.majorManaPotions, d.settings.cheapManaPotions = nil, nil
+  d.settings.potions = { { key = "majorMana", n = model.POTION_ALL } }
   return d
 end
 ns.ClassDefaults = ClassDefaults
@@ -27,9 +30,13 @@ function ns.TooltipDefaults()
   return d
 end
 
+-- Fills in what dst is missing from src. A list (the potions) is taken whole when
+-- missing, never filled in item by item: an emptied list stays empty.
 local function merge(dst, src)
   for k, v in pairs(src) do
-    if type(v) == "table" then dst[k] = type(dst[k]) == "table" and dst[k] or {}; merge(dst[k], v)
+    if type(v) == "table" and v[1] ~= nil then
+      if dst[k] == nil then dst[k] = {}; merge(dst[k], v) end
+    elseif type(v) == "table" then dst[k] = type(dst[k]) == "table" and dst[k] or {}; merge(dst[k], v)
     elseif dst[k] == nil then dst[k] = v end
   end
 end
@@ -68,6 +75,9 @@ local function Rebuild()
   local spells, pending, missing = G.ClientSpells(info.spellIds, info.inInstance)
   ns.clientSeen = ns.clientSeen or {}
   info.client = E.ApplyClientData(st.invalid and {} or spells, st, t, input.settings, ns.clientSeen, GetTime and GetTime())
+  -- a Mender's Potion active now: the tooltips above had its healing in them (as
+  -- they should); the fight counts potions over the whole fight, so it comes out
+  if (st.potionBuff or 0) > 0 then st.healing = math.max(0, st.healing - st.potionBuff) end
   -- a reading held back as a buff's: look again once a buff would be over, so a
   -- lasting change becomes the rank's own even if nothing else happens meanwhile
   -- (a heal kept from outside an instance has no new reading to wait for)
@@ -213,6 +223,7 @@ function P.FillDefaults()
   for _, p in pairs(ns.db.profiles or {}) do
     if type(p) == "table" then
       p.settings = type(p.settings) == "table" and p.settings or {}
+      E.MigratePotions(p.settings)
       merge(p.settings, d.settings)
       if not (p.rotation and E.ROTATIONS[p.rotation]) then p.rotation = d.rotation end
     end
@@ -236,6 +247,7 @@ function P.Load(name)
   -- a profile saved by an older version gets the settings added since (their defaults)
   local d = ClassDefaults(ns.model)
   p.settings = type(p.settings) == "table" and p.settings or {}
+  E.MigratePotions(p.settings)
   merge(p.settings, d.settings)
   if not (p.rotation and E.ROTATIONS[p.rotation]) then p.rotation = d.rotation end
   ns.db.settings, ns.db.rotation = E.copy(p.settings), p.rotation
@@ -288,7 +300,7 @@ end
 -- "Prayer of Mending bounces: 1 (now 3)".
 local LABELS = {
   fightLength = { "Fight length", "sec" }, pomHits = { "Prayer of Mending bounces" },
-  manaTidesInGroup = { "Mana Tide totems" }, majorManaPotions = { "Mana potion on cooldown", "onoff" },
+  manaTidesInGroup = { "Mana Tide totems" },
   includeInspiration = { "Count Inspiration", "onoff" }, imperfectPlay = { "Downtime used", "pct0" },
   litanyAlternation = { "Litany of Light, on its own", "pct0" },
 }
@@ -297,6 +309,18 @@ local function show(v, unit)
   if unit and E.MathFormat and type(v) == "number" then return E.MathFormat(unit, v) end
   return tostring(v)
 end
+-- "Major Mender's Potion x1, Major Mana Potion (all)" / "none".
+function P.PotionText(list)
+  local parts = {}
+  for _, e in ipairs(type(list) == "table" and list or {}) do
+    local def = E.POTION_BY_KEY and E.POTION_BY_KEY[e.key]
+    if def and (e.n or 0) > 0 then
+      parts[#parts + 1] = def.name .. ((e.n or 0) >= E.POTION_ALL and " (all)" or (" x" .. e.n))
+    end
+  end
+  return #parts > 0 and table.concat(parts, ", ") or "none"
+end
+
 function P.Diff(name)
   local p = (ns.db.profiles or {})[name]
   if not p then return {} end
@@ -319,6 +343,8 @@ function P.Diff(name)
         local def = E.SPELLS and E.SPELLS[s]
         line("Overheal, " .. (def and def.name or s), a[s], b[s], "pct0")
       end
+    elseif k == "potions" and not deepEqual(a, b) then
+      out[#out + 1] = string.format("Potions: %s (now %s)", P.PotionText(a), P.PotionText(b))
     elseif not deepEqual(a, b) and type(a) ~= "table" then
       local l = LABELS[k]
       line(l and l[1] or k, a, b, l and l[2])
@@ -361,6 +387,7 @@ local function Check()
   print("  Crit: " .. S.info.how.crit)
   print("  Regen: " .. S.info.how.regen)
   print("  Talents read via: " .. S.info.talentSource)
+  if S.info.how.potionBuff then print("  Potion: " .. S.info.how.potionBuff) end
   local found, missing = {}, {}
   for key, name in pairs(E.TALENT_NAMES) do
     local r = S.info.talentsByName[name]
@@ -506,7 +533,24 @@ local function Dump()
   end
   end)
 
-  section("buffs", function() d.buffs = G.BuffNames() end)
+  section("buffs", function()
+    d.buffs = G.BuffNames()
+    -- each buff's spell ID too, to match a potion's buff (Mender's Potion) by its spell
+    d.buffIds = {}
+    for i = 1, 60 do
+      local a = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex and G.safe(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+      if type(a) ~= "table" then break end
+      d.buffIds[#d.buffIds + 1] = { name = a.name, spellId = a.spellId }
+    end
+    d.potionSpells = {}
+    local getItemSpell = (C_Item and C_Item.GetItemSpell) or GetItemSpell
+    for _, def in ipairs(E.POTIONS or {}) do
+      if def.healing and getItemSpell then
+        local name, id = G.safe(getItemSpell, def.id)
+        d.potionSpells[def.key] = { item = def.id, spell = name, spellId = id }
+      end
+    end
+  end)
   section("items", function()
     d.items = {}
     for slot = 1, 18 do
@@ -579,7 +623,8 @@ local function Set(args)
     db.settings.overheal[E.OVERHEAL_ALIASES[a:lower()]] = tonumber(b) / (tonumber(b) > 1 and 100 or 1)
   elseif what == "pomhits" and tonumber(a) then db.settings.pomHits = tonumber(a)
   elseif what == "tides" and tonumber(a) then db.settings.manaTidesInGroup = tonumber(a)
-  elseif what == "pots" then db.settings.majorManaPotions = (a == "on")
+  elseif what == "pots" then   -- on: Major Mana Potions as often as they fit; off: no potions
+    db.settings.potions = (a == "on") and { { key = "majorMana", n = E.POTION_ALL } } or {}
   elseif what == "inspiration" then db.settings.includeInspiration = (a == "on")
   else
     local rots, ohs = {}, {}
@@ -650,6 +695,8 @@ f:SetScript("OnEvent", function(self, event, unit)
     ns.enabled = ns.model ~= nil
     if not ns.enabled then return end
     HolyMathDB[class] = HolyMathDB[class] or {}
+    -- "mana potion on cooldown" from before the potion list becomes the list
+    ns.model.MigratePotions(HolyMathDB[class].settings)
     merge(HolyMathDB[class], ClassDefaults(ns.model))
     merge(HolyMathDB[class], { tooltips = ns.TooltipDefaults() })
     -- options the window no longer has (only upgrades, Shift only, notes): their old defaults

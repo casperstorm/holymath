@@ -834,6 +834,196 @@ function E.ApplyClientData(spells, st, t, set, seen, now)
 end
 
 ---------------------------------------------------------------------------
+-- Potions and runes for the fight.
+-- From Wowhead's Forever item data (21-22 Nov 2026); the Mender's Potions'
+-- 2 min cooldown is from the client's own tooltip (Wowhead leaves it out).
+-- group: the items in one group share a cooldown, so together they fit only so
+-- many times in a fight. Potions all share the potion cooldown (Mender's
+-- Potions too, checked in game); runes have their own.
+--   mana = average mana restored; manaPct = share of your max mana;
+--   healing = extra healing power for dur seconds; sleep = seconds you can't cast.
+---------------------------------------------------------------------------
+E.POTION_GROUPS = {
+  potion = { name = "Potion cooldown", cd = 120, order = 1 },
+  rune = { name = "Rune cooldown", cd = 120, order = 2 },
+}
+E.POTION_ALL = 99      -- a count this high means "as many as fit"
+E.POTIONS = {
+  { key = "majorMana", id = 13444, name = "Major Mana Potion", lvl = 49, group = "potion", mana = (1350 + 2250) / 2, text = "1350 to 2250 mana" },
+  { key = "superiorMana", id = 13443, name = "Superior Mana Potion", lvl = 41, group = "potion", mana = (900 + 1500) / 2, text = "900 to 1500 mana" },
+  { key = "greaterMana", id = 6149, name = "Greater Mana Potion", lvl = 31, group = "potion", mana = (700 + 900) / 2, text = "700 to 900 mana" },
+  { key = "mana", id = 3827, name = "Mana Potion", lvl = 22, group = "potion", mana = (455 + 585) / 2, text = "455 to 585 mana" },
+  { key = "restoredMana", id = 282013, name = "Restored Mana Potion", lvl = 1, group = "potion", manaPct = 0.20, text = "20% of your mana" },
+  { key = "majorRejuv", id = 18253, name = "Major Rejuvenation Potion", lvl = 50, group = "potion", mana = (1440 + 1760) / 2, text = "1440 to 1760 mana and health" },
+  { key = "tessasTonic", id = 274935, name = "Tessa's Tonic", lvl = 35, group = "potion", mana = (720 + 880) / 2, text = "720 to 880 mana and health" },
+  { key = "wildvine", id = 9144, name = "Wildvine Potion", lvl = 35, group = "potion", mana = (1 + 1500) / 2, text = "1 to 1500 mana and health" },
+  { key = "greaterDreamless", id = 20002, name = "Greater Dreamless Sleep Potion", lvl = 55, group = "potion", mana = 2100, sleep = 12,
+    text = "2100 mana and health, asleep for 12 s" },
+  { key = "dreamless", id = 12190, name = "Dreamless Sleep Potion", lvl = 35, group = "potion", mana = 1200, sleep = 12,
+    text = "1200 mana and health, asleep for 12 s" },
+  { key = "majorMenders", id = 250949, name = "Major Mender's Potion", lvl = 55, group = "potion", healing = 88, dur = 30, text = "+88 healing for 30 s" },
+  { key = "superiorMenders", id = 250948, name = "Superior Mender's Potion", lvl = 45, group = "potion", healing = 62, dur = 30, text = "+62 healing for 30 s" },
+  { key = "greaterMenders", id = 250947, name = "Greater Mender's Potion", lvl = 35, group = "potion", healing = 44, dur = 30, text = "+44 healing for 30 s" },
+  { key = "menders", id = 250946, name = "Mender's Potion", lvl = 25, group = "potion", healing = 31, dur = 30, text = "+31 healing for 30 s" },
+  { key = "lesserMenders", id = 250945, name = "Lesser Mender's Potion", lvl = 15, group = "potion", healing = 20, dur = 30, text = "+20 healing for 30 s" },
+  { key = "minorMenders", id = 250944, name = "Minor Mender's Potion", lvl = 5, group = "potion", healing = 13, dur = 30, text = "+13 healing for 30 s" },
+  { key = "demonicRune", id = 12662, name = "Demonic Rune", lvl = 1, group = "rune", mana = (900 + 1500) / 2, text = "900 to 1500 mana for 600 to 1000 health" },
+  { key = "darkRune", id = 20520, name = "Dark Rune", lvl = 1, group = "rune", mana = (900 + 1500) / 2, text = "900 to 1500 mana for 600 to 1000 health" },
+}
+E.POTION_BY_KEY = {}
+for _, p in ipairs(E.POTIONS) do E.POTION_BY_KEY[p.key] = p end
+
+-- How many times one cooldown fits in the fight: the first at 15 s, then one per
+-- cooldown (the sheet's count for mana potions).
+function E.PotionFits(fl, group)
+  local g = E.POTION_GROUPS[group]
+  return max(1, ceil((fl - 15) / (g and g.cd or 120)))
+end
+
+-- Settings saved before the potion list: "mana potion on cooldown" (and the
+-- sheet's cheaper potion) become the list. Changes s; true if it did.
+function E.MigratePotions(s)
+  if type(s) ~= "table" or s.potions ~= nil then return false end
+  local list = {}
+  if s.majorManaPotions ~= false then list[#list + 1] = { key = "majorMana", n = E.POTION_ALL } end
+  if s.cheapManaPotions then list[#list + 1] = { key = "superiorMana", n = E.POTION_ALL } end
+  s.potions, s.majorManaPotions, s.cheapManaPotions = list, nil, nil
+  return true
+end
+
+-- The fight's potions: each listed item's uses (its group's cooldown shared in
+-- list order: an item takes what is left, up to its count), and what they add.
+-- Without a list (the sheet tests): the sheet's mana potion switches.
+function E.PotionPlan(st, set)
+  local fl = set.fightLength
+  local plan = { items = {}, groups = {}, mana = 0, healing = 0, sleep = 0, count = 0 }
+  if set.potions == nil then
+    local n = E.PotionFits(fl, "potion")
+    local each = (set.majorManaPotions and 1800 or 0) + (set.cheapManaPotions and 1200 or 0)
+    plan.mana, plan.count, plan.sheet = n * each, each > 0 and n or 0, { n = n, per = each }
+    return plan
+  end
+  for index, entry in ipairs(set.potions) do
+    local def = E.POTION_BY_KEY[entry.key]
+    if def then
+      local g = plan.groups[def.group]
+      if not g then
+        g = { key = def.group, fits = E.PotionFits(fl, def.group), used = 0 }
+        plan.groups[def.group] = g
+      end
+      local canUse = (def.lvl or 1) <= (st.level or 60)
+      local n = canUse and max(0, min(entry.n or 0, g.fits - g.used)) or 0
+      g.used = g.used + n
+      local each = def.manaPct and def.manaPct * st.manaPool or def.mana or 0
+      local item = { key = def.key, def = def, n = n, want = entry.n or 0, tooLow = not canUse, manaEach = each, index = index,
+                     mana = n * each, sleep = n * (def.sleep or 0) }
+      if def.healing then
+        item.uptime = min(1, n * def.dur / fl)
+        item.healing = def.healing * item.uptime          -- healing power on average over the fight
+      end
+      plan.items[#plan.items + 1] = item
+      plan.mana = plan.mana + item.mana
+      plan.healing = plan.healing + (item.healing or 0)
+      plan.sleep = plan.sleep + item.sleep
+      plan.count = plan.count + n
+    end
+  end
+  return plan
+end
+
+-- A copy of the settings with another potion list (and the spell ranks the
+-- playstyle chose with your list, so each trial doesn't search ranks again).
+local function withPotions(set, list, rankChoice)
+  local s2 = {}
+  for k, v in pairs(set) do s2[k] = v end
+  s2.potions, s2.rankChoice = list, rankChoice or set.rankChoice
+  return s2
+end
+
+-- The playstyle's HPS (after overheal) with a potion list; nil without a model.
+local function potionHPS(rotKey, st, t, set, list, rankChoice)
+  local r = E.Rotation(rotKey, st, t, withPotions(set, list, rankChoice))
+  return r and r.ehps
+end
+local function ranksNow(rotKey, st, t, set)
+  local r = E.Rotation(rotKey, st, t, set)
+  return r and r.rankChoice
+end
+
+-- The counts for your list that heal the most: every way of sharing each
+-- cooldown among the items on it (none to as many as fit), tried together.
+-- Returns a list like set.potions (same order) and its HPS, or nil.
+function E.BestPotions(rotKey, st, t, set)
+  local list = set.potions or {}
+  if #list == 0 then return nil end
+  local fl = set.fightLength
+  local byGroup, groups = {}, {}
+  for i, entry in ipairs(list) do
+    local def = E.POTION_BY_KEY[entry.key]
+    if def and (def.lvl or 1) <= (st.level or 60) then
+      if not byGroup[def.group] then byGroup[def.group] = {}; groups[#groups + 1] = def.group end
+      table.insert(byGroup[def.group], i)
+    end
+  end
+  -- every split of up to `fits` uses among n items
+  local function splits(n, fits)
+    local out = {}
+    local function rec(i, left, cur)
+      if i > n then out[#out + 1] = { unpack(cur) }; return end
+      for k = 0, left do cur[i] = k; rec(i + 1, left - k, cur) end
+      cur[i] = nil
+    end
+    rec(1, fits, {})
+    return out
+  end
+  local options = {}
+  for gi, g in ipairs(groups) do options[gi] = splits(#byGroup[g], E.PotionFits(fl, g)) end
+  local rc = ranksNow(rotKey, st, t, set)
+  -- Every split with the spell ranks held as they are now (quick), then the best
+  -- few again with the ranks chosen for them: a potion can change which ranks are
+  -- best (a Mender's Potion in a short fight makes higher ranks worth it).
+  local trials, counts = {}, {}
+  local function rec(gi)
+    if #trials > 300 then return end
+    if gi > #groups then
+      local trial = {}
+      for i, entry in ipairs(list) do trial[i] = { key = entry.key, n = counts[i] or 0 } end
+      trials[#trials + 1] = { list = trial, quick = potionHPS(rotKey, st, t, set, trial, rc) or -math.huge }
+      return
+    end
+    for _, split in ipairs(options[gi]) do
+      for j, idx in ipairs(byGroup[groups[gi]]) do counts[idx] = split[j] end
+      rec(gi + 1)
+    end
+  end
+  rec(1)
+  table.sort(trials, function(a, b) return a.quick > b.quick end)
+  local best, bestHPS
+  for i = 1, math.min(3, #trials) do
+    local h = potionHPS(rotKey, st, t, set, trials[i].list)
+    if h and (not bestHPS or h > bestHPS + 1e-9) then best, bestHPS = trials[i].list, h end
+  end
+  return best, bestHPS
+end
+
+-- What one item is worth to you: the HPS with it used as often as its cooldown
+-- allows (instead of the others on that cooldown), against none of them. Each
+-- with the spell ranks chosen for it.
+function E.PotionValue(rotKey, st, t, set, key)
+  local def = E.POTION_BY_KEY[key]
+  if not def then return nil end
+  local others = {}
+  for _, entry in ipairs(set.potions or {}) do
+    local d = E.POTION_BY_KEY[entry.key]
+    if d and d.group ~= def.group then others[#others + 1] = entry end
+  end
+  local with = { { key = key, n = E.POTION_ALL } }
+  for _, e in ipairs(others) do with[#with + 1] = e end
+  local a, b = potionHPS(rotKey, st, t, set, with), potionHPS(rotKey, st, t, set, others)
+  return a and b and (a - b) or nil
+end
+
+---------------------------------------------------------------------------
 -- Mana budget for the fight (sheet Sim F4:O6).
 ---------------------------------------------------------------------------
 -- E.ManaParts: the same sum, part by part (for the Math tab): key, mana, and the
@@ -841,8 +1031,7 @@ end
 function E.ManaParts(st, t, set)
   local fl = set.fightLength
   local ticks = fl / 5
-  local potN = max(1, ceil((fl - 15) / 120))
-  local potEach = (set.majorManaPotions and 1800 or 0) + (set.cheapManaPotions and 1200 or 0)
+  local pots = E.PotionPlan(st, set)
   local tideN = max(1, ceil((fl - 5) / 300))
   local innN = max(1, ceil((fl - 15) / 360))
   local innEach = (set.innervate and 1 or 0) * (st.oocRegen * 5 - st.combatRegen) * 4
@@ -851,7 +1040,8 @@ function E.ManaParts(st, t, set)
     { key = "pool", mana = st.manaPool },
     { key = "mp5", mana = ticks * st.mp5, ticks = ticks, per = st.mp5 },
     { key = "casting", mana = ticks * st.combatRegen, ticks = ticks, per = st.combatRegen },
-    { key = "potions", mana = potN * potEach, n = potN, per = potEach },
+    { key = "potions", mana = pots.mana, n = pots.sheet and pots.sheet.n or pots.count,
+      per = pots.sheet and pots.sheet.per or nil, plan = pots },
     { key = "manaTide", mana = tideN * set.manaTidesInGroup * 290 * 4, n = tideN * set.manaTidesInGroup, per = 290 * 4 },
     { key = "innervate", mana = innN * innEach, n = set.innervate and innN or 0, per = innEach },
     { key = "powerInfusion", mana = set.powerInfusionOut and -250 * piN or 0, n = set.powerInfusionOut and piN or 0, per = -250 },
@@ -1002,11 +1192,21 @@ end
 function rotationPass(rotKey, st, t, set)
   local rot = E.ROTATIONS[rotKey]
   local fl = set.fightLength
+  -- Potions: a Mender's Potion's healing power, averaged over the fight (heals grow
+  -- in a straight line with healing power, so the average is exact); time asleep
+  -- (Dreamless Sleep) can't be used for casting. Their mana is in ManaBudget.
+  local pots = E.PotionPlan(st, set)
+  if pots.healing > 0 then
+    local s2 = {}
+    for k, v in pairs(st) do s2[k] = v end
+    s2.healing, s2.potionHealing = st.healing + pots.healing, pots.healing
+    st = s2
+  end
   local gcd = 1.5 / (1 + st.haste)
-  local free = fl / gcd
+  local free = max(0, fl - pots.sleep) / gcd
   local mana = E.ManaBudget(st, t, set)
   local pwsOH = set.overheal.PWS
-  local out = { name = rot.name, steps = {}, mana = mana, raw = 0, eff = 0 }
+  local out = { name = rot.name, steps = {}, mana = mana, raw = 0, eff = 0, potions = pots }
   local tankCasts, last = 0, nil
 
   -- A rotation needs its filler; without it (too low level) there is no model.

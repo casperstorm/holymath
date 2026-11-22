@@ -207,11 +207,23 @@ local function spellSection(rows, S, key, rank, step, why)
     for k, v in pairs(set) do fset[k] = v end
     fset.litanyShare = base.litanyShare
   end
+  -- a spell the fight casts gets the potions' average healing power, as the fight does
+  local pots = step and base and base.potions
+  if pots and pots.healing > 0 then
+    local s2 = {}
+    for k, v in pairs(st) do s2[k] = v end
+    s2.healing = st.healing + pots.healing
+    st = s2
+  end
   local heal, cost, time, sp = E.CastValue(key, rank, st, t, fset)
   local p = sp.parts
   local rh = step and step.rh
   local cr = clientRow(S, key, rank)
   add({ head = def.name .. " rank " .. rank .. (why and (": " .. why) or ""), sub = true, anchor = "spell:" .. key .. ":" .. rank })
+  if pots and pots.healing > 0 then
+    add({ note = "Healing power here: your " .. n0(S.st.healing) .. " + " .. n1(pots.healing) ..
+      " on average from your potions over the fight (see the fight above)." })
+  end
 
   -- base heal and coefficient (read from the game's tooltip; the game data otherwise)
   local fromGame = function(f) return cr and (cr[f] == "client" or cr[f] == "earlier") end
@@ -348,10 +360,23 @@ local function fightSection(rows, S)
   add({ note = "Healing you can sustain if there is always someone to heal; mana is the limit. " ..
     "What one cast of each spell heals is worked out under the fight." })
   local manaSum = 0
+  local potPlan
   for _, part in ipairs(E.ManaParts(st, t, set)) do
     manaSum = manaSum + part.mana
     local lab = MANA_LABELS[part.key]
-    if part.key == "pool" then
+    if part.key == "potions" and part.plan and not part.plan.sheet then
+      -- your potions, one line each (Settings tab), with the cooldown they share
+      potPlan = part.plan
+      for _, it in ipairs(part.plan.items) do
+        if it.n > 0 and it.mana > 0.5 then
+          local g = E.POTION_GROUPS[it.def.group]
+          local each = it.def.manaPct and (pct(it.def.manaPct, 0) .. " of " .. n0(st.manaPool)) or n0(it.manaEach)
+          add({ it.def.name, string.format("%s x %s (%s: %d fit in the fight)", trim(it.n, 0), each,
+                (g and g.name or "cooldown"):lower(), part.plan.groups[it.def.group].fits), n0(it.mana), "setting",
+                help = it.def.text .. "." })
+        end
+      end
+    elseif part.key == "pool" then
       add({ lab[1], lab[2], n0(part.mana), lab[3] })
     elseif abs(part.mana) > 0.5 then
       local a = part.ticks and trim(part.per, 1) or trim(part.n, 2)
@@ -360,6 +385,18 @@ local function fightSection(rows, S)
     end
   end
   add({ "Mana for the fight", "", n0(manaSum), "" })
+  for _, it in ipairs(potPlan and potPlan.items or {}) do
+    if it.n > 0 and it.healing then
+      add({ it.def.name, string.format("+%d healing for %d s x %s, over %d s", it.def.healing, it.def.dur, trim(it.n, 0), fl),
+            "+" .. n1(it.healing), "setting",
+            help = "Healing power on average over the fight: heals grow in a straight line with healing power, " ..
+                   "so this average heals exactly as much as the potion does while it lasts." })
+    end
+    if it.n > 0 and it.sleep > 0 then
+      add({ it.def.name .. ", asleep", string.format("%d s x %s: no casting", it.def.sleep, trim(it.n, 0)),
+            "-" .. trim(it.sleep, 0) .. " s", "setting" })
+    end
+  end
 
   -- each line: casts x heal per cast x (1 - overheal) [+ Divine Aegis x (1 - its overheal)];
   -- worst = how far the printed terms are from the value (the tests keep it at 0)
