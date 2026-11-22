@@ -949,5 +949,235 @@ do
        (text:find("Major Mana Potion | 2 x 1800") and text:find("Major Mender's Potion | %+88 healing for 30 s x 1, over 300 s")) and 1 or 0, 1)
 end
 
+print("-- Playstyles as blocks: built-ins as blocks, your own, edits, the export line")
+do
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+  local inp = E.copy(E.DEFAULTS)
+  inp.settings.rules = E.RULES
+  inp.settings.fightLength = 180
+  local pst = E.Derive(inp)
+  local pt = E.Talents(inp.talents)
+  local pset = inp.settings
+  local function ok(label, cond) near(label, cond and 1 or 0, 1) end
+  local function eps(key, set2, t2) local r = E.Rotation(key, pst, t2 or pt, set2 or pset); return r and r.ehps end
+
+  -- what "on cooldown" and "keep it up" mean, from the game data
+  near("Prayer of Mending on cooldown: every 10 s", E.StepEvery({ spell = "POM", how = "cd" }), 10)
+  near("Penance on cooldown: every 12 s", E.StepEvery({ spell = "PENANCE", how = "cd" }), 12)
+  near("PW:Shield on cooldown on the tank: Weakened Soul, 15 s", E.StepEvery({ spell = "PWS", how = "cd", tank = true }), 15)
+  near("PW:Shield on cooldown on anyone: its own 4 s", E.StepEvery({ spell = "PWS", how = "cd" }), 4)
+  near("Renew kept up: every 15 s", E.StepEvery({ spell = "RENEW", how = "up" }), 15)
+  near("twice a minute: every 30 s", E.StepEvery({ spell = "GH", how = "pm", n = 2 }), 30)
+  ok("words: on cooldown, at most twice a minute, at most 20 times a minute, at most every 7.5 s",
+     E.HowText({ how = "cd" }) == "on cooldown" and E.HowText({ how = "pm", n = 2 }) == "at most twice a minute"
+     and E.HowText({ how = "pm", n = 20 }) == "at most 20 times a minute" and E.HowText({ how = "sec", n = 7.5 }) == "at most every 7.5 s")
+
+  -- every built-in as blocks heals exactly what it does now, and survives the export line
+  local same, valid, trips, n = 0, 0, 0, 0
+  local custom = {}
+  for key, rot in pairs(E.BUILTIN_ROTATIONS) do
+    if not rot.sheetOnly then
+      n = n + 1
+      local def = E.PlaystyleFromRotation(rot)
+      if not E.PlaystyleProblem(def) then valid = valid + 1 end
+      local back = E.PlaystyleImport(E.PlaystyleExport(def))
+      if back and E.PlaystyleExport(back) == E.PlaystyleExport(def) then trips = trips + 1 end
+      custom["copy-" .. key] = back or def
+    end
+  end
+  E.SetPlaystyles(custom, nil)
+  -- which copies heal differently from their built-in ("key-" less, "key+" more)
+  local function differs(set2, t2)
+    local out = {}
+    for key, rot in pairs(E.BUILTIN_ROTATIONS) do
+      if not rot.sheetOnly then
+        local a, b = eps(key, set2, t2), eps("copy-" .. key, set2, t2)
+        if a and b and math.abs(a - b) > 1e-9 then out[#out + 1] = key .. (b < a and "-" or "+") end
+      end
+    end
+    table.sort(out)
+    return table.concat(out, ",")
+  end
+  local noInsp = E.copy(pset); noInsp.includeInspiration = false
+  near("every built-in as blocks is a valid playstyle", valid, n)
+  near("every built-in's export line reads back the same", trips, n)
+  local d0 = differs(noInsp)
+  ok("without Inspiration every built-in as blocks heals exactly as much (" .. d0 .. ")", d0 == "")
+  -- with Inspiration: the two that shield the tank heal less as blocks. The built-ins
+  -- count the shield for Inspiration as the sheet does; blocks count only heals that
+  -- can crit (not a shield, not Renew's ticks)
+  local d1 = differs()
+  ok("with Inspiration only the shield playstyles' copies heal less (" .. d1 .. ")", d1 == "pwsTank-,rhTank-")
+  -- with Renewed Hope: PW:Shield on tank's Greater Heal isn't on the tank (the sheet
+  -- gives it Renewed Hope anyway; a block gets it only on the tank)
+  local rhT = E.copy(inp.talents); rhT.renewedHope = 5; rhT.penance = 1
+  local rt = E.Talents(rhT)
+  local d2 = differs(noInsp, rt)
+  ok("with Renewed Hope only PW:Shield on tank's copy heals less (" .. d2 .. ")", d2 == "pwsTank-")
+
+  -- the export line
+  local line = "HM1:Renew + Inspiration;POM,b,cd,t;LESSER,2,20pm,t;GH,b,2pm,t;RENEW,b,fill"
+  local def, err = E.PlaystyleImport(line)
+  ok("the plan's example line imports (" .. tostring(err) .. ")", def and #def.steps == 4 and def.steps[2].rank == 2
+     and def.steps[2].how == "pm" and def.steps[2].n == 20 and def.steps[2].tank and def.steps[4].how == "fill")
+  ok("... and exports the same", def and E.PlaystyleExport(def) == line)
+  ok("lower case and spaces are fine", E.PlaystyleImport("hm1: Mine ,rh ; pom , B , CD , T ; renew , h , fill") ~= nil)
+  local function bad(text, want)
+    local d, why = E.PlaystyleImport(text)
+    ok("turned away: " .. want, d == nil and why and why:find(want, 1, true) ~= nil)
+    if d or not (why and why:find(want, 1, true)) then print("     said: " .. tostring(why)) end
+  end
+  bad("Renew filler", "starts with HM1:")
+  bad("HM1:;RENEW,b,fill", "no name")
+  bad("HM1:X;SMITE,b,fill", "unknown spell \"SMITE\"")
+  bad("HM1:X;GH,b,cd,t;RENEW,b,fill", "Greater Heal has no cooldown")
+  bad("HM1:X;GH,b,up;RENEW,b,fill", "only Renew can be kept up")
+  bad("HM1:X;POM,b,10pm,t;RENEW,b,fill", "can't be cast more often than every 10 s")
+  bad("HM1:X;PENANCE,b,5,t;RENEW,b,fill", "can't be cast more often than every 12 s")
+  bad("HM1:X;RENEW,b,fill;POM,b,cd", "only the last block can fill the rest")
+  bad("HM1:X;POM,b,cd;GH,b,2pm", "The last block fills the rest")
+  bad("HM1:X;GH,9,fill", "Greater Heal has ranks 1 to")
+  bad("HM1:X;POM,b,fill", "can't fill the rest")
+  bad("HM1:X;GH,b,2pm;BH,b,fill", "use Flash Heal")
+  -- a saved one with Flash Heal (Holy Binding) last (the editor once allowed it): plain Flash Heal
+  local hb = { name = "Greater Heal filler", steps = { { spell = "POM", how = "cd", tank = true }, { spell = "GH", how = "pm", n = 2 },
+                                                       { spell = "BH", how = "fill", tank = true } } }
+  E.SetPlaystyles(nil, { ghFill = hb })
+  ok("a saved Holy Binding filler becomes Flash Heal, and the edit is used",
+     hb.steps[3].spell == "FLASH" and E.ROTATIONS.ghFill.edited and E.Rotation("ghFill", pst, pt, pset) ~= nil)
+  E.SetPlaystyles(nil, nil)
+  bad("HM1:X;GH,b,2pm;PWS,1,fill", "can't fill the rest")
+  bad("HM1:X;POM,b,cd;POM,b,cd;POM,b,cd;POM,b,cd;POM,b,cd;POM,b,cd;POM,b,cd;POM,b,cd;RENEW,b,fill", "At most 8 blocks")
+  bad("HM1:X;GH,b,2pm,x;RENEW,b,fill", "unknown option \"x\"")
+
+  -- your own: the Inspiration example. Lesser Heal rank 2 on the tank 20 times a minute
+  local insp = E.PlaystyleImport("HM1:Renew + Inspiration;POM,b,cd,t;LESSER,2,20pm,t;GH,b,2pm,t;RENEW,b,fill")
+  E.SetPlaystyles({ my1 = insp }, nil)
+  local mine = E.Rotation("my1", pst, pt, pset)
+  local renew = E.Rotation("renew", pst, pt, pset)
+  local lesser
+  for _, s in ipairs(mine.steps) do if s.key == "LESSER" then lesser = s end end
+  ok("Lesser Heal rank 2, at most 20 a minute", lesser and lesser.rank == 2 and lesser.casts <= 180 / 3 + 1e-9 and lesser.casts > 1)
+  ok("more casts on the tank: Inspiration up more of the time",
+     mine.inspirationParts and renew.inspirationParts and mine.inspirationParts.uptime > renew.inspirationParts.uptime)
+  ok("it is offered next to the built-ins", (function()
+    for _, p in ipairs(E.ComparePlans(pst, inp)) do if p.key == "my1" then return true end end end)())
+  -- Renew on the tank adds nothing to Inspiration (its ticks don't crit); Flash Heal does
+  E.SetPlaystyles({ a = E.PlaystyleImport("HM1:A;GH,b,2pm,t;RENEW,b,fill"),
+                    b = E.PlaystyleImport("HM1:B;GH,b,2pm,t;RENEW,b,fill,t"),
+                    c = E.PlaystyleImport("HM1:C;GH,b,2pm,t;FLASH,b,fill,t") }, nil)
+  local ua = E.Rotation("a", pst, pt, pset).inspirationParts.uptime
+  local ub = E.Rotation("b", pst, pt, pset).inspirationParts.uptime
+  local uc = E.Rotation("c", pst, pt, pset).inspirationParts.uptime
+  ok(string.format("Renew on the tank: Inspiration unchanged (%.3f = %.3f); Flash Heal on the tank: up more (%.3f)", ua, ub, uc),
+     math.abs(ua - ub) < 1e-12 and uc > ua + 0.05)
+
+  -- the Math tab with blocks: the same spell twice, a filler other than Renew
+  assert(loadfile("Models/PriestMath.lua"))(nil, { Models = { PRIEST = E } })
+  E.SetPlaystyles({ m = E.PlaystyleImport("HM1:Math;POM,b,cd,t;GH,b,2pm,t;GH,2,6pm;LESSER,2,6pm,t;FLASH,b,fill") }, nil)
+  local MS = { st = pst, t = pt, input = inp, rotation = "m" }
+  MS.weights = E.Weights("m", pst, inp)
+  MS.spells = E.SpellTable(pst, pt, inp.settings)
+  local _, ck = E.MathPage(MS)
+  local good, cnt, ohPWS = 0, 0, inp.settings.overheal.PWS or 0
+  for _, sc in ipairs(ck.spells) do
+    cnt = cnt + 1
+    local s2 = sc.step
+    local want = s2.perCast * (1 - (s2.overheal or 0)) + s2.aegis * (1 - ohPWS)
+    if math.abs(sc.cost - s2.cost) < 1e-9 and math.abs(sc.heal - want) < 1e-9 then good = good + 1 end
+  end
+  local cast = 0
+  for _, s2 in ipairs(MS.weights.base.steps) do if s2.enabled and s2.casts > 0.01 then cast = cast + 1 end end
+  ok("Math tab, blocks with Greater Heal twice and a Flash Heal filler: lines add up",
+     math.abs(ck.fight.eff - MS.weights.base.eff) < 1e-6 and ck.fight.worst < 1e-6)
+  ok("... each spell's section = its fight line (" .. good .. " of " .. cnt .. ", " .. cast .. " cast)", cnt == cast and good == cnt and cnt == 5)
+  E.SetPlaystyles({ my1 = insp }, nil)
+
+  -- Renewed Hope only on blocks on the tank
+  local rh = E.PlaystyleImport("HM1:Shield,rh;PWS,1,cd,t;GH,b,2pm,t;FLASH,b,2pm;RENEW,b,fill")
+  local rot = E.RotationFromPlaystyle(rh)
+  ok("Renewed Hope: Greater Heal on the tank gets it, Flash Heal on anyone doesn't, PW:Shield never",
+     rot.steps[2].rh == true and rot.steps[3].rh == false and rot.steps[1].rh == false)
+  near("... and the shield waits for Weakened Soul", rot.steps[1].cap, 15)
+  ok("a shield on the tank every 10 s is allowed but warned about (Weakened Soul)",
+     E.StepWarning({ spell = "PWS", how = "pm", n = 6, tank = true }) ~= nil
+     and E.StepWarning({ spell = "PWS", how = "cd", tank = true }) == nil)
+  ok("a summary in words", E.PlaystyleSummary(insp) == "Prayer of Mending on cooldown on the tank, Lesser Heal rank 2 at most 20 times a " ..
+     "minute on the tank, Greater Heal at most twice a minute on the tank, then Renew the rest of the time.")
+
+  -- the fight view: the model's counts placed by priority, nothing overlapping
+  E.SetPlaystyles({ my1 = insp }, nil)
+  local res = E.Rotation("my1", pst, pt, pset)
+  local tl = E.FightTimeline(insp, res, pset.fightLength)
+  local per, overlap, inside, lastEnd = {}, 0, true, -1
+  for _, c in ipairs(tl.casts) do
+    per[c.block] = (per[c.block] or 0) + 1
+    if c.t < lastEnd - 1e-6 then overlap = overlap + 1 end
+    lastEnd = c.t + c.dur
+    if c.t < 0 or c.t + c.dur > pset.fightLength + 1e-6 then inside = false end
+  end
+  local countsMatch = true
+  for i, s2 in ipairs(res.steps) do
+    local want = s2.enabled and (s2.casts + (s2.pauseCasts or 0)) or 0
+    print(string.format("     block %d: strip %d, model %.1f", i, per[i] or 0, want))
+    if math.abs((per[i] or 0) - want) > math.max(1.01, 0.1 * want) then countsMatch = false end
+  end
+  ok("the fight view has about the model's casts per block (within 1, or 10%)", countsMatch)
+  ok("... none overlapping, all inside the fight", overlap == 0 and inside)
+  local pomGap = math.huge
+  local lastPom
+  for _, c in ipairs(tl.casts) do
+    if c.key == "POM" then if lastPom then pomGap = math.min(pomGap, c.t - lastPom) end; lastPom = c.t end
+  end
+  ok("... Prayer of Mending never before its cooldown (10 s)", pomGap >= 10 - 1e-6)
+
+  -- editing a built-in: it keeps its key and name, and goes back as shipped
+  local ed = E.PlaystyleFromRotation(E.BUILTIN_ROTATIONS.renew)
+  table.insert(ed.steps, #ed.steps, { spell = "LESSER", rank = 2, how = "pm", n = 20, tank = true })
+  local ROT = E.ROTATIONS
+  E.SetPlaystyles(nil, { renew = ed, ghFill = { name = "broken", steps = {} } })
+  ok("an edited built-in keeps its key and name and says it's edited",
+     E.ROTATIONS.renew.edited and E.ROTATIONS.renew.name == "Renew filler" and E.ROTATIONS.renew.builtin == "renew")
+  ok("a broken saved edit is left out: the built-in as shipped", E.ROTATIONS.ghFill == E.BUILTIN_ROTATIONS.ghFill)
+  ok("the edit changes what it heals", math.abs(eps("renew") - E.Rotation("renew", pst, pt, pset).ehps) < 1e-9
+     and math.abs(eps("renew") - renew.ehps) > 0.01)
+  ok("the same table throughout (whatever holds it sees the change)", E.ROTATIONS == ROT)
+  E.SetPlaystyles(nil, nil)
+  ok("put back: the built-ins as shipped, nothing else", E.ROTATIONS.renew == E.BUILTIN_ROTATIONS.renew and E.ROTATIONS.my1 == nil)
+  ok("a saved playstyle of yours can't take a built-in's key", (function()
+    E.SetPlaystyles({ renew = insp }, nil); local r = E.ROTATIONS.renew == E.BUILTIN_ROTATIONS.renew; E.SetPlaystyles(nil, nil); return r end)())
+end
+
+print("-- People reached by group heals (Prayer of Healing, Holy Nova, Inner Focus)")
+do
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+  local inp = E.copy(E.DEFAULTS)
+  inp.settings.rules = E.RULES
+  local gst, gt = E.Derive(inp), E.Talents(inp.talents)
+  local five = E.copy(inp.settings)
+  local three = E.copy(inp.settings); three.groupHits = 3
+  local p5, p3 = E.Spell("POH", 4, gst, gt, five), E.Spell("POH", 4, gst, gt, three)
+  near("Prayer of Healing: 5 people by default", p5.targets, 5)
+  near("... 3 when set to 3: per mana 3/5 as much", p3.hpm / p5.hpm, 3 / 5)
+  near("Holy Nova too", E.Spell("NOVA", 6, gst, gt, three).targets, 3)
+  near("single-target heals don't change", E.Spell("GH", 4, gst, gt, three).hpm, E.Spell("GH", 4, gst, gt, five).hpm)
+  local r5, r3 = E.Rotation("pohFill", gst, gt, five), E.Rotation("pohFill", gst, gt, three)
+  near("Prayer of Healing filler heals less with 3 people", r3.ehps < r5.ehps and 1 or 0, 1)
+  near("Inner Focus's free Prayers of Healing reach 3 too", r3.innerFocus.perCast / r5.innerFocus.perCast, 3 / 5)
+  assert(loadfile("Models/PriestMath.lua"))(nil, { Models = { PRIEST = E } })
+  local in3 = E.copy(inp); in3.settings.groupHits = 3
+  local GS = { st = gst, t = gt, input = in3, rotation = "pohFill" }
+  GS.weights = E.Weights("pohFill", gst, in3)
+  GS.spells = E.SpellTable(gst, gt, in3.settings)
+  local rows, ck = E.MathPage(GS)
+  near("Math tab with 3 people: the fight adds up", (math.abs(ck.fight.eff - GS.weights.base.eff) < 1e-6 and ck.fight.worst < 1e-6) and 1 or 0, 1)
+  local editable = false
+  for _, r in ipairs(rows) do
+    if r[1] == "Targets" and r.edit and r.edit.setting and r.edit.setting[1] == "groupHits" and r.edit.raw == 3 then editable = true end
+  end
+  near("... Prayer of Healing's targets are your setting there, typed over like any setting", editable and 1 or 0, 1)
+  near("the setting takes 1 to 5 people", (E.MathSettingValue({ "groupHits" }, 3) == 3 and not E.MathSettingValue({ "groupHits" }, 6)) and 1 or 0, 1)
+end
+
 print(string.format("\n%d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

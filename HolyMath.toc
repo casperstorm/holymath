@@ -16,3 +16,4 @@ Game.lua
 Tooltips.lua
 Core.lua
 Options.lua
+Playstyles.lua

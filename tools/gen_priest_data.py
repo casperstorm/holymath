@@ -51,7 +51,7 @@ for chunk in re.split(r"\n\t\{ID: ", body)[1:]:
     refs = re.search(r"RefIDs: \[\]int32\{([\d, ]+)\}", head)
     rows[int(m.group(1))] = dict(
         name=m.group(2), lvl=num("SpellLevel"), max=num("MaxLevel"), cast=num("CastTimeMs"),
-        dur=num("DurationMs"), cost=int(cost.group(1)) if cost else None, effects=effects,
+        dur=num("DurationMs"), cd=num("CategoryCooldownMs"), cost=int(cost.group(1)) if cost else None, effects=effects,
         refs=[int(x) for x in refs.group(1).split(",")] if refs else [])
 
 # --- talent per-rank curves ---------------------------------------------------
@@ -128,6 +128,18 @@ for rid in ladder("Penance"):
     entry["ml"] = int(e["ml"] or bolt["max"] or r["lvl"] + 5)
     entry["id"] = rid
     spells["PENANCE"].append(entry)
+
+# --- timing: what the Playstyles tab's "on cooldown" and "keep it up" mean --------
+# A spell's own cooldown (its highest rank's), Renew's duration, and Weakened Soul
+# (how soon PW:Shield can go on the same target again), in seconds.
+timing = {}
+for key, name in [("POM", "PrayerOfMending"), ("PENANCE", "Penance"), ("PWS", "PowerWordShield")]:
+    timing[key] = {"cd": rows[ladder(name)[-1]]["cd"] / 1000}
+timing["RENEW"] = {"dur": rows[ladder("Renew")[-1]]["dur"] / 1000}
+weakened = [r for r in rows.values() if r["name"] == "Weakened Soul" and r["dur"] > 0]
+if not weakened:
+    raise SystemExit("Weakened Soul not found")
+timing["PWS"]["lockout"] = weakened[0]["dur"] / 1000
 
 # --- talents: value per rank, as used by the model --------------------------
 TALENTS = {
@@ -211,6 +223,10 @@ for key in ["RENEW", "GH", "FLASH", "HEAL", "LESSER", "POH", "PWS", "POM", "NOVA
         out.append("      { id = %d, cost = %s, lvl = %d, bl = %d, ml = %d, bp = %s, ppl = %s, coeff = %s, cast = %d }," % (
             r["id"], fmt(r["cost"] or 0), r["lvl"], r["bl"], r["ml"], fmt(r["bp"]), fmt(r["ppl"]), fmt(r["coeff"]), r["cast"]))
     out.append("    } },")
+out.append("  },")
+out.append("  timing = {  -- seconds: cd = its own cooldown, dur = how long it lasts, lockout = Weakened Soul")
+for key in ["POM", "PENANCE", "PWS", "RENEW"]:
+    out.append("    %s = { %s }," % (key, ", ".join("%s = %s" % (k, fmt(v)) for k, v in sorted(timing[key].items()))))
 out.append("  },")
 out.append("  talents = {  -- value per rank (percent, except divineFury: seconds)")
 for key in list(TALENTS) + ["holyBinding"]:

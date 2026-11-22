@@ -102,6 +102,12 @@ local D = {
       { id = 1316995, cost = 385, lvl = 60, bl = 60, ml = 60, bp = 1275, ppl = 0, coeff = 0.57, cast = 2000 },
     } },
   },
+  timing = {  -- seconds: cd = its own cooldown, dur = how long it lasts, lockout = Weakened Soul
+    POM = { cd = 10 },
+    PENANCE = { cd = 12 },
+    PWS = { cd = 4, lockout = 15 },
+    RENEW = { dur = 15 },
+  },
   talents = {  -- value per rank (percent, except divineFury: seconds)
     twinDisciplines = { 1, 2, 3, 4, 5 },
     improvedPWS = { 7, 14, 20 },

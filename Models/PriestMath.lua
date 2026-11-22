@@ -292,7 +292,10 @@ local function spellSection(rows, S, key, rank, step, why)
                     help = "How many people Prayer of Mending heals before it runs out (it can jump up to 5 times)." },
                   { "pomHits" }, "int", sp.targets))
     else
-      add({ "Targets", trim(sp.targets, 0) .. " people (the spell's rule)", "x" .. trim(sp.targets, 1), "rule" })
+      add(setting({ "Targets", "people each cast reaches (your setting, for Prayer of Healing and Holy Nova)", "", "setting",
+                    help = "How many people your group heals reach per cast: 5 is a full party. Set fewer for a smaller " ..
+                      "or spread-out group. Overheal is then for those of them already at full health." },
+                  { "groupHits" }, "int", sp.targets))
     end
   end
   local oh = set.overheal[key] or 0
@@ -414,7 +417,7 @@ local function fightSection(rows, S)
       local stepEff = s.eff - (s.pauseCasts and base.pauseEff or 0)
       total = total + stepEff
       local why = LIMITS[s.limit] or ""
-      if s.limit == "cooldown" and s.cap then why = "every " .. s.cap .. " s" end
+      if s.limit == "cooldown" and s.cap then why = "every " .. E.Seconds(s.cap) .. " s" end
       local text, shown = terms(s.casts, s.perCast, s.overheal or 0, s.aegis)
       worst = max(worst, abs(shown - stepEff))
       text = text .. string.format("; %s mana and %s s a cast, %s", n1(s.cost), trim(s.time, 2), why)
@@ -423,7 +426,8 @@ local function fightSection(rows, S)
     end
   end
   add({ "  mana left", "the fight's mana, less what these casts cost", n0(base.manaLeft), "" })
-  if (base.fiveSecondCasts or 0) > 0.01 then
+  -- any at all: the filler's line above leaves these out (shown even when tiny, so the lines add up)
+  if (base.fiveSecondCasts or 0) > 0 then
     total = total + base.pauseEff
     local fill
     for _, s in ipairs(base.steps) do if s.fill then fill = s end end
@@ -524,7 +528,7 @@ local function assumptionsSection(rows, S)
   local base = S.weights and S.weights.base
   local caps = {}
   for _, s in ipairs(base and base.steps or {}) do
-    if s.enabled and s.cap and not s.fill then caps[#caps + 1] = spellName(s.key, set) .. " every " .. s.cap .. " s" end
+    if s.enabled and s.cap and not s.fill then caps[#caps + 1] = spellName(s.key, set) .. " every " .. E.Seconds(s.cap) .. " s" end
   end
   if #caps > 0 then
     add({ "Playstyle", base.name .. ": at most " .. table.concat(caps, ", ") .. "; the rest is filler", "", "assumption" })
@@ -561,7 +565,7 @@ end
 
 -- A setting typed on the sheet: its allowed range (and whole numbers only?).
 E.MATH_SETTINGS = {
-  fightLength = { 10, 3600, true }, pomHits = { 1, 5, true }, overheal = { 0, 0.95 },
+  fightLength = { 10, 3600, true }, pomHits = { 1, 5, true }, groupHits = { 1, 5, true }, overheal = { 0, 0.95 },
   imperfectPlay = { 0, 1 }, litanyAlternation = { 0, 1 },
 }
 -- The value to store for a setting, or nil if it can't be used.
@@ -609,7 +613,7 @@ end
 -- Why a spell is in the fight: its line's limit.
 local function stepWhy(s)
   if s.fill then return "the filler, whenever nothing else is due" end
-  if s.cap then return ((s.tank or 0) > 0 and "on the tank, " or "") .. "at most every " .. s.cap .. " s" end
+  if s.cap then return ((s.tank or 0) > 0 and "on the tank, " or "") .. "at most every " .. E.Seconds(s.cap) .. " s" end
   return nil
 end
 

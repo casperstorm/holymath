@@ -117,13 +117,13 @@ E.SHEET_SPELLS = {
   BH = { name = "Binding Heal", coeff = 1.5 / 3.5, cast = 1.5, bodies = 1.5,
     ranks = { R(155,260,26), R(185,324,32), R(215,397,38), R(265,523,44),
               R(315,662,50), R(380,846,56) } },
-  POH = { name = "Prayer of Healing", coeff = 0.2887, cast = 3, targets = 5,
+  POH = { name = "Prayer of Healing", coeff = 0.2887, cast = 3, targets = "group",
     ranks = { R(410,185,30), R(560,273.5,40), R(770,412.5,50), R(1030,596,60) } },
   PENANCE = { name = "Penance", coeff = 2 / 3.5, cast = 2,
     ranks = { R(150,402,30), R(220,627,40), R(270,837,50), R(385,1275,60) } },
   POM = { name = "Prayer of Mending", coeff = 1.5 / 3.5, cast = "gcd", targets = "pomhits",
     ranks = { R(210,172,40), R(305,298,50), R(390,413,60) } },
-  NOVA = { name = "Holy Nova", coeff = 0.24, cast = "gcd", targets = 5,
+  NOVA = { name = "Holy Nova", coeff = 0.24, cast = "gcd", targets = "group",
     ranks = { R(185,54,20), R(290,85,28), R(400,120,36), R(520,163,44), R(635,243,52), R(750,314,60) } },
   LESSER = { name = "Lesser Heal",
     ranks = { -- each rank has its own cast time and coefficient
@@ -142,7 +142,9 @@ E.copy = copy
 -- growing ppl per level up to ml; coefficient; cost; learned level; cast time.
 local DATA = ns.PriestData or (dofile and dofile("Models/PriestData.lua"))   -- desktop tests load it by path
 E.DATA = DATA
-local SHAPE = { PWS = { shield = true }, POH = { targets = 5 }, NOVA = { targets = 5 }, POM = { targets = "pomhits" } }
+-- targets: "group" = your setting of people a group heal reaches (5, a full party, unless
+-- you set fewer); "pomhits" = Prayer of Mending's bounces (your setting)
+local SHAPE = { PWS = { shield = true }, POH = { targets = "group" }, NOVA = { targets = "group" }, POM = { targets = "pomhits" } }
 E.GAME_SPELLS = {}
 for key, sp in pairs(DATA.spells) do
   local def = { name = sp.name, ranks = {} }
@@ -377,7 +379,7 @@ E.DEFAULTS = {
                   naturalAggression = false },
   race = { human = true, dwarf = false, gnome = false, troll = false },
   settings = {
-    fightLength = 300, pomHits = 4, innervate = false, majorManaPotions = true, cheapManaPotions = false,
+    fightLength = 300, pomHits = 4, groupHits = 5, innervate = false, majorManaPotions = true, cheapManaPotions = false,
     manaTidesInGroup = 1, powerInfusionOut = false, includeInspiration = true,
     tankArmor = 6000, tankRawDTPS = 1200, inspirationIntoTank = 0.8,
     overheal = { RENEW = 0.25, PWS = 0.05, GH = 0.25, POH = 0.35, PENANCE = 0.25, BH = 0.25,
@@ -585,7 +587,7 @@ function E.Spell(key, rankIdx, st, t, set)
     cost = cost - refund
   end
   cost = max(cost, 1)        -- only your own values (Math tab) could take it lower
-  local targets = sp.targets == "pomhits" and set.pomHits or (sp.targets or 1)
+  local targets = sp.targets == "pomhits" and set.pomHits or sp.targets == "group" and (set.groupHits or 5) or (sp.targets or 1)
   -- Renewed Hope variants (crit chance with the talent's bonus, crits fixed at 1.5x)
   local rcrit = crit + t.renewedHopeCrit
   local expectedRH = sp.shield and heal or heal * ((1 - rcrit) + rcrit * st.critMulti)
@@ -1114,6 +1116,10 @@ E.ROTATIONS = {
               { "RENEW", fill = true, auto = true } } },
 }
 
+-- The playstyles as shipped; E.SetPlaystyles puts edited ones and yours next to them.
+E.BUILTIN_ROTATIONS = {}
+for k, r in pairs(E.ROTATIONS) do E.BUILTIN_ROTATIONS[k] = r end
+
 local function gcdsFor(s, gcd) return max(s.cast, gcd) / gcd end   -- a cast takes at least a global cooldown
 
 local rotationPass
@@ -1212,6 +1218,7 @@ function rotationPass(rotKey, st, t, set)
   -- A rotation needs its filler; without it (too low level) there is no model.
   local fillKey
   for _, step in ipairs(rot.steps) do if step.fill then fillKey = step[1] end end
+  if fillKey and not tableFor(set)[fillKey] and E.STEP_ALIAS[fillKey] then fillKey = E.STEP_ALIAS[fillKey] end
   if not E.MaxRank(fillKey, st.level, set.known, set) then return nil end
 
   local fillIdx
@@ -1231,7 +1238,11 @@ function rotationPass(rotKey, st, t, set)
       limit = (n == byCd and "cooldown") or (n == byMana and "mana") or "time"
       n = max(0, n)
     end
-    local useRH = rot.renewedHope and key ~= "POM" and key ~= "RENEW" and key ~= "PWS"
+    -- Renewed Hope: the built-ins as the sheet has them (every heal but these three);
+    -- a playstyle you built: only its blocks on the tank (the shielded target)
+    local useRH
+    if rot.custom then useRH = step.rh and true or false
+    else useRH = rot.renewedHope and key ~= "POM" and key ~= "RENEW" and key ~= "PWS" end
     local hpc = (useRH and sp.expectedRH or sp.expected) * sp.targets
     local da = (useRH and sp.aegisRH or sp.aegis) * sp.targets
     local raw = n * hpc
@@ -1240,7 +1251,7 @@ function rotationPass(rotKey, st, t, set)
     mana = mana - n * sp.cost
     out.raw = out.raw + raw + n * da
     out.eff = out.eff + eff
-    tankCasts = tankCasts + n * (step.tank or 0)
+    if not step.noCrit then tankCasts = tankCasts + n * (step.tank or 0) end
     out.steps[#out.steps + 1] = { key = key, rank = sp.rank, casts = n, raw = raw, eff = eff, enabled = enabled and true or false,
                                   cap = step.cap, fill = step.fill, tank = step.tank,
                                   id = tableFor(set)[key].ranks[sp.rank].id,
@@ -1274,8 +1285,8 @@ function rotationPass(rotKey, st, t, set)
   if ifCasts > 0 then
     local poh = E.Spell("POH", pohRank, st, t, set)
     local c = st.crit + 0.25
-    local h = poh.heal * ((1 - c) + c * st.critMulti) * 5
-    local da = poh.heal * c * t.daMulti * 5
+    local h = poh.heal * ((1 - c) + c * st.critMulti) * poh.targets
+    local da = poh.heal * c * t.daMulti * poh.targets
     local ifEff = ifCasts * (h * (1 - set.overheal.POH) + da * (1 - pwsOH))
     out.raw = out.raw + ifCasts * (h + da)
     out.eff = out.eff + ifEff
@@ -1308,6 +1319,354 @@ end
 -- model again with that one stat raised (the sheet's "Weight" column).
 ---------------------------------------------------------------------------
 E.WEIGHT_STATS = { "healing", "int", "crit", "haste", "mp5", "spirit" }
+
+---------------------------------------------------------------------------
+-- Playstyles as blocks (the Playstyles tab): a playstyle you build or edit is a
+-- list of blocks, top first, the last one filling the rest:
+--   def = { name, rh = true (keep Weakened Soul on the tank: Renewed Hope),
+--           steps = { { spell, rank, how, n, tank }, ... } }
+--   spell  a key of E.SPELLS, or BH (Flash Heal, cast only with Holy Binding)
+--   rank   nil = the best rank (the model tries them), "top" = your highest, or a number
+--   how    "cd" on cooldown | "up" keep it up | "pm" n times a minute |
+--          "sec" every n seconds | "fill" the rest (the last block only)
+--   tank   cast on the tank: its crits count for Inspiration, and with rh it gets
+--          Renewed Hope's crit; PW:Shield on cooldown on one target waits for Weakened Soul
+-- E.RotationFromPlaystyle turns one into the steps rotationPass runs, so nothing in
+-- the fight model changes. The built-ins (E.BUILTIN_ROTATIONS) never change: an
+-- edited one is saved apart and put in their place by E.SetPlaystyles.
+---------------------------------------------------------------------------
+E.PALETTE = { "POM", "PENANCE", "PWS", "RENEW", "LESSER", "HEAL", "FLASH", "GH", "POH", "NOVA" }
+E.STEP_NEEDS = { POM = "pom", PENANCE = "penance", BH = "bindingHeal" }
+E.MAX_STEPS = 8
+E.MAX_PLAYSTYLE_NAME = 32
+local NO_RH = { POM = true, RENEW = true, PWS = true }
+-- Inspiration needs a direct heal that crits: Renew's ticks and a shield never do
+local NO_CRIT = { RENEW = true, PWS = true }
+local TIMING = DATA.timing or {}
+local GCD_FLOOR = 1.5   -- no block more often than a global cooldown
+
+function E.StepSpellName(key)
+  if key == "BH" then return "Flash Heal (Holy Binding)" end
+  local sp = E.SPELLS[key]
+  return sp and sp.name or tostring(key)
+end
+
+-- The spell a block casts in the game data (Binding Heal is Flash Heal).
+local function dataKey(key) return key == "BH" and "FLASH" or key end
+function E.StepRankCount(key)
+  local sp = E.SPELLS[dataKey(key)]
+  return sp and #sp.ranks or 0
+end
+
+-- Which "how often" choices a spell has: cooldown only with one, keep up only Renew.
+function E.StepHasCooldown(key) return (TIMING[key] and TIMING[key].cd or 0) > 0 end
+function E.StepCanKeepUp(key) return (TIMING[key] and TIMING[key].dur or 0) > 0 end
+
+-- The shortest time a block can come round again: its own cooldown, at least a GCD.
+function E.StepMinEvery(key) return max(GCD_FLOOR, TIMING[key] and TIMING[key].cd or 0) end
+
+-- Seconds between a block's casts, or nil for the filler (or a choice that can't be).
+function E.StepEvery(d)
+  local tm = TIMING[d.spell] or {}
+  if d.how == "cd" then
+    if d.spell == "PWS" and d.tank and tm.lockout then return max(tm.cd or 0, tm.lockout) end
+    return (tm.cd or 0) > 0 and tm.cd or nil
+  elseif d.how == "up" then return (tm.dur or 0) > 0 and tm.dur or nil
+  elseif d.how == "pm" then return (tonumber(d.n) or 0) > 0 and 60 / d.n or nil
+  elseif d.how == "sec" then return (tonumber(d.n) or 0) > 0 and d.n or nil end
+  return nil
+end
+
+-- A block's "how often" in words: "on cooldown", "at most twice a minute", "at most
+-- every 12 s" (a ceiling: a block is cast less when the mana runs out first).
+function E.Seconds(v)
+  local s = string.format("%.1f", v):gsub("%.0$", "")
+  return s
+end
+function E.HowText(d)
+  if d.how == "cd" then return "on cooldown"
+  elseif d.how == "up" then return "keep it up"
+  elseif d.how == "fill" then return "fill the rest"
+  elseif d.how == "pm" then
+    return "at most " .. (d.n == 1 and "once a minute" or d.n == 2 and "twice a minute" or (tostring(d.n) .. " times a minute"))
+  elseif d.how == "sec" then return "at most every " .. E.Seconds(d.n) .. " s" end
+  return "?"
+end
+
+-- A new block's starting choices: on cooldown if it has one, Renew kept up, else
+-- twice a minute; single-target heals on the tank.
+local GROUP_HEALS = { RENEW = true, POH = true, NOVA = true }
+function E.NewStep(key, rank)
+  local d = { spell = key, rank = rank, tank = not GROUP_HEALS[key] or nil }
+  if E.StepHasCooldown(key) then d.how = "cd"
+  elseif E.StepCanKeepUp(key) then d.how = "up"
+  else d.how, d.n = "pm", 2 end
+  return d
+end
+
+-- "Prayer of Mending on cooldown on the tank, ..., then Renew to fill the rest."
+function E.PlaystyleSummary(def)
+  local parts, fill = {}, nil
+  for _, d in ipairs(def.steps or {}) do
+    local name = E.StepSpellName(d.spell) .. (type(d.rank) == "number" and (" rank " .. d.rank) or "")
+    if d.how == "fill" then fill = name
+    else parts[#parts + 1] = name .. " " .. E.HowText(d) .. (d.tank and " on the tank" or "") end
+  end
+  local s = table.concat(parts, ", ")
+  if fill then s = (s ~= "" and (s .. ", then ") or "") .. fill .. " the rest of the time" end
+  return (s:gsub("^%l", string.upper)) .. "."
+end
+
+function E.CleanPlaystyleName(name)
+  -- no | (colour codes), and none of the export line's separators (, and ;)
+  name = type(name) == "string" and name:gsub("[|,;]", ""):gsub("^%s+", ""):gsub("%s+$", "") or ""
+  if name == "" or #name > E.MAX_PLAYSTYLE_NAME then return nil end
+  return name
+end
+
+-- nil when a playstyle can be used, else why not (for the editor and imports).
+function E.PlaystyleProblem(def)
+  if type(def) ~= "table" then return "Not a playstyle." end
+  if not E.CleanPlaystyleName(def.name) then return "A playstyle needs a name of 1 to " .. E.MAX_PLAYSTYLE_NAME .. " letters." end
+  local steps = type(def.steps) == "table" and def.steps or {}
+  if #steps == 0 then return "A playstyle needs at least one spell." end
+  if #steps > E.MAX_STEPS then return "At most " .. E.MAX_STEPS .. " blocks." end
+  for i, d in ipairs(steps) do
+    local at = "Block " .. i .. ": "
+    if type(d) ~= "table" or (not E.SPELLS[d.spell] and d.spell ~= "BH") then return at .. "unknown spell." end
+    local name, nr = E.StepSpellName(d.spell), E.StepRankCount(d.spell)
+    if d.rank ~= nil and d.rank ~= "top" then
+      if type(d.rank) ~= "number" or d.rank < 1 or d.rank > nr or d.rank % 1 ~= 0 then
+        return at .. name .. " has ranks 1 to " .. nr .. "."
+      end
+    end
+    local last = (i == #steps)
+    if d.how == "fill" then
+      if not last then return at .. "only the last block can fill the rest." end
+      if d.spell == "BH" then
+        return "Flash Heal (Holy Binding) is cast only with that talent, so it can't fill the rest: use Flash Heal."
+      end
+      if E.StepHasCooldown(d.spell) then
+        return name .. " has a cooldown, so it can't fill the rest: the last block needs a spell without one."
+      end
+    elseif last then return "The last block fills the rest: " .. name .. " is set to " .. E.HowText(d) .. "."
+    elseif d.how == "cd" and not E.StepHasCooldown(d.spell) then return at .. name .. " has no cooldown."
+    elseif d.how == "up" and not E.StepCanKeepUp(d.spell) then return at .. "only Renew can be kept up."
+    elseif d.how == "pm" or d.how == "sec" then
+      local n = tonumber(d.n)
+      if not n or n <= 0 or (d.how == "pm" and n % 1 ~= 0) then return at .. "how often is missing." end
+      local every, least = E.StepEvery(d), E.StepMinEvery(d.spell)
+      if every < least - 1e-9 then
+        return at .. name .. " can't be cast more often than every " .. E.Seconds(least) .. " s."
+      end
+      if every > 600 then return at .. "at most every 600 s." end
+    elseif d.how ~= "cd" and d.how ~= "up" then return at .. "how often is missing." end
+  end
+  return nil
+end
+
+-- A warning that doesn't stop a playstyle: PW:Shield on one target more often than
+-- Weakened Soul allows (the built-ins do this, as the sheet does).
+function E.StepWarning(d)
+  local tm = TIMING[d.spell]
+  if d.spell == "PWS" and d.tank and tm and tm.lockout and d.how ~= "fill" then
+    local every = E.StepEvery(d)
+    if every and every < tm.lockout - 1e-9 then
+      -- the whole warning, and a short one for under the spell's name
+      return "Weakened Soul lets you shield the same target only once every " .. E.Seconds(tm.lockout) ..
+        " s; this block shields the tank every " .. E.Seconds(every) .. " s, more often than the game allows.",
+        "too often: Weakened Soul " .. E.Seconds(tm.lockout) .. " s"
+    end
+  end
+end
+
+-- def -> the playstyle the fight model runs. base: the built-in it replaces.
+function E.RotationFromPlaystyle(def, base)
+  local rot = { name = def.name, custom = true, renewedHope = def.rh and true or nil, steps = {},
+                requires = base and base.requires, help = E.PlaystyleSummary(def) }
+  for _, d in ipairs(def.steps) do
+    local s = { d.spell, needs = E.STEP_NEEDS[d.spell] }
+    if d.rank == nil then s.auto = true elseif type(d.rank) == "number" then s.rank = d.rank end
+    if d.how == "fill" then s.fill = true else s.cap = E.StepEvery(d) end
+    if d.tank then s.tank = d.spell == "PENANCE" and 3 or 1 end    -- Penance: 3 bolts, 3 crits
+    s.rh = (def.rh and d.tank and not NO_RH[d.spell]) and true or false
+    s.noCrit = NO_CRIT[d.spell] or nil
+    rot.steps[#rot.steps + 1] = s
+  end
+  return rot
+end
+
+-- A built-in (or any playstyle the model runs) as blocks, for the editor.
+function E.PlaystyleFromRotation(rot)
+  local def = { name = rot.name, rh = rot.renewedHope and true or nil, steps = {} }
+  for _, s in ipairs(rot.steps) do
+    local d = { spell = s[1], tank = (s.tank or 0) > 0 or nil }
+    if s.auto then d.rank = nil elseif s.rank then d.rank = s.rank else d.rank = "top" end
+    if s.fill then d.how = "fill"
+    else
+      local function is(how) d.how = how; local e = E.StepEvery(d); return e and math.abs(e - s.cap) < 1e-9 end
+      if not (is("cd") or is("up")) then
+        local per = 60 / s.cap
+        if math.abs(per - math.floor(per + 0.5)) < 1e-9 then d.how, d.n = "pm", math.floor(per + 0.5)
+        else d.how, d.n = "sec", s.cap end
+      end
+    end
+    def.steps[#def.steps + 1] = d
+  end
+  return def
+end
+
+-- Put the built-ins (or your edits of them) and your own playstyles into E.ROTATIONS.
+-- custom: id -> def; edits: built-in key -> def. A saved one that can't be used
+-- (a broken save) is left out; its built-in stays as shipped. The table stays the
+-- same table, so everything holding it sees the change.
+-- The fight as a strip (Playstyles tab): the casts the model counts, placed in
+-- time by priority - each block when it is due (and while its count lasts), the
+-- filler in the gaps, then once its mana is spent a filler every pause cycle
+-- (the 5-second rule) with waiting in between. An illustration of the counts,
+-- not a simulation: the model itself never orders casts.
+--   { casts = { { t, dur, block, key, rank, pause } ... }, waits = { { t0, t1 } ... } }
+function E.FightTimeline(def, base, fl)
+  if not (def and base and base.steps and fl and fl > 0) then return nil end
+  local gcd = base.gcd or 1.5
+  local blocks, fillIdx = {}, nil
+  for i, s in ipairs(base.steps) do
+    local d = def.steps[i]
+    -- due: when it may go next. A limit you set (at most 8 a minute) keeps its own
+    -- rhythm, catching up after a cast pushed it back; a real cooldown can't
+    blocks[i] = { left = (s.enabled and s.casts or 0), dur = max(s.time or gcd, gcd), every = (not s.fill) and s.cap or nil,
+                  key = s.key, rank = s.rank, due = 0, least = E.StepMinEvery(s.key) }
+    if s.fill or (d and d.how == "fill") then fillIdx = i end
+  end
+  local per = base.pauseCycle or math.huge
+  local pauseLeft = base.fiveSecondCasts or 0
+  local out = { casts = {}, waits = {} }
+  local lastFill = -math.huge
+  local t, guard = 0, 0
+  while t < fl - 1e-6 and guard < 5000 do
+    guard = guard + 1
+    local chosen, pause
+    for i, b in ipairs(blocks) do
+      if b.left >= 0.5 then
+        if i == fillIdx then chosen = i; break end
+        if t >= b.due - 1e-6 then chosen = i; break end
+      end
+    end
+    if not chosen and fillIdx and pauseLeft >= 0.5 and t - lastFill >= per - 1e-6 then chosen, pause = fillIdx, true end
+    if chosen then
+      local b = blocks[chosen]
+      local c = { t = t, dur = min(b.dur, fl - t), block = chosen, key = b.key, rank = b.rank, pause = pause or nil }
+      out.casts[#out.casts + 1] = c
+      if b.every then b.due = max(b.due + b.every, t + b.least) end
+      if chosen == fillIdx then lastFill = t end
+      if pause then pauseLeft = pauseLeft - 1 else b.left = b.left - 1 end
+      t = t + b.dur
+    else
+      local nxt = math.huge
+      for i, b in ipairs(blocks) do
+        if b.left >= 0.5 and i ~= fillIdx and b.every then nxt = min(nxt, b.due) end
+      end
+      if fillIdx and pauseLeft >= 0.5 then nxt = min(nxt, lastFill + per) end
+      nxt = min(nxt, fl)
+      if nxt <= t + 1e-6 then nxt = fl end
+      out.waits[#out.waits + 1] = { t, nxt }
+      t = nxt
+    end
+  end
+  return out
+end
+
+-- A Holy Binding block that ended up last is plain Flash Heal (the same spell; the
+-- filler can't wait for a talent). Fixes a saved playstyle in place; true if it did.
+function E.FixPlaystyle(def)
+  local steps = type(def) == "table" and type(def.steps) == "table" and def.steps
+  local last = steps and steps[#steps]
+  if type(last) == "table" and last.spell == "BH" and last.how == "fill" then last.spell = "FLASH"; return true end
+  return false
+end
+
+function E.SetPlaystyles(custom, edits)
+  for k in pairs(E.ROTATIONS) do E.ROTATIONS[k] = nil end
+  for k, r in pairs(E.BUILTIN_ROTATIONS) do
+    local ed = type(edits) == "table" and edits[k]
+    E.FixPlaystyle(ed)
+    if ed and not r.sheetOnly and not E.PlaystyleProblem(ed) then
+      local nr = E.RotationFromPlaystyle(ed, r)
+      nr.name, nr.builtin, nr.edited = r.name, k, true
+      E.ROTATIONS[k] = nr
+    else
+      E.ROTATIONS[k] = r
+    end
+  end
+  for id, d in pairs(type(custom) == "table" and custom or {}) do
+    E.FixPlaystyle(d)
+    if not E.BUILTIN_ROTATIONS[id] and not E.PlaystyleProblem(d) then
+      local nr = E.RotationFromPlaystyle(d)
+      nr.mine = true
+      E.ROTATIONS[id] = nr
+    end
+  end
+end
+
+-- The export line, readable on purpose:
+--   HM1:Renew + Inspiration;POM,b,cd,t;LESSER,2,20pm,t;GH,b,2pm,t;RENEW,b,fill
+-- name (",rh" after it: keep Weakened Soul on the tank), then per block: spell,
+-- rank (b best, h highest, or a number), how often (cd, up, fill, <n>pm, or <n>
+-- seconds), and t for on the tank.
+E.EXPORT_PREFIX = "HM1:"
+function E.PlaystyleExport(def)
+  local parts = { (E.CleanPlaystyleName(def.name) or "Playstyle") .. (def.rh and ",rh" or "") }
+  for _, d in ipairs(def.steps) do
+    local rank = d.rank == nil and "b" or d.rank == "top" and "h" or tostring(d.rank)
+    local how = d.how == "pm" and (tostring(d.n) .. "pm") or d.how == "sec" and E.Seconds(d.n) or d.how
+    parts[#parts + 1] = d.spell .. "," .. rank .. "," .. how .. (d.tank and ",t" or "")
+  end
+  return E.EXPORT_PREFIX .. table.concat(parts, ";")
+end
+
+-- The line back into a playstyle: def, or nil and why. Only ever read as text.
+function E.PlaystyleImport(text)
+  text = type(text) == "string" and text:gsub("^%s+", ""):gsub("%s+$", "") or ""
+  if text:sub(1, #E.EXPORT_PREFIX):upper() ~= E.EXPORT_PREFIX then
+    return nil, "That isn't a Holy Math playstyle (it starts with " .. E.EXPORT_PREFIX .. ")."
+  end
+  local parts = {}
+  for piece in (text:sub(#E.EXPORT_PREFIX + 1) .. ";"):gmatch("([^;]*);") do parts[#parts + 1] = piece end
+  local head = table.remove(parts, 1) or ""
+  local name, flag = head:match("^([^,]*),?(.*)$")
+  local def = { name = E.CleanPlaystyleName(name), steps = {} }
+  if not def.name then return nil, "The playstyle has no name." end
+  flag = (flag or ""):gsub("%s", ""):lower()
+  if flag == "rh" then def.rh = true elseif flag ~= "" then return nil, "Unknown option \"" .. flag .. "\" after the name." end
+  for i, piece in ipairs(parts) do
+    if piece:match("%S") then
+      local f = {}
+      for v in (piece .. ","):gmatch("([^,]*),") do f[#f + 1] = v:gsub("%s", "") end
+      local at = "Block " .. (#def.steps + 1) .. ": "
+      local spell = (f[1] or ""):upper()
+      if not (E.SPELLS[spell] or spell == "BH") then return nil, at .. "unknown spell \"" .. (f[1] or "") .. "\"." end
+      local d = { spell = spell }
+      local r = (f[2] or ""):lower()
+      if r == "b" or r == "" then d.rank = nil
+      elseif r == "h" then d.rank = "top"
+      elseif tonumber(r) then d.rank = tonumber(r)
+      else return nil, at .. "unknown rank \"" .. f[2] .. "\"." end
+      local h = (f[3] or ""):lower()
+      if h == "cd" or h == "up" or h == "fill" then d.how = h
+      elseif h:match("^%d+pm$") then d.how, d.n = "pm", tonumber(h:match("^(%d+)"))
+      elseif tonumber(h) then d.how, d.n = "sec", tonumber(h)
+      else return nil, at .. "unknown \"how often\" \"" .. (f[3] or "") .. "\"." end
+      for j = 4, #f do
+        if f[j]:lower() == "t" then d.tank = true
+        elseif f[j] ~= "" then return nil, at .. "unknown option \"" .. f[j] .. "\"." end
+      end
+      def.steps[#def.steps + 1] = d
+    end
+  end
+  local problem = E.PlaystyleProblem(def)
+  if problem then return nil, problem end
+  return def
+end
 
 local function addDelta(st, d, scale)
   local o = {}
@@ -1569,7 +1928,7 @@ function E.BestMix(st, t, set)
     local n = max(1, ceil(fl / 180))
     local poh = E.Spell("POH", pohRank, st, t, set)
     local cr = st.crit + 0.25
-    local h = poh.heal * ((1 - cr) + cr * st.critMulti) * 5 * (1 - (set.overheal.POH or 0))
+    local h = poh.heal * ((1 - cr) + cr * st.critMulti) * poh.targets * (1 - (set.overheal.POH or 0))
     out.innerFocus = { casts = n, rank = pohRank, heal = n * h }
     total = total + n * h
   end

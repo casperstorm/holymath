@@ -47,6 +47,7 @@ local function newFrame(name)
     for _, m in ipairs({ "SetColorTexture", "SetTexture", "SetVertexColor", "SetPoint", "SetAllPoints", "SetSize",
                          "SetWidth", "SetHeight", "ClearAllPoints", "SetBlendMode", "SetTexCoord", "SetAlpha" }) do t[m] = noop end
     function t:SetTexture(x) self.texture = x end
+    function t:SetSize(w) self.width = w end
     function t:Show() self.shown = true end
     function t:Hide() self.shown = false end
     return t
@@ -90,10 +91,22 @@ local TEMPLATES = {
     function f:RegisterCallback(_, fn) self.onChange = fn end
     function f:SetValue(v) self.value = v; if self.onChange then self.onChange(nil, v) end end
   end,
+  -- like the game's: the menu is built (radios asked if they're selected, the closed
+  -- field's text worked out) as soon as it is set up, and on GenerateMenu
   WowStyle1DropdownTemplate = function(f)
-    function f:SetupMenu(gen) self.gen = gen end
+    function f:GenerateMenu()
+      if not self.gen then return end
+      local root = {}
+      local function item() return { SetTooltip = noop, SetEnabled = noop } end
+      function root:CreateRadio(text, isSel, setSel, data) isSel(data); return item() end
+      function root:CreateButton() return item() end
+      root.CreateTitle, root.CreateDivider = noop, noop
+      self.gen(self, root)
+      if self.translate then self.closedText = self.translate({}) end
+    end
+    function f:SetupMenu(gen) self.gen = gen; self:GenerateMenu() end
     function f:SetSelectionTranslator(fn) self.translate = fn end
-    f.GenerateMenu = noop
+    f.SetDefaultText = noop
   end,
 }
 requestedTemplates = {}
@@ -205,7 +218,7 @@ SlashCmdList = {}
 
 -- load the addon -------------------------------------------------------------
 local ns = {}
-for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
+for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
   assert(loadfile(f))("HolyMath", ns)
 end
 local core = frames[#frames]                      -- Core's event frame
@@ -553,7 +566,9 @@ do
   for _, r in ipairs(radios) do names[#names + 1] = r.text end
   for _, n in ipairs(names) do realprint("    option: " .. n) end
   expect(#radios == 5, "menu: the 5 playstyles you can use")
-  expect(not table.concat(names, " "):find("HPS"), "menu: names only, no HPS")
+  local withHPS = 0
+  for _, n in ipairs(names) do if n:find("%d+ HPS") then withHPS = withHPS + 1 end end
+  expect(withHPS == #names, "menu: each playstyle with what it heals per second for you")
   expect(not table.concat(names, " "):find("Renewed Hope") and not table.concat(names, " "):find("downranked"), "menu: no hidden playstyles")
   local selected = {}
   for _, r in ipairs(radios) do if r.isSel(r.data) then selected[#selected + 1] = r.data end end
@@ -1234,7 +1249,7 @@ do
   local function login(saved)
     HolyMathDB = { PRIEST = saved }
     local ns5 = {}
-    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
+    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
       assert(loadfile(f))("HolyMath", ns5)
     end
     local core5 = frames[#frames]
@@ -1252,6 +1267,308 @@ do
   local c = login({ settings = { potions = {}, fightLength = 120 } })
   expect(#c.settings.potions == 0, "an emptied list stays empty at the next login")
   HolyMathDB, SlashCmdList.HOLYMATH = keep, keepSlash
+end
+
+-- The Playstyles tab: blocks you drag in, built-ins you change, your own, export and import
+do
+  local O, PS, E = ns.Options, ns.Playstyles, ns.model
+  local db = HolyMathDB.PRIEST
+  local popups = {}
+  StaticPopupDialogs = {}
+  StaticPopup_Show = function(which, a1, a2, data) popups[#popups + 1] = { which = which, text = a1, data = data } end
+  StaticPopup_Hide = function() end
+  local function click(b, button) b.scripts.OnClick(b, button) end
+  local function plain(t) return ((t or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) end
+  local function err() return ns.errors.playstyles and ns.errors.playstyles.last end
+  local function steps() return PS.Def(db.rotation).steps end
+  local function spells() local o = {} for _, d in ipairs(steps()) do o[#o + 1] = d.spell .. ":" .. d.how end return table.concat(o, " ") end
+  if not O.frame:IsShown() then SlashCmdList.HOLYMATH("") end
+  db.rotation = "renew"
+  O.ShowTab("playstyles")
+  expect(O.controls["tab:playstyles"] and O.panes.playstyles.shown and O.frame.width == 880, "a Playstyles tab (as wide as the Math tab)")
+  expect(err() == nil, "the tab fills without errors (" .. tostring(err()) .. ")")
+  -- Renew filler as blocks: PoM, Penance, Binding Heal, Greater Heal, then Renew
+  expect(O.psShown == 5 and plain(O.psRows[1].name.text) == "Prayer of Mending" and plain(O.psRows[5].name.text) == "Renew",
+    "Renew filler shows as 5 blocks, Renew last (" .. tostring(O.psShown) .. ")")
+  expect(plain(O.psRows[5].sub.text) == "the filler" and O.psRows[5].fillText.shown and not O.psRows[5].how.shown,
+    "the last block is the filler")
+  expect(O.psRows[1].how.translate() == "On cooldown" and O.psRows[4].how.translate() == "At most twice a minute",
+    "how often in words: PoM on cooldown, Greater Heal at most twice a minute")
+  -- under the result: the fight
+  expect(O.psFight.shown and not O.psViewFight and not O.psHow, "the fight under the result, on its own")
+  expect(O.psNote.shown and plain(O.psNote.text):find("most healing per second") and plain(O.psNote.text):find("other healers"),
+    "... with a note: the most HPS, not how a real fight goes")
+  -- The fight: a ruler, a row for waiting for mana, a row per block
+  local tl, F = O.psTimeline, O.psFight
+  local rows = 0
+  for _, lane in ipairs(F.lanes) do if lane.shown then rows = rows + 1 end end
+  expect(rows == 6 and plain(F.lanes[1].name.text) == "Waiting for mana" and plain(F.lanes[2].name.text) == "Prayer of Mending",
+    "The fight: waiting for mana, then a row per block, no potions row (" .. rows .. " rows)")
+  expect(F.ticks[1].text == "0:00" and F.ticks[2].text == "0:30" and F.ticks[5].text == "2:00", "... a ruler every 30 s")
+  local pomRuns, pomCasts = #F.lanes[2].runs, 0
+  for _, c in ipairs(tl.casts) do if c.block == 1 then pomCasts = pomCasts + 1 end end
+  local marks = 0
+  for _, m in ipairs(F.lanes[2].marks) do if m.shown then marks = marks + 1 end end
+  expect(pomCasts == 12 and pomRuns == 12 and marks == 12, "... Prayer of Mending: 12 casts, each with its icon (" .. marks .. ")")
+  local labels = 0
+  for _, l in ipairs(F.lanes[2].labels) do if l.shown then labels = labels + 1 end end
+  expect(labels >= 11 and F.lanes[2].labels[2].text:find("^0:1%d$"), "... and its time next to it (" .. tostring(F.lanes[2].labels[2].text) .. ", " .. labels .. " labels)")
+  -- drawn again for another fight length: no time left over from before
+  db.settings.fightLength = 90; O.Changed(true)
+  db.settings.fightLength = 120; O.Changed(true)
+  local stale = 0
+  for li, lane in ipairs(F.lanes) do
+    local starts = {}
+    for _, run in ipairs(lane.runs or {}) do starts[string.format("%d:%02d", math.floor(math.floor(run.t + 0.5) / 60), math.floor(run.t + 0.5) % 60)] = true end
+    for _, l in pairs(lane.labels) do if l.shown and not starts[l.text] then stale = stale + 1 end end
+  end
+  expect(stale == 0, "redrawn: no times left over from an earlier fight (" .. stale .. ")")
+  -- an icon per cast; bars only for what lasts (Renew's 15 s), none for Prayer of Mending
+  local pomBars, renewBars = 0, 0
+  for _, b in pairs(F.lanes[2].bars) do if b.shown then pomBars = pomBars + 1 end end
+  for _, b in pairs(F.lanes[6].bars) do if b.shown then renewBars = renewBars + 1 end end
+  local renewIcons = 0
+  for _, m in ipairs(F.lanes[6].marks) do if m.shown then renewIcons = renewIcons + 1 end end
+  expect(pomBars == 0 and renewBars == renewIcons and renewIcons == #F.lanes[6].runs,
+    string.format("an icon per cast; a bar only for Renew's 15 s (%d Renew icons, %d bars; %d Prayer of Mending bars)", renewIcons, renewBars, pomBars))
+  local renew = F.lanes[6].runs[1]
+  expect(renew and renew.e - renew.t >= 15 - 1e-6, "Renew's bar is its 15 s on the target")
+  local tip = O.FightTipAt(2, 0.001)
+  expect(tip and plain(tip[1]) == "0:00  Prayer of Mending (rank 3)", "hover a cast: " .. tostring(tip and plain(tip[1])))
+  local w1 = F.lanes[1].runs[1]
+  if w1 then
+    local wt = O.FightTipAt(1, ((w1.t + w1.e) / 2) / O.psFightLength)
+    expect(wt and wt[1]:find("waiting for mana"), "hover the mana row: waiting for mana")
+  end
+  expect(O.psRows[4].every.text == "(30 s)" and O.psRows[1].every.text == "(10 s)", "... with the seconds in grey")
+  expect(plain(O.psRows[2].sub.text) == "not learned yet", "Penance (not learned here) says so")
+  expect((O.psRows[5].casts.text or ""):find("^%d+ casts$") and O.psRows[1].casts.text:find("casts"), "each block shows its casts in the fight")
+  local ch = O.psRows[1].castHit
+  ch.scripts.OnEnter(ch)
+  expect(plain(table.concat(GameTooltip.lines, " ")):find("casts of rank %d+ in a %d+ s fight, as often as set%."),
+    "... hover: the rank and what stopped it: " .. plain(table.concat(GameTooltip.lines, " ")))
+  expect(O.psStatus.text:find("^Built%-in%.") and not O.controls.psReset.shown and not O.controls.psDelete.shown,
+    "a built-in: says so; nothing to put back or delete")
+  local hps0 = ns.State().weights.base.ehps
+  local res = plain(O.psResult.text)
+  expect(res:find("^" .. math.floor(hps0 + 0.5) .. " HPS after overheal  %-  Inspiration up %d+%% of the time%.$"),
+    "the result under the blocks: " .. res)
+
+  -- click a spell in the row: it goes in above the filler; the built-in is now edited
+  click(O.controls["psSpell:LESSER"])
+  expect(spells() == "POM:cd PENANCE:cd BH:pm GH:pm LESSER:pm RENEW:fill", "clicking Lesser Heal adds it above the filler (" .. spells() .. ")")
+  expect(PS.Kind("renew") == "edited" and E.ROTATIONS.renew.edited and O.controls.psReset.shown,
+    "Renew filler is now edited, with Put default back")
+  expect(plain(O.psRows[5].sub.text) == "not learned yet", "Lesser Heal isn't learned here: greyed with why")
+
+  -- a drag from the row of icons, let go before block 2
+  local pb = O.controls["psSpell:FLASH"]
+  pb.scripts.OnDragStart(pb)
+  expect(O.psGhost.shown, "dragging shows the icon under the cursor")
+  O.DragEnd(2)
+  expect(not O.psGhost.shown and spells() == "POM:cd FLASH:pm PENANCE:cd BH:pm GH:pm LESSER:pm RENEW:fill",
+    "dropped before block 2 (" .. spells() .. ")")
+  -- drag block 2 to the end: it becomes the filler, the old filler gets "keep it up"
+  local ic = O.psRows[2].iconBtn
+  ic.scripts.OnDragStart(ic)
+  O.DragEnd(O.psShown + 1)
+  expect(spells() == "POM:cd PENANCE:cd BH:pm GH:pm LESSER:pm RENEW:up FLASH:fill",
+    "a block dragged to the end becomes the filler; Renew is kept up now (" .. spells() .. ")")
+  -- dragged off the list: removed
+  ic = O.psRows[5].iconBtn
+  ic.scripts.OnDragStart(ic)
+  O.DragEnd(false)
+  expect(spells() == "POM:cd PENANCE:cd BH:pm GH:pm RENEW:up FLASH:fill", "a block dragged off the list is removed (" .. spells() .. ")")
+  -- from the spellbook: the game's cursor holds Greater Heal rank 2 (id 202 in this fake client)
+  GetCursorInfo = function() return "spell", 7, "spell", 202 end
+  local cleared = false
+  ClearCursor = function() cleared = true end
+  O.psRows[1].scripts.OnReceiveDrag(O.psRows[1])
+  local d1 = steps()[1]
+  expect(d1.spell == "GH" and d1.rank == 2 and cleared, "a spell from the spellbook comes in at its rank (Greater Heal 2)")
+  GetCursorInfo = function() return nil end
+  O.psRows[1].scripts.OnMouseUp(O.psRows[1])
+  expect(#steps() == 7, "a click with nothing on the cursor adds nothing")
+  -- the block's own settings
+  O.StepSet(1, "rank", 1)
+  local rm = {}
+  O.psRows[1].rank.gen(O.psRows[1].rank, { CreateRadio = function(_, text, isSel, setSel, data)
+    rm[#rm + 1] = { text = text, isSel = isSel, setSel = setSel, data = data }; return {} end })
+  expect(rm[1].text == "Best rank" and rm[2].text == "Highest rank" and rm[3].data == 1 and rm[3].isSel(rm[3].data)
+    and not rm[1].isSel(rm[1].data), "rank menu: Best, Highest, then each rank (Rank 1 chosen)")
+  rm[1].setSel(rm[1].data)
+  expect(steps()[1].rank == nil and O.psRows[1].rank.translate() == "Best rank", "Best rank from the menu")
+  O.StepSet(1, "rank", 1)
+  O.StepSet(1, "how", "pm")
+  expect(steps()[1].how == "pm" and steps()[1].n == 2, "times a minute starts from what it was (2)")
+  for _ = 1, 50 do click(O.psRows[1].plus) end
+  expect(steps()[1].n == 40 and plain(O.psRows[1].every.text) == "(1.5 s)", "+ stops at a global cooldown (40 a minute)")
+  click(O.psRows[1].minus)
+  expect(steps()[1].n == 39, "- one fewer a minute")
+  O.StepSet(2, "how", "sec")
+  expect(steps()[2].how == "sec" and steps()[2].n == 10, "every N seconds starts at its cooldown (Prayer of Mending, 10 s)")
+  click(O.psRows[2].minus)
+  expect(steps()[2].n == 10, "... and can't go under it")
+  click(O.psRows[2].plus)
+  expect(steps()[2].n == 11 and O.psRows[2].how.translate() == "At most every 11 s", "+ a second longer: at most every 11 s")
+  local tank = O.psRows[6].tank
+  tank:SetChecked(true); click(tank)
+  expect(steps()[6].tank == true, "On the tank ticks for the block")
+  -- right-click: the moves as a menu (no MenuUtil in this fake client: right-click moves it up)
+  O.StepMenu(O.psRows[3].iconBtn, 3)
+  local labels = {}
+  for _, it in ipairs(O.lastStepMenu) do labels[#labels + 1] = it[1] end
+  expect(table.concat(labels, "|") == "Move up|Move down|Make it the filler (last)|Remove", "right-click menu: " .. table.concat(labels, "|"))
+  -- a shield on the tank more often than Weakened Soul allows: warned
+  O.StepAdd("PWS", 1, 1)
+  O.StepSet(1, "how", "pm")
+  for _ = 1, 3 do click(O.psRows[1].plus) end
+  expect(plain(O.psRows[1].sub.text) == "too often: Weakened Soul 15 s", "PW:Shield on the tank too often: a short warning under its name")
+  O.psRows[1].nameHit.scripts.OnEnter(O.psRows[1].nameHit)
+  expect(plain(GameTooltip.lines[#GameTooltip.lines]):find("only once every 15 s; this block shields the tank every [%d.]+ s"),
+    "... in full when you hover the name: " .. tostring(GameTooltip.lines[#GameTooltip.lines]))
+  O.StepSet(1, "how", "cd")
+  expect(plain(O.psRows[1].every.text) == "(15 s)" and not plain(O.psRows[1].sub.text):find("Weakened"),
+    "on cooldown on the tank waits for Weakened Soul (15 s)")
+  expect(O.controls.psRH.shown and O.psRHGreyed, "a playstyle with PW:Shield shows Keep Weakened Soul, greyed without Renewed Hope")
+  click(O.controls["psSpell:POH"])
+  expect(#steps() == 8, "8 blocks")
+  local errs = 0
+  UIErrorsFrame = { AddMessage = function() errs = errs + 1 end }
+  click(O.controls["psSpell:NOVA"])
+  expect(#steps() == 8 and errs == 1, "a 9th block is turned away, saying why")
+  expect(err() == nil, "no errors filling the tab while editing (" .. tostring(err()) .. ")")
+
+  -- the HPS follows the blocks; Put default back gives Renew filler as shipped
+  expect(math.abs(ns.State().weights.base.ehps - hps0) > 0.5, "the edited playstyle heals differently")
+  click(O.controls.psReset)
+  StaticPopupDialogs.HOLYMATH_PLAYSTYLE_RESET.OnAccept(nil, popups[#popups].data)
+  expect(PS.Kind("renew") == "builtin" and math.abs(ns.State().weights.base.ehps - hps0) < 1e-6,
+    "Put default back: Renew filler as shipped, the same HPS")
+  -- Greater Heal filler with Greater Heal moved up: its Holy Binding block ends up last, as Flash Heal
+  db.rotation = "ghFill"; O.Changed(true)
+  O.StepMove(#steps(), 1)
+  local last = steps()[#steps()]
+  expect(last.spell == "FLASH" and last.how == "fill" and ns.State().weights ~= nil,
+    "a Holy Binding block that ends up last becomes Flash Heal, and there is a result (" .. spells() .. ")")
+  PS.Reset("ghFill"); db.rotation = "renew"; O.Changed(true)
+  -- the same blocks as shipped is not an edit
+  O.StepAdd("LESSER"); O.StepRemove(5)
+  expect(PS.Kind("renew") == "builtin", "changed and changed back: not an edit")
+
+  -- Copy as new: asks a name, becomes yours and in use
+  click(O.controls.psCopy)
+  expect(popups[#popups].which == "HOLYMATH_PROFILE_NAME" and popups[#popups].text:find("copy of"), "Copy as new asks for a name")
+  popups[#popups].data.done("Renew filler")
+  expect(popups[#popups].text:find("already a playstyle"), "a taken name asks again")
+  popups[#popups].data.done("My Renew")
+  local mine = db.rotation
+  expect(PS.Kind(mine) == "mine" and E.ROTATIONS[mine].name == "My Renew", "the copy is yours, in use")
+  expect(O.controls.psDelete.shown and O.controls.psRename.shown and O.psStatus.text:find("^Yours"), "yours: Rename and Delete")
+  -- its export line, and back in as a new one
+  click(O.controls.psExport)
+  local ex = popups[#popups]
+  expect(ex.which == "HOLYMATH_PLAYSTYLE_EXPORT" and ex.data.line:find("^HM1:My Renew;POM,b,cd,t;"), "Export shows the line: " .. ex.data.line)
+  StaticPopupDialogs.HOLYMATH_PLAYSTYLE_EXPORT.OnShow({ editBox = (function()
+    local eb = { text = "" }; function eb:SetText(t) self.text = t end; function eb:GetText() return self.text end; return eb end)() }, ex.data)
+  click(O.controls.psImport)
+  local im = popups[#popups]
+  expect(im.which == "HOLYMATH_PLAYSTYLE_IMPORT", "Import asks for a line")
+  im.data.done("not a playstyle")
+  expect(popups[#popups].which == "HOLYMATH_PLAYSTYLE_IMPORT" and popups[#popups].text:find("HM1:"), "a bad line asks again, saying why")
+  popups[#popups].data.done(ex.data.line)
+  expect(E.ROTATIONS[db.rotation].name == "My Renew (2)", "the imported one gets a free name: " .. E.ROTATIONS[db.rotation].name)
+  local imported = db.rotation
+  -- the Settings tab's playstyle menu lists yours under the built-ins
+  local m = { radios = {}, titles = {}, buttons = {} }
+  local root = {
+    CreateRadio = function(_, text, a, b, data) local r = { text = text, data = data }; function r:SetTooltip() end; m.radios[#m.radios + 1] = r; return r end,
+    CreateTitle = function(_, t) m.titles[#m.titles + 1] = t; m.radios[#m.radios + 1] = { title = t } end,
+    CreateButton = function(_, t, fn) m.buttons[#m.buttons + 1] = { text = t, fn = fn } end,
+    CreateDivider = function() end,
+  }
+  O.controls.rot.gen(O.controls.rot, root)
+  local order = {}
+  for _, r in ipairs(m.radios) do order[#order + 1] = r.title and ("[" .. r.title .. "]") or (plain(r.text):gsub("  %d+ HPS$", "")) end
+  local withHPS = 0
+  for _, r in ipairs(m.radios) do if r.text and plain(r.text):find("  %d+ HPS$") then withHPS = withHPS + 1 end end
+  expect(withHPS == #m.radios - 1, "each playstyle in the menu with its HPS (" .. withHPS .. ")")
+  expect(table.concat(order, "|"):find("Renew filler|%[Yours%]|My Renew|My Renew %(2%)$"), "Settings menu: built-ins, then yours: " .. table.concat(order, "|"))
+  expect(m.buttons[1] and m.buttons[1].text:find("playstyles"), "... and a way to the Playstyles tab")
+  -- slash commands
+  printed = {}
+  SlashCmdList.HOLYMATH("playstyle")
+  expect(table.concat(printed, "\n"):find("Yours: My Renew"), "/hm playstyle lists them, yours too")
+  SlashCmdList.HOLYMATH("playstyle flash heal filler")
+  expect(db.rotation == "flashFill", "/hm playstyle <name> uses one")
+  SlashCmdList.HOLYMATH("set rot My Renew")
+  expect(db.rotation == mine, "/hm set rot takes a name with spaces")
+  SlashCmdList.HOLYMATH("playstyle import HM1:Lesser fishing;LESSER,2,20pm,t;RENEW,b,fill")
+  expect(E.ROTATIONS[db.rotation].name == "Lesser fishing", "/hm playstyle import")
+  local fishing = db.rotation
+  -- a new playstyle starts as Prayer of Mending and Renew; Prayer of Mending can't be the filler
+  local fresh = PS.New("Fresh")
+  expect(db.rotation == fresh and spells() == "POM:cd RENEW:fill", "a new playstyle: Prayer of Mending, then Renew (" .. spells() .. ")")
+  O.ShowTab("playstyles")
+  expect(not O.controls.psRH.shown, "no shield and no Renewed Hope: Keep Weakened Soul isn't shown")
+  UIErrorsFrame = { AddMessage = function(_, msg) errs = errs + 1; O.lastComplaint = msg end }
+  O.ShowTab("playstyles")
+  click(O.psRows[2].remove)
+  expect(spells() == "POM:cd RENEW:fill" and (O.lastComplaint or ""):find("can't fill the rest"),
+    "removing Renew is refused: Prayer of Mending has a cooldown, it can't fill the rest")
+  PS.Delete(fresh)
+  db.rotation = fishing
+  -- a profile using yours, then yours deleted: back to the default
+  db.profiles = db.profiles or {}
+  db.profiles.fish = { settings = E.copy(db.settings), rotation = fishing }
+  O.ShowTab("playstyles")
+  click(O.controls.psDelete)
+  StaticPopupDialogs.HOLYMATH_PLAYSTYLE_DELETE.OnAccept(nil, popups[#popups].data)
+  expect(not E.ROTATIONS[fishing] and db.rotation == "renew" and db.profiles.fish.rotation == "renew",
+    "deleting yours: you and the profile using it go back to Renew filler")
+  db.profiles.fish = nil
+  -- saved across a login
+  local saved, slash = HolyMathDB, SlashCmdList.HOLYMATH
+  HolyMathDB = { PRIEST = E.copy(db) }
+  HolyMathDB.PRIEST.rotation = imported
+  local ns5 = {}
+  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
+    assert(loadfile(f))("HolyMath", ns5)
+  end
+  local core5 = frames[#frames]
+  core5.scripts.OnEvent(core5, "PLAYER_LOGIN")
+  expect(ns5.model.ROTATIONS[imported] and ns5.model.ROTATIONS[imported].name == "My Renew (2)" and HolyMathDB.PRIEST.rotation == imported,
+    "your playstyles are there after a login, still in use")
+  HolyMathDB, SlashCmdList.HOLYMATH = saved, slash
+  ns.Playstyles.Apply()
+  -- leave things as they were
+  for k in pairs(db.playstyles.custom) do PS.Delete(k) end
+  db.rotation = "renew"
+  O.ShowTab("settings")
+  StaticPopupDialogs, StaticPopup_Show, StaticPopup_Hide, UIErrorsFrame, GetCursorInfo, ClearCursor = nil, nil, nil, nil, nil, nil
+  expect(err() == nil, "no errors on the Playstyles tab at all (" .. tostring(err()) .. ")")
+  local others = {}
+  for _, k in ipairs({ "math", "rebuild", "plans", "mix", "spellTable", "bestPotions" }) do
+    if ns.errors[k] then others[#others + 1] = k .. ": " .. tostring(ns.errors[k].last) end
+  end
+  expect(#others == 0, "... nor anywhere else in the window while editing (" .. table.concat(others, "; ") .. ")")
+  O.frame:Hide()
+end
+
+-- People reached by group heals: a slider on the Settings tab and /hm set group
+do
+  local O, db = ns.Options, HolyMathDB.PRIEST
+  expect(O.controls.group and O.controls.group.Init and (db.settings.groupHits or 5) == 5, "a slider for people reached by group heals, 5 to start")
+  db.rotation = "pohFill"; ns.MarkDirty()
+  local h5 = ns.State().weights.base.ehps
+  SlashCmdList.HOLYMATH("set group 2")
+  local h2 = ns.State().weights.base.ehps
+  expect(db.settings.groupHits == 2 and h2 < h5, string.format("/hm set group 2: Prayer of Healing filler heals less (%.0f -> %.0f)", h5, h2))
+  SlashCmdList.HOLYMATH("set group 9")
+  expect(db.settings.groupHits == 2, "... and only takes 1 to 5")
+  O.controls.group:SetValue(4)
+  expect(db.settings.groupHits == 4, "the slider sets it")
+  db.settings.groupHits = 5; db.rotation = "renew"; ns.MarkDirty()
 end
 
 -- The window closes in combat: close button, /hm and Esc
@@ -1280,7 +1597,7 @@ do
   for _, t in ipairs({ "PortraitFrameTemplate", "MinimalSliderWithSteppersTemplate", "UICheckButtonTemplate",
                        "WowStyle1DropdownTemplate", "UIPanelButtonTemplate", "UIPanelCloseButton" }) do missingTemplates[t] = true end
   local ns3 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
+  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
     assert(loadfile(f))("HolyMath", ns3)
   end
   local core3 = frames[#frames]
@@ -1297,6 +1614,15 @@ do
   O.controls.insp.scripts.OnClick(O.controls.insp)
   expect(HolyMathDB.PRIEST.settings.includeInspiration == false, "fallback toggle turns Inspiration off")
   expect(O.hps.text and O.hps.text:find("HPS"), "fallback window shows the result")
+  O.ShowTab("playstyles")
+  expect(O.psShown and O.psShown > 0 and not (ns3.errors.playstyles), "fallback Playstyles tab fills (" ..
+    tostring(ns3.errors.playstyles and ns3.errors.playstyles.last) .. ")")
+  local hb = O.psRows[1].how
+  local was = ns3.Playstyles.Def(HolyMathDB.PRIEST.rotation).steps[1].how
+  hb.scripts.OnClick(hb, "LeftButton")
+  expect(ns3.Playstyles.Def(HolyMathDB.PRIEST.rotation).steps[1].how ~= was, "fallback: a plain button steps through how often")
+  ns3.Playstyles.Reset(HolyMathDB.PRIEST.rotation)
+  O.ShowTab("settings")
   O.controls.Defaults.scripts.OnClick(O.controls.Defaults)
   missingTemplates = {}
 end
@@ -1306,7 +1632,7 @@ do
   local function login(db)
     HolyMathDB = { PRIEST = db }
     local ns4 = {}
-    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do
+    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
       assert(loadfile(f))("HolyMath", ns4)
     end
     local core4 = frames[#frames]
@@ -1326,7 +1652,7 @@ end
 do
   UnitClass = function() return "Warrior", "WARRIOR" end
   local ns2 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua" }) do assert(loadfile(f))("HolyMath", ns2) end
+  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do assert(loadfile(f))("HolyMath", ns2) end
   local core2 = frames[#frames]
   core2.scripts.OnEvent(core2, "PLAYER_LOGIN")
   expect(not ns2.enabled, "warrior: addon stays off")

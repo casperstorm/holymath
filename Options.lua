@@ -8,7 +8,8 @@
                    knowing it once tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
                    on Search(), 20 Nov 2026); our look-alike is the fallback.
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
-     Tabs: Settings (the fight, tooltips, the result), Math (Your spells first).
+     Tabs: Settings (the fight, tooltips, the result), Playstyles (Playstyles.lua: the
+     playstyle you use as spell blocks), Math (Your spells first).
      Profiles: a dropdown at the top right, on both tabs (ProfileControls).
        typing      InputBoxTemplate (the Math tab's cells)
      Each was checked against addons that already use it on this client (BugSack,
@@ -44,7 +45,8 @@ local WIDTH = RIGHT + COL_W + MARGIN
 -- The Math tab makes the window wider (like the game's character window does for
 -- some of its tabs): its formulas need the room.
 local MATH_WIDTH = 880
-local HEIGHT = 530
+local HEIGHT = 560
+local PLAYSTYLES_HEIGHT = 720
 local TOP, ROW, ROW_H = -66, 30, 28
 
 local function db() return ns.db end
@@ -198,6 +200,8 @@ local function Check(parent, id, x, y, label, help, get, set)
   end
 end
 
+-- The playstyles you can use: the built-ins by name, then yours by name (mine:
+-- the index where yours start, or nil).
 local function rotationKeys()
   local keys = {}
   local S = ns.State and ns.State()
@@ -205,21 +209,27 @@ local function rotationKeys()
   for k, r in pairs(E.ROTATIONS) do
     if not r.sheetOnly and (not r.requires or (t and (t[r.requires] or 0) > 0)) then keys[#keys + 1] = k end
   end
-  table.sort(keys, function(a, b) return E.ROTATIONS[a].name < E.ROTATIONS[b].name end)
-  return keys
+  table.sort(keys, function(a, b)
+    local ma, mb = E.ROTATIONS[a].mine and 1 or 0, E.ROTATIONS[b].mine and 1 or 0
+    if ma ~= mb then return ma < mb end
+    return E.ROTATIONS[a].name:lower() < E.ROTATIONS[b].name:lower()
+  end)
+  local mine
+  for i, k in ipairs(keys) do if E.ROTATIONS[k].mine then mine = i; break end end
+  return keys, mine
 end
 
 
 local function planHelp()
-  local lines = { "Which spells you mostly cast. Every playstyle uses Prayer of Mending and Penance " ..
+  local lines = { "Which spells you mostly cast. Every built-in playstyle uses Prayer of Mending and Penance " ..
     "on cooldown when you have them (and Flash Heal twice a minute with Holy Binding), then:", "" }
   for _, k in ipairs(rotationKeys()) do
     local r = E.ROTATIONS[k]
     lines[#lines + 1] = "|cffffffff" .. r.name .. ":|r " .. (r.help or "")
   end
   lines[#lines + 1] = ""
-  lines[#lines + 1] = "Ranks are chosen for you: the ones that heal most with your stats. The Your spells " ..
-    "tab lists your spells."
+  lines[#lines + 1] = "Ranks are chosen for you: the ones that heal most with your stats. Build your own, " ..
+    "or change these, on the Playstyles tab."
   local S = ns.State()
   local best = S and S.plans and S.plans[1]
   if best then
@@ -407,6 +417,17 @@ local function PlaystyleLookalike(parent, x, y)
   end
 end
 
+-- A playstyle in a menu: its name, "(edited)", and what it heals per second for
+-- you now (the window's comparison of every playstyle, S.plans: no extra work).
+function O.PlaystyleMenuText(key)
+  local r = E.ROTATIONS[key]
+  local S = ns.State and ns.State()
+  local hps
+  for _, p in ipairs(S and S.plans or {}) do if p.key == key then hps = p.ehps end end
+  return r.name .. (r.edited and "  |cff9d9d9d(edited)|r" or "") ..
+    (hps and string.format("  |cff9d9d9d%d HPS|r", math.floor(hps + 0.5)) or "")
+end
+
 -- label  [ Renew filler            v ]   the game's own dropdown (WowStyle1, the
 -- menu system). The user chose it on 20 Nov 2026 knowing that it once tainted the
 -- Group Finder (ADDON_ACTION_BLOCKED Search()). Its menu is only described when
@@ -428,9 +449,11 @@ local function PlaystyleDropdown(parent, x, y)
     O.Changed(true)
   end
   dd:SetupMenu(function(_, root)
-    for _, k in ipairs(rotationKeys()) do
+    local keys, mine = rotationKeys()
+    for i, k in ipairs(keys) do
       local r = E.ROTATIONS[k]
-      local radio = root:CreateRadio(r.name, isSelected, setSelected, k)
+      if i == mine and root.CreateTitle then root:CreateTitle("Yours") end
+      local radio = root:CreateRadio(O.PlaystyleMenuText(k), isSelected, setSelected, k)
       if radio and radio.SetTooltip then
         radio:SetTooltip(function(tooltip)
           tooltip:SetText(r.name, 1, 1, 1)
@@ -438,7 +461,12 @@ local function PlaystyleDropdown(parent, x, y)
         end)
       end
     end
+    if root.CreateDivider then root:CreateDivider() end
+    if root.CreateButton then root:CreateButton("Build or change playstyles...", function() O.ShowTab("playstyles") end) end
   end)
+  if dd.SetSelectionTranslator then
+    dd:SetSelectionTranslator(function() local r = E.ROTATIONS[db().rotation]; return r and r.name or "" end)
+  end
   Tip(dd, "Playstyle", planHelp)
   O.controls.rot = dd
   -- the closed field shows the selected name; refresh it when the setting changes elsewhere
@@ -497,11 +525,13 @@ local function Cell(parent, x, y, w, justify, font)
   return fs
 end
 
-local TABS = { { key = "settings", text = "Settings" }, { key = "math", text = "Math" } }
+local TABS = { { key = "settings", text = "Settings" }, { key = "playstyles", text = "Playstyles" }, { key = "math", text = "Math" } }
 
 function O.ShowTab(key)
   O.tab = key
-  if O.frame and O.frame.SetWidth then O.frame:SetWidth(key == "math" and MATH_WIDTH or WIDTH) end
+  if O.frame and O.frame.SetWidth then O.frame:SetWidth((key == "math" or key == "playstyles") and MATH_WIDTH or WIDTH) end
+  -- the Playstyles tab is taller: the fight view goes under up to 8 blocks
+  if O.frame and O.frame.SetHeight then O.frame:SetHeight(key == "playstyles" and PLAYSTYLES_HEIGHT or HEIGHT) end
   for i, t in ipairs(TABS) do
     local pane, tab = O.panes[t.key], O.tabs[i]
     if t.key == key then pane:Show() else pane:Hide() end
@@ -1569,6 +1599,10 @@ function O.VersionText()
   return "Holy Math " .. v
 end
 
+-- The window's own pieces, for the Playstyles tab (Playstyles.lua).
+O.UI = { try = try, Button = Button, Tip = Tip, ShowTip = ShowTip, HideTip = HideTip, Label = Label, Header = Header,
+         Check = Check, Flat = Flat, complain = complain, editBoxOf = editBoxOf, LEFT = LEFT, TOP = TOP }
+
 local function Build()
   if O.frame then return end
   local p = Window()
@@ -1587,7 +1621,7 @@ local function Build()
   local ui = HolyMathDB.ui
   if ui and ui.point then p:ClearAllPoints(); p:SetPoint(ui.point, UIParent, ui.rel or ui.point, ui.x or 0, ui.y or 0) end
 
-  O.panes = { settings = Pane(p), math = Pane(p) }
+  O.panes = { settings = Pane(p), playstyles = Pane(p), math = Pane(p) }
   local frame = p
   p = O.panes.settings
 
@@ -1606,6 +1640,13 @@ local function Build()
   Slider(p, "pom", LEFT, y, "Prayer of Mending\nbounces",
     "How many people Prayer of Mending heals before it runs out (it can jump up to 5 times).",
     function() return db().settings.pomHits end, function(v) db().settings.pomHits = v end,
+    1, 5, 1, tostring)
+  y = y - ROW
+  Slider(p, "group", LEFT, y, "People reached by\ngroup heals",
+    "How many people your Prayer of Healing and Holy Nova reach per cast. 5 is a full party (Prayer of Healing " ..
+    "heals your party; Holy Nova, whoever is close to you). Set fewer for a smaller or spread-out group.\n\n" ..
+    "Overheal (Math tab) is then for those of them already at full health.",
+    function() return db().settings.groupHits or 5 end, function(v) db().settings.groupHits = v end,
     1, 5, 1, tostring)
   y = y - ROW
   Slider(p, "tides", LEFT, y, "Mana Tide totems",
@@ -1712,6 +1753,7 @@ local function Build()
   O.version = ver
 
   BuildMathPane(O.panes.math)
+  if O.BuildPlaystyles then O.BuildPlaystyles(O.panes.playstyles) end
   Tabs(frame)
   YourValuesLine(frame)
   ProfileControls(frame)
@@ -1765,6 +1807,10 @@ function O.Refresh(force)
     end
   end
   if O.mathRows then O.FillMath(S) end
+  if O.FillPlaystyles and O.tab == "playstyles" then
+    local ok, err = pcall(O.FillPlaystyles, S)
+    if not ok and ns.LogError then ns.LogError("playstyles", err) end
+  end
   O.FillYourValues()
 end
 
