@@ -146,11 +146,11 @@ local TALENT_ROWS = {
   { "twinDisc", "Twin Disciplines", "bonus", "Renew, Prayer of Mending, Penance and Holy Nova heal more", "twinDisciplines" },
   { "impPWS", "Improved Power Word: Shield", "bonus", "the shield absorbs more", "improvedPWS" },
   { "holyBinding", "Holy Binding", "pct0", "Flash Heal also heals you for this share", "holyBinding" },
-  { "daMulti", "Divine Aegis", "pct0", "a crit also shields for this share of the heal", "divineAegis" },
-  { "renewedHopeCrit", "Renewed Hope", "pct0", "more crit with heals on the tank (its playstyle)", "renewedHope" },
+  { "daMulti", "Divine Aegis", "pct0", "a crit also shields for this share of the crit, at most 20 x your level a heal", "divineAegis" },
+  { "renewedHopeCrit", "Renewed Hope", "pct0", "more crit with heals on the tank while Weakened Soul is up; each also takes time off it", "renewedHope" },
   { "impHealing", "Improved Healing", "pct0", "Lesser Heal, Heal, Greater Heal, Penance, Prayer of Mending cost less", "improvedHealing" },
   { "mentalAgility", "Mental Agility", "pct0", "instant spells cost less", "mentalAgility" },
-  { "soulWarding", "Soul Warding", "pct0", "Power Word: Shield costs less", "soulWarding" },
+  { "soulWarding", "Soul Warding", "pct0", "Power Word: Shield costs less and has no cooldown", "soulWarding" },
   { "litanyRefund", "Litany of Light", "pct0", "mana back when a heal follows a different one", "litanyOfLight" },
   { "divineFury", "Divine Fury", "sec", "off Heal's and Greater Heal's cast time", "divineFury" },
   { "inspiration", "Inspiration", "pct0", "more armor for the tank after your crits", "inspiration" },
@@ -273,17 +273,31 @@ local function spellSection(rows, S, key, rank, step, why)
   if not p.shield and sp.bodies ~= 1 then work = work .. " x " .. trim(sp.bodies, 2) .. " (Holy Binding: you too)" end
   add({ p.shield and "Absorb" or "Heal, no crit", work, n1(sp.heal), "" })
   local expected, aegis = sp.expected, sp.aegis
+  local crit = p.crit
   if not p.shield then
     if rh then
-      expected, aegis = sp.expectedRH, sp.aegisRH
-      add({ "With crits", n1(sp.heal) .. " x (1 + (" .. pct(p.crit, 2) .. " + " .. pct(t.renewedHopeCrit, 0) ..
-            " Renewed Hope) x " .. trim(p.critMulti - 1, 2) .. ")", n1(expected), "" })
+      -- Renewed Hope's crit for the share of the fight Weakened Soul is up on the tank
+      local up = step.rhUp or 1
+      expected = sp.expected + (sp.expectedRH - sp.expected) * up
+      aegis = sp.aegis + (sp.aegisRH - sp.aegis) * up
+      crit = p.crit + t.renewedHopeCrit * up
+      local rhText = up < 0.9995 and (pct(t.renewedHopeCrit, 0) .. " Renewed Hope x " .. pct(up, 0) .. " Weakened Soul up")
+        or (pct(t.renewedHopeCrit, 0) .. " Renewed Hope")
+      add({ "With crits", n1(sp.heal) .. " x (1 + (" .. pct(p.crit, 2) .. " + " .. rhText .. ") x " ..
+            trim(p.critMulti - 1, 2) .. ")", n1(expected), "" })
     else
       add({ "With crits", n1(sp.heal) .. " x (1 + " .. pct(p.crit, 2) .. " crit x " .. trim(p.critMulti - 1, 2) .. ")", n1(expected), "" })
     end
     if (p.daMulti or 0) > 0 then
-      add({ "Divine Aegis", n1(sp.heal) .. " x " .. pct(rh and (p.crit + t.renewedHopeCrit) or p.crit, 2) .. " crit x " ..
-            pct(p.daMulti, 0), n1(aegis), "" })
+      if p.aegisFromCrit and key == "RENEW" then
+        add({ "Divine Aegis", "none: only direct heals leave one, not a heal over time's ticks", "0", "rule" })
+      elseif p.aegisFromCrit then
+        local capNote = (p.daCap or 0) > 0 and (", at most " .. n0(p.daCap) .. " a heal (" .. trim(t.daCapPerLevel, 0) .. " x your level)") or ""
+        add({ "Divine Aegis", n1(sp.heal) .. " x " .. trim(p.critMulti, 2) .. " (the crit) x " .. pct(p.daMulti, 0) ..
+              " x " .. pct(crit, 2) .. " crit" .. capNote, n1(aegis), "" })
+      else
+        add({ "Divine Aegis", n1(sp.heal) .. " x " .. pct(crit, 2) .. " crit x " .. pct(p.daMulti, 0), n1(aegis), "" })
+      end
     end
   end
   if sp.targets ~= 1 then
@@ -418,10 +432,24 @@ local function fightSection(rows, S)
       total = total + stepEff
       local why = LIMITS[s.limit] or ""
       if s.limit == "cooldown" and s.cap then why = "every " .. E.Seconds(s.cap) .. " s" end
+      if s.key == "PWS" and s.tank and base.ws and s.limit == "cooldown" then
+        local lock = E.WeakenedSoulLockout()
+        -- only when Weakened Soul is what spaces them
+        if abs(s.cap - base.ws.len) < 0.05 then
+          why = why .. (abs(base.ws.len - lock) > 0.05
+            and string.format(" (Weakened Soul: %s s, less %s s for each Renewed Hope heal on the tank, %s a second)",
+                  E.Seconds(lock), E.Seconds(t.renewedHopeCut), trim(base.ws.rate, 3))
+            or " (Weakened Soul)")
+        end
+      end
       local text, shown = terms(s.casts, s.perCast, s.overheal or 0, s.aegis)
       worst = max(worst, abs(shown - stepEff))
       text = text .. string.format("; %s mana and %s s a cast, %s", n1(s.cost), trim(s.time, 2), why)
-      if s.rh then text = text .. "; heals on the tank crit " .. pct(t.renewedHopeCrit, 0) .. " more (Renewed Hope)" end
+      if s.rh then
+        local up = s.rhUp or 1
+        text = text .. "; heals on the tank crit " .. pct(t.renewedHopeCrit, 0) .. " more (Renewed Hope)" ..
+          (up < 0.9995 and (" while Weakened Soul is up, " .. pct(up, 0) .. " of the fight") or "")
+      end
       add({ spellName(s.key, set) .. " " .. s.rank, text, n0(stepEff), "" })
     end
   end

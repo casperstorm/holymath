@@ -440,7 +440,13 @@ local function MakeRow(stack, i)
   row.how = Choice(row, 170, hasStep, function()
     local sp, list = row.step.spell, {}
     if E.StepHasCooldown(sp) then
-      list[#list + 1] = { "On cooldown (" .. E.Seconds(E.StepEvery({ spell = sp, how = "cd", tank = row.step.tank })) .. " s)", "cd" }
+      local cd = E.StepEvery({ spell = sp, how = "cd", tank = row.step.tank })
+      if sp == "PWS" and row.step.tank then cd = nil          -- Weakened Soul: Renewed Hope's heals shorten it
+      elseif sp == "PWS" then
+        local S = ns.State()
+        cd = math.max(1.5, cd - (S and S.t and S.t.soulWardingCd or 0))   -- none with Soul Warding: a GCD
+      end
+      list[#list + 1] = { cd and ("On cooldown (" .. E.Seconds(cd) .. " s)") or "On cooldown (Weakened Soul)", "cd" }
     end
     if E.StepCanKeepUp(sp) then list[#list + 1] = { "Keep it up (" .. E.Seconds(E.StepEvery({ spell = sp, how = "up" })) .. " s)", "up" } end
     list[#list + 1] = { "At most N times a minute", "pm" }
@@ -727,8 +733,9 @@ function O.BuildPlaystyles(pane)
     function()
       local S = ns.State()
       local has = S and S.t and (S.t.renewedHope or 0) > 0
-      return "Discipline's Renewed Hope gives heals on a target with Weakened Soul more crit. On: blocks on the tank " ..
-        "get it (put a PW:Shield on the tank in the list to keep Weakened Soul there)." ..
+      return "Discipline's Renewed Hope: Flash Heal, Lesser Heal, Heal, Greater Heal and Penance on a target with " ..
+        "Weakened Soul crit more, and each takes time off Weakened Soul, so you can shield again sooner. On: those " ..
+        "blocks on the tank get it while Weakened Soul is up, which needs a PW:Shield block on the tank." ..
         (has and "" or "\n\n|cffff5050You don't have Renewed Hope (Discipline), so this does nothing for you.|r")
     end,
     function() local def = working(); return def and def.rh end, function(v) O.SetPlaystyleRH(v) end)
@@ -903,7 +910,11 @@ function O.FillPlaystyles(S)
       local every = not last and E.StepEvery(d)
       local stepper = d.how == "pm" or d.how == "sec"
       vis(row.minus, stepper and not last); vis(row.plus, stepper and not last)
-      row.every:SetText(every and ("(" .. E.Seconds(every) .. " s)") or "")
+      -- PW:Shield: the spacing the fight works out (Soul Warding, Weakened Soul, Renewed Hope)
+      local res = base and base.steps and #base.steps == #steps and base.steps[i]
+      local shown = every
+      if every and res and res.key == "PWS" and d.spell == "PWS" and res.cap then shown = res.cap end
+      row.every:SetText(shown and ("(" .. E.Seconds(shown) .. " s)") or "")
       if stepper and row.plus.SetEnabled then
         row.plus:SetEnabled(every - E.StepMinEvery(d.spell) > 1e-9)
         row.minus:SetEnabled(d.how ~= "pm" or d.n > 1)

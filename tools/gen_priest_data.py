@@ -45,7 +45,7 @@ for chunk in re.split(r"\n\t\{ID: ", body)[1:]:
                          r"(?:, Aura: dbcenums\.(\w+))?([^\n]*)", chunk):
         b = e.group(3)
         effects.append(dict(type=e.group(1), aura=e.group(2), bp=num("BasePoints", b), ppl=num("PPL", b),
-                            coef=num("SPCoef", b), period=num("PeriodMs", b),
+                            coef=num("SPCoef", b), period=num("PeriodMs", b), misc=num("Misc", b),
                             bl=num("BaseLevel", b), ml=num("MaxLevel", b)))
     cost = re.search(r"Powers: \[\]Power\{\{Cost: (\d+)", chunk)
     refs = re.search(r"RefIDs: \[\]int32\{([\d, ]+)\}", head)
@@ -168,6 +168,25 @@ for key, (name, row, f) in TALENTS.items():
 # Holy Binding (1 rank, no curve): Flash Heal on another target also heals you for this %
 talents["holyBinding"] = [rows[ladder("HolyBinding")[0]]["effects"][0]["bp"]]
 
+# Renewed Hope's second row: seconds each heal takes off Weakened Soul
+talents["renewedHopeCut"] = [abs(v) / 1000 for v in curves[ladder("RenewedHope")[0]][1]]
+
+
+def misc_effect(name, misc):
+    for e in rows[ladder(name)[0]]["effects"]:
+        if e["misc"] == misc:
+            return e
+    raise SystemExit("no misc %d effect on %s" % (misc, name))
+
+
+# Soul Warding (1 rank, no curve): spell mods on PW:Shield, misc 11 = cooldown (ms), 14 = cost (%)
+talents["soulWarding"] = [abs(misc_effect("SoulWarding", 14)["bp"])]
+talents["soulWardingCd"] = [abs(misc_effect("SoulWarding", 11)["bp"]) / 1000]
+# Divine Aegis: its second effect has no curve row, so it is the same at every rank: the
+# most one target's absorb can hold, per caster level
+da = ladder("DivineAegis")[0]
+talents["divineAegisCap"] = [rows[da]["effects"][1]["bp"]] * len(curves[da][0])
+
 regen = re.search(r"spiritRegenBase, character\.spiritRegenPerSpirit = ([\d.]+), ([\d.]+)/([\d.]+)", mana)
 regen_base, regen_per = float(regen.group(1)), float(regen.group(2)) / float(regen.group(3))
 
@@ -228,8 +247,8 @@ out.append("  timing = {  -- seconds: cd = its own cooldown, dur = how long it l
 for key in ["POM", "PENANCE", "PWS", "RENEW"]:
     out.append("    %s = { %s }," % (key, ", ".join("%s = %s" % (k, fmt(v)) for k, v in sorted(timing[key].items()))))
 out.append("  },")
-out.append("  talents = {  -- value per rank (percent, except divineFury: seconds)")
-for key in list(TALENTS) + ["holyBinding"]:
+out.append("  talents = {  -- value per rank (percent; seconds: divineFury, renewedHopeCut, soulWardingCd; per level: divineAegisCap)")
+for key in list(TALENTS) + ["holyBinding", "renewedHopeCut", "soulWarding", "soulWardingCd", "divineAegisCap"]:
     out.append("    %s = { %s }," % (key, ", ".join(fmt(v) for v in talents[key])))
 out.append("  },")
 out.append("}")

@@ -1008,12 +1008,12 @@ do
   -- can crit (not a shield, not Renew's ticks)
   local d1 = differs()
   ok("with Inspiration only the shield playstyles' copies heal less (" .. d1 .. ")", d1 == "pwsTank-,rhTank-")
-  -- with Renewed Hope: PW:Shield on tank's Greater Heal isn't on the tank (the sheet
-  -- gives it Renewed Hope anyway; a block gets it only on the tank)
+  -- with Renewed Hope: the game's rules give its crit only to heals on the tank, in a
+  -- built-in as in a block, so the copies heal exactly as much
   local rhT = E.copy(inp.talents); rhT.renewedHope = 5; rhT.penance = 1
   local rt = E.Talents(rhT)
   local d2 = differs(noInsp, rt)
-  ok("with Renewed Hope only PW:Shield on tank's copy heals less (" .. d2 .. ")", d2 == "pwsTank-")
+  ok("with Renewed Hope every built-in as blocks heals exactly as much (" .. d2 .. ")", d2 == "")
 
   -- the export line
   local line = "HM1:Renew + Inspiration;POM,b,cd,t;LESSER,2,20pm,t;GH,b,2pm,t;RENEW,b,fill"
@@ -1177,6 +1177,133 @@ do
   end
   near("... Prayer of Healing's targets are your setting there, typed over like any setting", editable and 1 or 0, 1)
   near("the setting takes 1 to 5 people", (E.MathSettingValue({ "groupHits" }, 3) == 3 and not E.MathSettingValue({ "groupHits" }, 6)) and 1 or 0, 1)
+end
+
+print("-- Discipline: Soul Warding, Weakened Soul and Renewed Hope, Divine Aegis")
+do
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+  local inp = E.copy(E.DEFAULTS)
+  inp.settings.rules = E.RULES
+  inp.settings.includeInspiration = false
+  local dst = E.Derive(inp)
+  local set = inp.settings
+  local function ok(label, cond) near(label, cond and 1 or 0, 1) end
+  local function tal(over)
+    local tr = E.copy(inp.talents)
+    for k, v in pairs(over) do tr[k] = v end
+    return E.Talents(tr)
+  end
+  local plain = tal({ renewedHope = 0, soulWarding = 0, divineAegis = 0 })
+  local function run(line, t)
+    E.SetPlaystyles({ x = assert(E.PlaystyleImport(line)) }, nil)
+    local r = E.Rotation("x", dst, t, set)
+    E.SetPlaystyles(nil, nil)
+    return r
+  end
+  local function stepOf(r, key) for _, s in ipairs(r.steps) do if s.key == key then return s end end end
+
+  -- the game data
+  local sw = tal({ soulWarding = 1 })
+  near("Soul Warding: PW:Shield costs 15% less (game data)", sw.soulWarding, 0.15)
+  near("... and has no cooldown left (4 s off its 4 s)", sw.soulWardingCd, 4)
+  near("Renewed Hope 5/5: each heal takes 5 s off Weakened Soul", tal({ renewedHope = 5 }).renewedHopeCut, 5)
+  near("Renewed Hope 2/5: 2 s", tal({ renewedHope = 2 }).renewedHopeCut, 2)
+  near("Divine Aegis: at most 20 x your level, at every rank", tal({ divineAegis = 1 }).daCapPerLevel, 20)
+
+  -- Soul Warding: a shield on anyone "on cooldown" goes every global cooldown
+  local spread = "HM1:Spread;PWS,1,cd;RENEW,b,fill"
+  local a, b = stepOf(run(spread, plain), "PWS"), stepOf(run(spread, sw), "PWS")
+  near("PW:Shield on anyone on cooldown: every 4 s", a.cap, 4)
+  near("... with Soul Warding: every global cooldown", b.cap, 1.5 / (1 + dst.haste))
+
+  -- Weakened Soul: the tank is shielded only when it is gone
+  local pws = E.Rotation("pwsTank", dst, plain, set)
+  near("PW:Shield on tank (asks every 12 s): every 15 s, Weakened Soul", stepOf(pws, "PWS").cap, 15)
+  local rh = tal({ renewedHope = 5 })
+  local disc = "HM1:Disc,rh;PWS,1,cd,t;FLASH,b,fill,t"
+  local r = run(disc, rh)
+  local rate, lock = r.ws.rate, E.WeakenedSoulLockout()
+  near("Renewed Hope: Weakened Soul lasts 15 s / (1 + 5 s x heals on the tank a second)", r.ws.len, lock / (1 + 5 * rate), 1e-3)
+  near("... and the tank is shielded that often", stepOf(r, "PWS").cap, r.ws.len, 1e-3)
+  near("... the heals a second are the fight's own Flash Heals on the tank", rate, stepOf(r, "FLASH").casts / set.fightLength, 1e-3)
+  near("... Weakened Soul up all the time when shielded as soon as it goes", r.ws.uptime, 1, 1e-3)
+  local noRH = run("HM1:Disc;PWS,1,cd,t;FLASH,b,fill,t", rh)
+  near("unticked: Weakened Soul's full 15 s", stepOf(noRH, "PWS").cap, 15)
+  ok("... and Flash Heal on the tank heals less a cast (no extra crit)", stepOf(noRH, "FLASH").perCast < stepOf(r, "FLASH").perCast)
+  local noShield = run("HM1:No shield,rh;FLASH,b,fill,t", rh)
+  local noShieldOff = run("HM1:No shield;FLASH,b,fill,t", rh)
+  near("Renewed Hope without a shield on the tank: no extra crit", noShield.ehps, noShieldOff.ehps, 1e-9)
+  local slow = run("HM1:Slow,rh;PWS,1,30,t;FLASH,b,fill,t", rh)
+  near("a shield every 30 s: Renewed Hope's crit for the share Weakened Soul is up",
+       stepOf(slow, "FLASH").rhUp, slow.ws.shields * slow.ws.len / set.fightLength, 1e-3)
+  ok("... under all of it", stepOf(slow, "FLASH").rhUp < 0.9)
+  local pom = run("HM1:PoM,rh;POM,b,cd,t;PWS,1,cd,t;FLASH,b,fill,t", rh)
+  ok("Prayer of Mending on the tank gets no Renewed Hope (not its spell)", stepOf(pom, "POM").rh == nil)
+
+  -- Divine Aegis: a share of the crit, at most 20 x level a heal
+  local dt = { daMulti = 0.15, daCapPerLevel = 20 }
+  local s51 = { level = 51, critMulti = 1.5 }
+  near("Divine Aegis: 15% of the crit (1.5 x the heal)", E.AegisFor(2000, 1, "GH", 1, s51, dt, E.RULES), 2000 * 1.5 * 0.15)
+  near("... at most 20 x level (1020 at 51)", E.AegisFor(10000, 1, "GH", 1, s51, dt, E.RULES), 1020)
+  near("... per Penance bolt", E.AegisFor(30000, 1, "PENANCE", 1, s51, dt, E.RULES), 3 * 1020)
+  near("... times the crit chance", E.AegisFor(2000, 0.2, "GH", 1, s51, dt, E.RULES), 0.2 * 450)
+  near("the sheet's: 15% of the heal, no cap", E.AegisFor(10000, 1, "GH", 1, s51, dt, E.SHEET_RULES), 1500)
+  near("... none from Renew's ticks (only direct heals leave one)", E.AegisFor(2000, 1, "RENEW", 1, s51, dt, E.RULES), 0)
+  local da3 = tal({ divineAegis = 3 })
+  local ifr = E.Rotation("pohFill", dst, da3, set).innerFocus
+  local poh = E.Spell("POH", ifr.rank, dst, da3, set)
+  near("Inner Focus's Prayers of Healing: Divine Aegis the same way (+25% crit)", ifr.aegis,
+       E.AegisFor(poh.heal, dst.crit + 0.25, "POH", 1, dst, da3, E.RULES) * poh.targets, 1e-9)
+  local mix = E.BestMix(dst, sw, set)
+  local shields = 0
+  for _, it in ipairs(mix and mix.items or {}) do if it.key == "PWS" then shields = shields + (it.casts or 0) end end
+  ok("best mix: at most a shield per Weakened Soul (" .. string.format("%.1f", shields) .. ")", shields <= set.fightLength / 15 + 1e-6)
+
+  -- the Math tab still adds up with all of it
+  assert(loadfile("Models/PriestMath.lua"))(nil, { Models = { PRIEST = E } })
+  local din = E.copy(inp)
+  for k, v in pairs({ renewedHope = 5, soulWarding = 1, divineAegis = 3, penance = 1 }) do din.talents[k] = v end
+  local dt2 = E.Talents(din.talents)
+  for _, key in ipairs({ "rhTank", "pwsTank" }) do
+    local MS = { st = dst, t = dt2, input = din, rotation = key }
+    MS.weights = E.Weights(key, dst, din)
+    MS.spells = E.SpellTable(dst, dt2, din.settings)
+    local _, ck = E.MathPage(MS)
+    local good, n = 0, 0
+    for _, sc in ipairs(ck.spells) do
+      n = n + 1
+      local s2 = sc.step
+      local want = s2.perCast * (1 - (s2.overheal or 0)) + s2.aegis * (1 - (din.settings.overheal.PWS or 0))
+      if math.abs(sc.heal - want) < 1e-6 then good = good + 1 end
+    end
+    ok("Math tab, " .. key .. " with Discipline: each spell's section = its fight line", n > 0 and good == n)
+    ok("... and the fight adds up", math.abs(ck.fight.eff - MS.weights.base.eff) < 1e-6 and ck.fight.worst < 1e-6)
+  end
+
+  -- stat weights don't move with more passes (each run settles the same way)
+  local wline = "HM1:WDisc,rh;PENANCE,b,cd,t;PWS,1,cd,t;GH,b,4pm,t;FLASH,b,fill,t"
+  E.SetPlaystyles({ wd = assert(E.PlaystyleImport(wline)) }, nil)
+  local w3 = E.Weights("wd", dst, din)
+  E.SetWSPasses(6)
+  local w6 = E.Weights("wd", dst, din)
+  E.SetWSPasses(3)
+  E.SetPlaystyles(nil, nil)
+  local worst = 0
+  for _, k in ipairs(E.WEIGHT_STATS) do
+    local a3, a6 = w3[k] or 0, w6[k] or 0
+    if type(a3) == "number" and type(a6) == "number" then worst = math.max(worst, math.abs(a3 - a6) / math.max(1e-9, math.abs(a6))) end
+  end
+  ok("stat weights with Renewed Hope: the same with twice the passes (worst " .. string.format("%.4f%%", worst * 100) .. ")", worst < 0.005)
+
+  -- the strip spaces shields as the model does
+  local def = assert(E.PlaystyleImport(spread))
+  E.SetPlaystyles({ x = def }, nil)
+  local base = E.Rotation("x", dst, sw, set)
+  local tl = E.FightTimeline(def, base, set.fightLength)
+  E.SetPlaystyles(nil, nil)
+  local first, second
+  for _, c in ipairs(tl.casts) do if c.key == "PWS" then if first then second = second or c.t else first = c.t end end end
+  ok("the strip: with Soul Warding shields go back to back", second and (second - first) < 4)
 end
 
 print(string.format("\n%d passed, %d failed", passes, fails))

@@ -1,5 +1,5 @@
 --[[ Holy Math - Models/PriestData.lua  (GENERATED - do not edit by hand)
-     Made by tools/gen_priest_data.py from wowsims/forever, commit f95b7a5de4689445ea05d5ee3e8ead66db4f89e8 2026-11-20.
+     Made by tools/gen_priest_data.py from wowsims/forever, commit 07648faf129cd82f99f4dd9e63b015f59f8ec811 2026-11-22.
      The numbers are the game"s own spell data as wowsims extracted it from the Forever client.
 
      Per rank, for ONE cast on ONE target: bp = base heal at the rank"s base level bl,
@@ -20,7 +20,7 @@
 
 local _, ns = ...
 local D = {
-  source = "wowsims/forever f95b7a5de4689445ea05d5ee3e8ead66db4f89e8 2026-11-20",
+  source = "wowsims/forever 07648faf129cd82f99f4dd9e63b015f59f8ec811 2026-11-22",
   regen = { base = 6.25, perSpirit = 0.125 },  -- mana per second from spirit: base + spirit x perSpirit
   critPerInt60 = 0.0168,  -- spell crit (percent) per point of intellect at level 60
   spells = {
@@ -108,7 +108,7 @@ local D = {
     PWS = { cd = 4, lockout = 15 },
     RENEW = { dur = 15 },
   },
-  talents = {  -- value per rank (percent, except divineFury: seconds)
+  talents = {  -- value per rank (percent; seconds: divineFury, renewedHopeCut, soulWardingCd; per level: divineAegisCap)
     twinDisciplines = { 1, 2, 3, 4, 5 },
     improvedPWS = { 7, 14, 20 },
     mentalAgility = { 3, 7, 10 },
@@ -125,6 +125,10 @@ local D = {
     spiritualHealing = { 3, 7, 10 },
     renewedHope = { 2, 4, 6, 8, 10 },
     holyBinding = { 50 },
+    renewedHopeCut = { 1, 2, 3, 4, 5 },
+    soulWarding = { 15 },
+    soulWardingCd = { 4 },
+    divineAegisCap = { 20, 20, 20 },
   },
 }
 if ns then ns.PriestData = D end

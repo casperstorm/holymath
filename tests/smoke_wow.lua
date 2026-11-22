@@ -1423,9 +1423,9 @@ do
   O.StepAdd("PWS", 1, 1)
   O.StepSet(1, "how", "pm")
   for _ = 1, 3 do click(O.psRows[1].plus) end
-  expect(plain(O.psRows[1].sub.text) == "too often: Weakened Soul 15 s", "PW:Shield on the tank too often: a short warning under its name")
+  expect(plain(O.psRows[1].sub.text) == "waits for Weakened Soul (15 s)", "PW:Shield on the tank too often: a short warning under its name")
   O.psRows[1].nameHit.scripts.OnEnter(O.psRows[1].nameHit)
-  expect(plain(GameTooltip.lines[#GameTooltip.lines]):find("only once every 15 s; this block shields the tank every [%d.]+ s"),
+  expect(plain(GameTooltip.lines[#GameTooltip.lines]):find("again for 15 s; this block asks for every [%d.]+ s%. The fight counts a shield only when"),
     "... in full when you hover the name: " .. tostring(GameTooltip.lines[#GameTooltip.lines]))
   O.StepSet(1, "how", "cd")
   expect(plain(O.psRows[1].every.text) == "(15 s)" and not plain(O.psRows[1].sub.text):find("Weakened"),

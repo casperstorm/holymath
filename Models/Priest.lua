@@ -219,6 +219,9 @@ E.RULES = {
   autoRanks = true,            -- playstyles pick the ranks that heal most
   pomWithoutSpiritHealing = true, -- Prayer of Mending ignores Spiritual Guidance's healing (see healingFor)
   critPerInt = "game",         -- intellect -> crit by level (E.CritPerInt); the sheet uses 1 / 60 at every level
+  aegisFromCrit = true,        -- Divine Aegis: a share of the crit's own amount, at most its cap per heal (the sheet: of the non-crit heal)
+  weakenedSoul = true,         -- a shield on the tank waits for Weakened Soul, which Renewed Hope's heals cut short;
+                               -- Renewed Hope's crit only on its spells, on the tank, while Weakened Soul is up
 }
 E.SHEET_RULES = { table = "sheet", talents = "sheet", downrank = "learned", downrankFreeLevels = 16,
                   twinDiscOnShield = true, litany = "discount", fiveSecond = "sheet" }
@@ -423,9 +426,11 @@ function talentsFrom(tr, rules)
       innerFocus = (tr.innerFocus or 0) > 0 and 1 or 0,
       meditation = curve("meditation", tr.meditation) / 100,
       mentalStrength = 1 + curve("mentalStrength", tr.mentalStrength) / 100,
-      soulWarding = (tr.soulWarding or 0) > 0 and 0.15 or 0,   -- the sheet's value; not in the game data's curves
+      soulWarding = curve("soulWarding", tr.soulWarding) / 100,
+      soulWardingCd = curve("soulWardingCd", tr.soulWarding),     -- seconds off PW:Shield's cooldown
       penance = (tr.penance or 0) > 0,
       daMulti = curve("divineAegis", tr.divineAegis) / 100,
+      daCapPerLevel = curve("divineAegisCap", tr.divineAegis),    -- the most one target's Aegis holds, per level
       impRenew = 1 + curve("improvedRenew", tr.improvedRenew) / 100,
       holySpec = curve("holySpecialization", tr.holySpecialization) / 100,
       divineFury = curve("divineFury", tr.divineFury),            -- seconds
@@ -440,10 +445,11 @@ function talentsFrom(tr, rules)
       holyBinding = curve("holyBinding", tr.holyBinding) / 100,   -- Flash Heal also heals you this share
       renewedHope = tr.renewedHope or 0,
       renewedHopeCrit = curve("renewedHope", tr.renewedHope) / 100,
+      renewedHopeCut = curve("renewedHopeCut", tr.renewedHope),   -- seconds each heal takes off Weakened Soul
     }
   end
   return {   -- the sheet's values
-    litanyRefund = 0, holyBinding = 0,
+    litanyRefund = 0, holyBinding = 0, soulWardingCd = 0, daCapPerLevel = 0, renewedHopeCut = 0,
     renewedHopeCrit = tr.renewedHope * 0.02,
     twinDisc = 1 + tr.twinDisciplines * 0.01,
     impPWS = 1 + (0.2 / 3) * tr.improvedPWS,
@@ -548,6 +554,25 @@ function E.StatDelta(input, stat)
   if stat == "spelldamage" then return { spelldamage = 1 } end
 end
 
+-- Divine Aegis per cast on one target, at crit chance c. In the game a crit leaves an
+-- absorb of daMulti x the crit's amount, and one target's absorb holds at most
+-- daCapPerLevel x your level: clamped per heal event (each Penance
+-- bolt, Holy Binding's heal on you apart), as one crit rarely reaches it. Stacking
+-- crits on the same target is not modelled: the damage it takes eats it.
+local function aegisFor(heal, c, key, bodies, st, t, rules)
+  if (t.daMulti or 0) <= 0 or c <= 0 then return 0 end
+  if not rules.aegisFromCrit then return heal * c * t.daMulti end
+  if key == "RENEW" then return 0 end     -- only direct heals leave one (its proc flags), not a HoT's ticks
+  local cap = (t.daCapPerLevel or 0) * (st.level or 60)
+  local function capped(x) return cap > 0 and min(x, cap) or x end
+  local n = (key == "BH") and 1 or (E.EVENTS_PER_CAST[key] or 1)
+  local one = heal / (bodies or 1) / n * st.critMulti * t.daMulti   -- one event on the target
+  local total = n * capped(one)
+  if (bodies or 1) > 1 then total = total + n * capped(one * (bodies - 1)) end
+  return total * c
+end
+E.AegisFor = aegisFor
+
 ---------------------------------------------------------------------------
 -- One spell rank at the given final stats (sheet Spells row: J..O, P, Q).
 ---------------------------------------------------------------------------
@@ -577,7 +602,7 @@ function E.Spell(key, rankIdx, st, t, set)
     heal = (base * tm + coeff * tm * healingFor(key, st, rules)) * bodies
   end
   local expected = sp.shield and heal or heal * ((1 - crit) + crit * st.critMulti)
-  local aegis = sp.shield and 0 or heal * crit * t.daMulti
+  local aegis = sp.shield and 0 or aegisFor(heal, crit, key, bodies, st, t, rules)
   local cm, set4 = costMult(key, t), (set.dungeon4set and 10 or 0)
   local cost = rankCost * cm - set4
   local refund, share = 0, 0
@@ -596,7 +621,7 @@ function E.Spell(key, rankIdx, st, t, set)
     heal = heal,                 -- one cast, one target, non-crit
     expected = expected,         -- one target, crit-weighted
     aegis = aegis,               -- Divine Aegis absorb per target
-    expectedRH = expectedRH, aegisRH = heal * rcrit * t.daMulti,
+    expectedRH = expectedRH, aegisRH = sp.shield and 0 or aegisFor(heal, rcrit, key, bodies, st, t, rules),
     cost = cost, targets = targets,
     hpm = targets * (expected + aegis) / cost,
     hpct = targets * (expected + aegis) / max(cast, gcd),
@@ -607,6 +632,7 @@ function E.Spell(key, rankIdx, st, t, set)
       fullCoeff = full, power = power,
       healing = healingFor(key, st, rules), talentMult = sp.shield and t.impPWS or talentMult(key, t),
       shield = sp.shield and true or false, crit = crit, critMulti = st.critMulti, daMulti = t.daMulti,
+      aegisFromCrit = rules.aegisFromCrit and true or false, daCap = (t.daCapPerLevel or 0) * (st.level or 60),
       castBase = ct, haste = st.haste, divineFury = (key == "GH" or key == "HEAL") and t.divineFury or 0,
       rankCost = rankCost, costMult = cm, set4 = set4, refund = refund, litanyShare = share,
       litanyRefund = t.litanyRefund or 0, cast = cast,
@@ -1120,7 +1146,9 @@ E.ROTATIONS = {
 E.BUILTIN_ROTATIONS = {}
 for k, r in pairs(E.ROTATIONS) do E.BUILTIN_ROTATIONS[k] = r end
 
-local function gcdsFor(s, gcd) return max(s.cast, gcd) / gcd end   -- a cast takes at least a global cooldown
+local function gcdsFor(s, gcd) return max(s.cast, gcd) / gcd end
+-- Renewed Hope's spells (the talent's own list; BH is Flash Heal)
+local RH_SPELLS = { FLASH = true, LESSER = true, HEAL = true, GH = true, PENANCE = true, BH = true }   -- a cast takes at least a global cooldown
 
 local rotationPass
 
@@ -1157,6 +1185,10 @@ function E.Rotation(rotKey, st, t, set)
   for _, c in ipairs(cands) do s2.rankChoice[c.i] = c.top end
   local best = rotationLitany(rotKey, st, t, s2)
   if not best then return nil end
+  -- Weakened Soul: the search tries ranks with the last settled values (one pass
+  -- each), and the ranks it keeps are run again until they settle
+  local ws = best.ws and best.ws.again
+  if ws then s2.wsRate, s2.wsUptime = best.ws.rate, best.ws.uptime end
   for _ = 1, 2 do
     for _, c in ipairs(cands) do
       local keep = s2.rankChoice[c.i]
@@ -1164,19 +1196,45 @@ function E.Rotation(rotKey, st, t, set)
         if r ~= keep then
           s2.rankChoice[c.i] = r
           local res = rotationLitany(rotKey, st, t, s2)
-          if res and res.eff > best.eff + 1e-9 then best, keep = res, r end
+          if res and res.eff > best.eff + 1e-9 then
+            best, keep = res, r
+            if ws and res.ws then s2.wsRate, s2.wsUptime = res.ws.rate, res.ws.uptime end
+          end
         end
       end
       s2.rankChoice[c.i] = keep
     end
   end
+  if ws then
+    s2.wsRate, s2.wsUptime = nil, nil
+    best = rotationLitany(rotKey, st, t, s2) or best
+  end
   best.rankChoice = s2.rankChoice
   return best
 end
 
+-- Weakened Soul on the tank (rules.weakenedSoul): how long it lasts depends on the
+-- Renewed Hope heals that cut it, and how often the tank is shielded on how long it
+-- lasts, so the pass runs again with what the last one counted (it settles fast).
+local WS_PASSES = 3
+E.SetWSPasses = function(n) WS_PASSES = n end   -- tests
+local function rotationWS(rotKey, st, t, set)
+  local out = rotationPass(rotKey, st, t, set)
+  if not (out and out.ws and out.ws.again) or set.wsRate then return out end
+  local s2 = {}
+  for k, v in pairs(set) do s2[k] = v end
+  -- a fixed number of passes, so stat weights (two runs, a stat apart) see no
+  -- jump from one stopping a pass earlier than the other
+  for _ = 1, WS_PASSES do
+    s2.wsRate, s2.wsUptime = out.ws.rate, out.ws.uptime
+    out = rotationPass(rotKey, st, t, s2)
+  end
+  return out
+end
+
 function rotationLitany(rotKey, st, t, set)
-  if (t.litanyRefund or 0) <= 0 or set.litanyShare then return rotationPass(rotKey, st, t, set) end
-  local first = rotationPass(rotKey, st, t, set)
+  if (t.litanyRefund or 0) <= 0 or set.litanyShare then return rotationWS(rotKey, st, t, set) end
+  local first = rotationWS(rotKey, st, t, set)
   if not first then return nil end
   local counts, total = {}, 0
   for _, s in ipairs(first.steps) do
@@ -1190,7 +1248,7 @@ function rotationLitany(rotKey, st, t, set)
   for k, v in pairs(set) do set2[k] = v end
   set2.litanyShare = {}
   for key, n in pairs(counts) do set2.litanyShare[key] = total > 0 and (1 - n / total) or 0 end
-  local out = rotationPass(rotKey, st, t, set2)
+  local out = rotationWS(rotKey, st, t, set2)
   out.litanyShare = set2.litanyShare
   return out
 end
@@ -1213,7 +1271,17 @@ function rotationPass(rotKey, st, t, set)
   local mana = E.ManaBudget(st, t, set)
   local pwsOH = set.overheal.PWS
   local out = { name = rot.name, steps = {}, mana = mana, raw = 0, eff = 0, potions = pots }
-  local tankCasts, last = 0, nil
+  local tankCasts, tankCrits, last = 0, 0, nil
+  local rules = set.rules or E.RULES
+  -- Weakened Soul (game rules): a shield on the tank waits for it; it lasts its
+  -- lockout less what Renewed Hope's heals on the tank take off (rate: such heals a
+  -- second, from the last pass); Renewed Hope's crit counts for the share of the
+  -- fight it is up (uptime, from the last pass; at first: up all the time)
+  local ws = rules.weakenedSoul and { rate = 0, shields = 0, uptime = 0 } or nil
+  local wsTiming = (DATA.timing or {}).PWS or {}
+  local wsLen = (wsTiming.lockout or 0) / (1 + (t.renewedHopeCut or 0) * (set.wsRate or 0))
+  local wsUp = set.wsUptime or 1
+  local shieldCd = max(0, (wsTiming.cd or 0) - (t.soulWardingCd or 0))
 
   -- A rotation needs its filler; without it (too low level) there is no model.
   local fillKey
@@ -1232,33 +1300,58 @@ function rotationPass(rotKey, st, t, set)
     local sp = E.Spell(key, rank or 1, st, t, set)
     local perCastGcds = (key == "PENANCE") and (2 / 1.5) or gcdsFor(sp, gcd)
     local n, limit = 0, nil
+    -- PW:Shield's real spacing (game rules): its cooldown (none with Soul Warding),
+    -- on the tank also Weakened Soul; "on cooldown" asks for no more than that
+    local cap = step.cap
+    if ws and key == "PWS" and not step.fill then
+      local least = max(gcd, shieldCd, step.tank and wsLen or 0)
+      cap = step.onCd and least or max(cap or 0, least)
+    end
     if enabled then
-      local byCd, byMana, byTime = step.cap and not step.fill and fl / step.cap or math.huge, mana / sp.cost, free / perCastGcds
+      local byCd, byMana, byTime = cap and not step.fill and fl / cap or math.huge, mana / sp.cost, free / perCastGcds
       n = min(byCd, byMana, byTime)
       limit = (n == byCd and "cooldown") or (n == byMana and "mana") or "time"
       n = max(0, n)
     end
     -- Renewed Hope: the built-ins as the sheet has them (every heal but these three);
     -- a playstyle you built: only its blocks on the tank (the shielded target)
+    -- (game rules: only Renewed Hope's own spells, on the tank, while Weakened Soul is up)
     local useRH
     if rot.custom then useRH = step.rh and true or false
     else useRH = rot.renewedHope and key ~= "POM" and key ~= "RENEW" and key ~= "PWS" end
-    local hpc = (useRH and sp.expectedRH or sp.expected) * sp.targets
-    local da = (useRH and sp.aegisRH or sp.aegis) * sp.targets
+    if ws then useRH = useRH and step.tank and RH_SPELLS[key] and true or false end
+    local up = useRH and (ws and wsUp or 1) or 0
+    local hpc = (sp.expected + (sp.expectedRH - sp.expected) * up) * sp.targets
+    local da = (sp.aegis + (sp.aegisRH - sp.aegis) * up) * sp.targets
     local raw = n * hpc
     local eff = raw * (1 - set.overheal[key]) + n * da * (1 - pwsOH)
     free = free - n * perCastGcds
     mana = mana - n * sp.cost
     out.raw = out.raw + raw + n * da
     out.eff = out.eff + eff
-    if not step.noCrit then tankCasts = tankCasts + n * (step.tank or 0) end
+    if not step.noCrit then
+      tankCasts = tankCasts + n * (step.tank or 0)
+      tankCrits = tankCrits + n * (step.tank or 0) * (st.crit + up * t.renewedHopeCrit)
+    end
+    if ws and useRH then ws.rate = ws.rate + n / fl end            -- Penance: the cast, not each bolt
+    if ws and key == "PWS" and step.tank then ws.shields = ws.shields + n end
     out.steps[#out.steps + 1] = { key = key, rank = sp.rank, casts = n, raw = raw, eff = eff, enabled = enabled and true or false,
-                                  cap = step.cap, fill = step.fill, tank = step.tank,
+                                  cap = cap, fill = step.fill, tank = step.tank,
                                   id = tableFor(set)[key].ranks[sp.rank].id,
                                   limit = limit, perCast = hpc, aegis = da, overheal = set.overheal[key],
-                                  time = perCastGcds * gcd, cost = sp.cost, rh = useRH or nil,
+                                  time = perCastGcds * gcd, cost = sp.cost, rh = useRH or nil, rhUp = useRH and up or nil,
+                                  least = (key == "PWS" and ws) and max(gcd, shieldCd) or nil,
                                   manaBefore = mana + n * sp.cost }
     if step.fill then last, fillIdx = sp, #out.steps end
+  end
+
+  if ws then
+    ws.len = wsLen
+    local len = (wsTiming.lockout or 0) / (1 + (t.renewedHopeCut or 0) * ws.rate)
+    ws.uptime = min(1, ws.shields * len / fl)
+    -- another pass only matters with Renewed Hope heals (their crit, their cut)
+    ws.again = ws.rate > 0 and ((t.renewedHopeCrit or 0) > 0 or (t.renewedHopeCut or 0) > 0)
+    out.ws = ws
   end
 
   -- 5-second rule: unused GCDs -> pauses to regenerate -> extra filler casts
@@ -1286,7 +1379,7 @@ function rotationPass(rotKey, st, t, set)
     local poh = E.Spell("POH", pohRank, st, t, set)
     local c = st.crit + 0.25
     local h = poh.heal * ((1 - c) + c * st.critMulti) * poh.targets
-    local da = poh.heal * c * t.daMulti * poh.targets
+    local da = aegisFor(poh.heal, c, "POH", 1, st, t, set.rules or E.RULES) * poh.targets
     local ifEff = ifCasts * (h * (1 - set.overheal.POH) + da * (1 - pwsOH))
     out.raw = out.raw + ifCasts * (h + da)
     out.eff = out.eff + ifEff
@@ -1297,8 +1390,12 @@ function rotationPass(rotKey, st, t, set)
   -- longer takes counts as healing.
   out.inspiration = 0
   if set.includeInspiration and t.inspiration > 0 then
-    local crit = rot.renewedHope and (st.crit + t.renewedHopeCrit) or st.crit
-    local rate = set.inspirationIntoTank * tankCasts * crit / fl
+    local rate
+    if ws then rate = set.inspirationIntoTank * tankCrits / fl
+    else
+      local crit = rot.renewedHope and (st.crit + t.renewedHopeCrit) or st.crit
+      rate = set.inspirationIntoTank * tankCasts * crit / fl
+    end
     local uptime = 1 - exp(-rate * 15)
     local a0 = set.tankArmor
     local a1 = a0 * (1 + t.inspiration)
@@ -1359,6 +1456,8 @@ function E.StepRankCount(key)
 end
 
 -- Which "how often" choices a spell has: cooldown only with one, keep up only Renew.
+function E.WeakenedSoulLockout() return TIMING.PWS and TIMING.PWS.lockout or 15 end
+
 function E.StepHasCooldown(key) return (TIMING[key] and TIMING[key].cd or 0) > 0 end
 function E.StepCanKeepUp(key) return (TIMING[key] and TIMING[key].dur or 0) > 0 end
 
@@ -1466,16 +1565,18 @@ function E.PlaystyleProblem(def)
 end
 
 -- A warning that doesn't stop a playstyle: PW:Shield on one target more often than
--- Weakened Soul allows (the built-ins do this, as the sheet does).
+-- Weakened Soul allows (the built-ins ask for this, as the sheet does). The fight
+-- model waits for Weakened Soul, so such a block is cast less often than it says.
 function E.StepWarning(d)
   local tm = TIMING[d.spell]
   if d.spell == "PWS" and d.tank and tm and tm.lockout and d.how ~= "fill" then
     local every = E.StepEvery(d)
     if every and every < tm.lockout - 1e-9 then
       -- the whole warning, and a short one for under the spell's name
-      return "Weakened Soul lets you shield the same target only once every " .. E.Seconds(tm.lockout) ..
-        " s; this block shields the tank every " .. E.Seconds(every) .. " s, more often than the game allows.",
-        "too often: Weakened Soul " .. E.Seconds(tm.lockout) .. " s"
+      return "Weakened Soul keeps you from shielding the same target again for " .. E.Seconds(tm.lockout) ..
+        " s; this block asks for every " .. E.Seconds(every) .. " s. The fight counts a shield only when Weakened " ..
+        "Soul is gone, which Renewed Hope's heals on the tank make sooner.",
+        "waits for Weakened Soul (" .. E.Seconds(tm.lockout) .. " s)"
     end
   end
 end
@@ -1488,6 +1589,7 @@ function E.RotationFromPlaystyle(def, base)
     local s = { d.spell, needs = E.STEP_NEEDS[d.spell] }
     if d.rank == nil then s.auto = true elseif type(d.rank) == "number" then s.rank = d.rank end
     if d.how == "fill" then s.fill = true else s.cap = E.StepEvery(d) end
+    if d.how == "cd" then s.onCd = true end      -- the fight model works out PW:Shield's real one
     if d.tank then s.tank = d.spell == "PENANCE" and 3 or 1 end    -- Penance: 3 bolts, 3 crits
     s.rh = (def.rh and d.tank and not NO_RH[d.spell]) and true or false
     s.noCrit = NO_CRIT[d.spell] or nil
@@ -1535,7 +1637,7 @@ function E.FightTimeline(def, base, fl)
     -- due: when it may go next. A limit you set (at most 8 a minute) keeps its own
     -- rhythm, catching up after a cast pushed it back; a real cooldown can't
     blocks[i] = { left = (s.enabled and s.casts or 0), dur = max(s.time or gcd, gcd), every = (not s.fill) and s.cap or nil,
-                  key = s.key, rank = s.rank, due = 0, least = E.StepMinEvery(s.key) }
+                  key = s.key, rank = s.rank, due = 0, least = s.least or E.StepMinEvery(s.key) }
     if s.fill or (d and d.how == "fill") then fillIdx = i end
   end
   local per = base.pauseCycle or math.huge
@@ -1881,6 +1983,8 @@ function E.BestMix(st, t, set)
     A[2][j] = v.time
   end
   for key, every in pairs(E.MIX_CAPS) do
+    -- game rules: Weakened Soul's own length (the sheet's 12 s otherwise)
+    if key == "PWS" and (set.rules or E.RULES).weakenedSoul then every = E.WeakenedSoulLockout() end
     local row, any = {}, false
     for j, v in ipairs(vars) do
       if v.key == key then row[j] = 1; any = true else row[j] = 0 end
