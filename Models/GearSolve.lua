@@ -556,12 +556,20 @@ function GS.Solve(a)
       end
     end
   end
+  local newWeapons = false
   for _, wv in pairs(weapons) do
     if wv.hps > best + 1e-6 then
       items = copy(rest)
       items.weapon, items.offhand = wv.item, wv.offhand
       best = wv.hps
+      newWeapons = true
     end
+  end
+  -- other weapons can make another piece better (a ring with the new weapons' stats): the swaps again
+  if newWeapons then
+    swaps()
+    local way = items.weapon and (items.weapon.slot == "twohand" and "twohand" or "onehand")
+    if way then weapons[way] = { item = items.weapon, offhand = way == "onehand" and items.offhand or nil, hps = best } end
   end
   weapons.worn = items.weapon and (items.weapon.slot == "twohand" and "twohand" or "onehand")
 

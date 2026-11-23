@@ -27,6 +27,7 @@ local function newFrame(name)
   function f:HookScript(s, fn) self.scripts[s] = fn end
   function f:HasScript() return true end
   function f:AddLine(t) self.lines[#self.lines + 1] = t end
+  function f:AddDoubleLine(l, r) self.lines[#self.lines + 1] = l .. " = " .. r end
   function f:SetOwner() end
   function f:ClearLines() self.lines = {} end
   function f:Show() self.shown = true; if self.scripts.OnShow then self.scripts.OnShow(self) end end
@@ -281,24 +282,33 @@ do
   local S = ns.State()
   local ranks = ns.model.SpellRanks("RENEW", S.st, S.t, S.input.settings)
   local best
-  for _, rk in ipairs(ranks) do if rk.best then best = rk end end
+  for _, rk in ipairs(ranks) do if rk.bestRaw then best = rk end end
   local top = spellTip(109)
   realprint("spell tooltip (Renew 9) ->", table.concat(top, " / "))
-  expect(top[1] and top[1]:find("Holy Math") and top[1]:find("healing per mana") and top[1]:find("per second"),
-    "a known healing rank gets a Holy Math line")
+  local function line(lines, label)
+    for _, l in ipairs(lines) do if l:find(label, 1, true) then return l end end
+  end
+  expect(top[1] and top[1]:find("Holy Math"), "a known healing rank gets a Holy Math header")
   local r9
   for _, rk in ipairs(ranks) do if rk.rank == 9 then r9 = rk end end
-  expect(top[1]:find(string.format("%.2f", r9.hpm), 1, true), "... with the rank's per mana from Your spells")
+  expect(line(top, "Heal per mana = " .. string.format("%.2f", r9.raw.hpm)), "... rows, raw like Spell Coda: heal per mana before overheal")
+  expect(r9.raw.hpm > r9.hpm, "... which is more than after overheal (Your spells)")
+  expect(line(top, "Heal per second = ") and #top == 4, "... and per second: header, two rows, the most efficient rank")
+  local sp9 = ns.model.Spell("RENEW", 9, S.st, S.t, S.input.settings)
+  expect(math.abs(r9.raw.hpm - sp9.expected * sp9.targets / (sp9.cost + sp9.parts.refund)) < 1e-6,
+    "... per mana at the spell's full cost (no Litany of Light refund), like Spell Coda")
+  expect(not line(top, "Holy Binding"), "... Renew: no heal on you")
   if best.rank == 9 then
-    expect(top[2] and top[2]:find("Your most efficient rank"), "... the top rank is the most efficient")
+    expect(top[#top]:find("Your most efficient rank"), "... the top rank is the most efficient")
   else
-    expect(top[2] and top[2]:find("Most efficient: Rank " .. best.rank, 1, true), "... and names the most efficient rank (" .. best.rank .. ")")
+    expect(top[#top]:find("Most efficient: Rank " .. best.rank, 1, true), "... and names the most efficient rank (" .. best.rank .. ")")
     local b = spellTip(100 + best.rank)
-    expect(b[2] and b[2]:find("Your most efficient rank"), "the most efficient rank says so on its own tooltip")
+    expect(b[#b]:find("Your most efficient rank"), "the most efficient rank says so on its own tooltip")
   end
   expect(#spellTip(999) == 0, "a spell that isn't a known healing rank: no line")
-  spellTip(109); postCalls[1](GameTooltip, { id = 109 })
-  expect(#GameTooltip.lines == 2, "the line is added once per tooltip")
+  local once = #spellTip(109)
+  postCalls[1](GameTooltip, { id = 109 })
+  expect(#GameTooltip.lines == once, "the lines are added once per tooltip")
   -- a hidden ("secret") spell ID in combat: comparing it errors in the real client
   local secret = setmetatable({}, { __eq = function() error("compared a secret") end })
   local realSecret = issecretvalue

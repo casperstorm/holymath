@@ -108,7 +108,7 @@ For every trinket and every item with an effect, the report prints:
   - Spell tooltips don't always show the downranking penalty, so never read downranking from tooltips.
   - In combat the client hides combat stats from addons.
   - Inside instances, low ranks' tooltips can be wrong.
-- **Performance:** the Gear tab works out its list a few milliseconds per frame and never in combat. A level-60 solve is about 380 model runs. `run_tests.lua` checks it stays under 600. Keep it there: many players open the Gear tab at max level.
+- **Performance:** the Gear tab works out its list a few milliseconds per frame and never in combat. A level-60 solve is about 470 model runs. `run_tests.lua` checks it stays under 600. Keep it there: many players open the Gear tab at max level.
 - **Release** (only when asked). Update the README and screenshots in `media/` if the UI changed, run both test suites, commit, push, then:
   ```bash
   gh workflow run release.yml -R casperstorm/holymath -f version=X.Y.Z
@@ -139,7 +139,7 @@ It writes `tools/sim/out/results.json` (everything) and `tools/sim/out/index.htm
 
 It covers playstyles, talent builds, gear slot by slot (which item the solver picks in how many scenarios) and trinkets (average, lowest and highest HPS). Prefer an option with a high average *and* a good worst case over one that wins a few scenarios and falls apart in others.
 
-The first full run (Nov 2026) found:
+The first full run (Nov 2026) found the results below, but it counted Holy Binding's heal on you as fully useful and wasted 5% of every shield; 1.7.0 fixed both (`overheal.SELF`, shields 0), so rerun before trusting them:
 - **Playstyle:** Flash Heal filler holds up best, at 98% of the best on average and 93% at worst. Renew filler wins at low overheal but drops to 69% at high.
 - **Build:** the Holy 17/32 build is best in every scenario.
 - **Trinkets:** Burst of Knowledge first, then Royal Seal of Eldre'Thalas.

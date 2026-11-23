@@ -165,14 +165,15 @@ end
 
 -- How much of each spell's healing is wasted. Nobody knows a player's real overheal, so every
 -- scenario runs at three levels: low (the addon's defaults), typical and high. Heals over time
--- waste the most, then big slow heals, then fast ones; shields and Prayer of Mending little.
+-- waste the most, then big slow heals, then fast ones; Prayer of Mending little; shields none.
+-- SELF: Holy Binding's heal on you (a third of each Flash Heal), mostly wasted: you are rarely hurt.
 local OVERHEAL = {
-  low = { name = "Low overheal (Renew 25%)", RENEW = 0.25, PWS = 0.05, GH = 0.25, POH = 0.35, PENANCE = 0.25, BH = 0.25,
-          FLASH = 0.25, NOVA = 0.45, POM = 0.15, LESSER = 0.25, HEAL = 0.25 },
-  typical = { name = "Typical overheal (Renew 45%)", RENEW = 0.45, PWS = 0.10, GH = 0.35, POH = 0.45, PENANCE = 0.30, BH = 0.30,
-              FLASH = 0.30, NOVA = 0.55, POM = 0.20, LESSER = 0.30, HEAL = 0.30 },
-  high = { name = "High overheal (Renew 65%)", RENEW = 0.65, PWS = 0.15, GH = 0.45, POH = 0.55, PENANCE = 0.35, BH = 0.35,
-           FLASH = 0.35, NOVA = 0.65, POM = 0.25, LESSER = 0.35, HEAL = 0.40 },
+  low = { name = "Low overheal (Renew 25%)", RENEW = 0.25, PWS = 0, GH = 0.25, POH = 0.35, PENANCE = 0.25, BH = 0.25,
+          FLASH = 0.25, NOVA = 0.45, POM = 0.15, LESSER = 0.25, HEAL = 0.25, SELF = 0.85 },
+  typical = { name = "Typical overheal (Renew 45%)", RENEW = 0.45, PWS = 0, GH = 0.35, POH = 0.45, PENANCE = 0.30, BH = 0.30,
+              FLASH = 0.30, NOVA = 0.55, POM = 0.20, LESSER = 0.30, HEAL = 0.30, SELF = 0.90 },
+  high = { name = "High overheal (Renew 65%)", RENEW = 0.65, PWS = 0, GH = 0.45, POH = 0.55, PENANCE = 0.35, BH = 0.35,
+           FLASH = 0.35, NOVA = 0.65, POM = 0.25, LESSER = 0.35, HEAL = 0.40, SELF = 0.95 },
 }
 -- measured overheal (run.py --overheal-from: quartiles from real logs) over the guesses
 if os.getenv("HM_OVERHEAL_FILE") then

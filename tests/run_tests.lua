@@ -14,6 +14,7 @@ end
 -- from 16 levels, Twin Disciplines on PW:Shield). Part 2 checks the game client.
 local input = E.copy(E.DEFAULTS)
 input.settings.rules = E.SHEET_RULES
+input.settings.overheal.PWS = 0.05      -- the sheet's shield waste (the addon's default is 0)
 local st = E.Derive(input)
 local t = E.Talents(input.talents, input.settings.rules)
 local set = input.settings
@@ -208,6 +209,19 @@ do
   local bound = E.Spell("FLASH", 7, cst, E.Talents(ranks), cset)
   near("Flash Heal with Holy Binding heals 1.5x", bound.heal / plain.heal, 1.5, 1e-9)
   near("tooltip comparison still per target", E.ModelTooltipHeal("FLASH", 7, cst, E.Talents(ranks), cset), plain.heal, 1e-9)
+  -- the heal on you is a third of the cast, at its own overheal (you are rarely hurt)
+  cset.overheal.FLASH, cset.overheal.SELF = 0.25, 0.85
+  near("whole cast's overheal: 25% on the target x 2/3 + 85% on you x 1/3", E.OverhealFor("FLASH", bound, cset), 0.45, 1e-9)
+  near("... without Holy Binding: the spell's own", E.OverhealFor("FLASH", plain, cset), 0.25, 1e-9)
+  cset.overheal.SELF = 1
+  local onTarget = E.CastValue("FLASH", 7, cst, E.Talents(ranks), cset)
+  near("all of it wasted on you: the cast heals what it would without the talent",
+       onTarget, plain.expected * 0.75, 1e-6)
+  cset.overheal.SELF = 0.85
+  local sheetSet = E.copy(cset); sheetSet.rules = E.SHEET_RULES
+  near("the sheet's rules: the spell's overheal for the whole cast", E.OverhealFor("FLASH", bound, sheetSet), 0.25, 1e-9)
+  near("saved settings get it: SELF in the defaults, and /hm set oh self",
+       (E.DEFAULTS.settings.overheal.SELF == 0.85 and E.OVERHEAL_ALIASES.self == "SELF") and 1 or 0, 1)
   -- rotation: the Binding Heal step casts Flash Heal only with the talent
   local gset = E.copy(E.DEFAULTS.settings)
   local function flashCasts(tr)
@@ -924,6 +938,15 @@ do
   near("no old switch saved (its default was on): Major Mana", #m3.potions, 1)
   local m4 = { potions = {} }
   near("a list already there is left alone", E.MigratePotions(m4) and 1 or 0, 0)
+  local old = { potions = {}, overheal = { PWS = 0.05, RENEW = 0.3 } }
+  E.MigrateSettings(old)
+  near("shield waste: the old 5% default becomes 0", old.overheal.PWS, 0)
+  near("... other overheal kept", old.overheal.RENEW, 0.3)
+  old.overheal.PWS = 0.05; E.MigrateSettings(old)
+  near("... once: a 5% you set again afterwards stays", old.overheal.PWS, 0.05)
+  local mine = { potions = {}, overheal = { PWS = 0.2 } }; E.MigrateSettings(mine)
+  near("... a waste you set yourself stays", mine.overheal.PWS, 0.2)
+  near("... and new settings start at 0", E.DEFAULTS.settings.overheal.PWS, 0)
 
   -- the Math tab with potions: each spell's section = its fight line (healing power included)
   assert(loadfile("Models/PriestMath.lua"))(nil, { Models = { PRIEST = E } })

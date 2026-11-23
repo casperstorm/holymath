@@ -315,6 +315,19 @@ local function spellSection(rows, S, key, rank, step, why)
   local oh = set.overheal[key] or 0
   add(setting({ "Overheal", "healing wasted on players already at full health (your setting)", "", "setting",
                 help = E.OverhealHelp(def.name) }, { "overheal", key }, "pct0", oh))
+  local ohAll = E.OverhealFor(key, sp, set)
+  if abs(ohAll - oh) > 1e-9 then
+    -- Holy Binding: a share of the cast heals you, at its own overheal
+    local mine = (sp.bodies - 1) / sp.bodies
+    local ohSelf = set.overheal.SELF or oh
+    add(setting({ "Overheal on you", "Holy Binding's heal on you, wasted when you are at full health (your setting)", "", "setting",
+                  help = "How much of Holy Binding's heal on you is wasted because you are already at full health. " ..
+                    "Healers are rarely hurt, so most of it usually is. The higher this is, the less Flash Heal is worth." },
+                { "overheal", "SELF" }, "pct0", ohSelf))
+    add({ "Overheal, whole cast", pct(oh, 0) .. " on your target x " .. pct(1 - mine, 0) .. " + " .. pct(ohSelf, 0) ..
+          " on you x " .. pct(mine, 0), pct(ohAll, 1), "" })
+    oh = ohAll
+  end
   local perCast = (expected * (1 - oh) + aegis * (1 - (set.overheal.PWS or 0))) * sp.targets
   local w = n1(expected) .. " x (1 - " .. pct(oh, 0) .. ")"
   if aegis > 0 then w = w .. " + " .. n1(aegis) .. " Aegis x (1 - " .. pct(set.overheal.PWS or 0, 0) .. ")" end

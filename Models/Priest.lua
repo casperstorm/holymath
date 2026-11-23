@@ -47,7 +47,8 @@ E.TALENT_NAMES = {
 
 -- Short names for /hm set oh <spell> <percent>
 E.OVERHEAL_ALIASES = { renew = "RENEW", pws = "PWS", gh = "GH", poh = "POH", penance = "PENANCE",
-                       flash = "FLASH", nova = "NOVA", pom = "POM", lesser = "LESSER", heal = "HEAL" }
+                       flash = "FLASH", nova = "NOVA", pom = "POM", lesser = "LESSER", heal = "HEAL",
+                       self = "SELF" }
 
 E.DEFAULT_ROTATION = "renew"
 
@@ -218,6 +219,7 @@ E.RULES = {
   fiveSecond = "seconds",      -- regen pauses: mana per 5 s converted to per second (see pauseCycle)
   autoRanks = true,            -- playstyles pick the ranks that heal most
   pomWithoutSpiritHealing = true, -- Prayer of Mending ignores Spiritual Guidance's healing (see healingFor)
+  selfOverheal = true,         -- Holy Binding's heal on you has its own overheal (overheal.SELF), see E.OverhealFor
   critPerInt = "game",         -- intellect -> crit by level (E.CritPerInt); the sheet uses 1 / 60 at every level
   aegisFromCrit = true,        -- Divine Aegis: a share of the crit's own amount, at most its cap per heal (the sheet: of the non-crit heal)
   weakenedSoul = true,         -- a shield on the tank waits for Weakened Soul, which Renewed Hope's heals cut short;
@@ -385,11 +387,14 @@ E.DEFAULTS = {
     fightLength = 300, pullEvery = 600, pomHits = 4, groupHits = 5, innervate = false, majorManaPotions = true, cheapManaPotions = false,
     manaTidesInGroup = 1, powerInfusionOut = false, includeInspiration = true,
     tankArmor = 6000, tankRawDTPS = 1200, inspirationIntoTank = 0.8,
-    overheal = { RENEW = 0.25, PWS = 0.05, GH = 0.25, POH = 0.35, PENANCE = 0.25, BH = 0.25,
-                 FLASH = 0.25, NOVA = 0.45, POM = 0.15, LESSER = 0.25, HEAL = 0.25 },
+    overheal = { RENEW = 0.25, PWS = 0, GH = 0.25, POH = 0.35, PENANCE = 0.25, BH = 0.25,
+                 FLASH = 0.25, NOVA = 0.45, POM = 0.15, LESSER = 0.25, HEAL = 0.25,
+                 -- Holy Binding's heal on you (Flash Heal on another target): you are rarely hurt
+                 SELF = 0.85 },
     -- Litany of Light: share of a heal's casts that follow a DIFFERENT heal. Rotations work
     -- it out from their own spell mix; this is only used when a spell is looked at alone.
     litanyAlternation = 0.5,
+    shieldWasteV2 = true,  -- new settings start with no shield waste (see E.MigrateSettings)
     imperfectPlay = 0.8, -- the sheet's factor for downtime you actually use under the 5-second rule
   },
 }
@@ -572,6 +577,18 @@ local function aegisFor(heal, c, key, bodies, st, t, rules)
   return total * c
 end
 E.AegisFor = aegisFor
+
+-- The overheal of one cast as a whole. Flash Heal with Holy Binding also heals you
+-- (its extra "body", a third of the cast): that part is wasted whenever you are at
+-- full health, which is its own setting (overheal.SELF), not the spell's. The
+-- sheet's rules count it at the spell's overheal.
+function E.OverhealFor(key, sp, set)
+  local oh = set.overheal[key] or 0
+  local b = sp and sp.bodies or 1
+  if b <= 1 or not (set.rules or E.RULES).selfOverheal then return oh end
+  local mine = (b - 1) / b
+  return oh * (1 - mine) + (set.overheal.SELF or oh) * mine
+end
 
 ---------------------------------------------------------------------------
 -- One spell rank at the given final stats (sheet Spells row: J..O, P, Q).
@@ -910,6 +927,19 @@ end
 
 -- Settings saved before the potion list: "mana potion on cooldown" (and the
 -- sheet's cheaper potion) become the list. Changes s; true if it did.
+-- Saved settings from older versions, brought up to date (true if anything changed):
+-- the potion list (below), and Power Word: Shield's waste, 5% by default until 1.7, now
+-- 0 (a shield is cast where damage comes; set your own if yours run out unused).
+function E.MigrateSettings(s)
+  if type(s) ~= "table" then return false end
+  local changed = E.MigratePotions(s)
+  if not s.shieldWasteV2 then
+    if type(s.overheal) == "table" and s.overheal.PWS == 0.05 then s.overheal.PWS = 0; changed = true end
+    s.shieldWasteV2 = true
+  end
+  return changed
+end
+
 function E.MigratePotions(s)
   if type(s) ~= "table" or s.potions ~= nil then return false end
   local list = {}
@@ -1324,7 +1354,8 @@ function rotationPass(rotKey, st, t, set)
     local hpc = (sp.expected + (sp.expectedRH - sp.expected) * up) * sp.targets
     local da = (sp.aegis + (sp.aegisRH - sp.aegis) * up) * sp.targets
     local raw = n * hpc
-    local eff = raw * (1 - set.overheal[key]) + n * da * (1 - pwsOH)
+    local oh = E.OverhealFor(key, sp, set)
+    local eff = raw * (1 - oh) + n * da * (1 - pwsOH)
     free = free - n * perCastGcds
     mana = mana - n * sp.cost
     out.raw = out.raw + raw + n * da
@@ -1338,7 +1369,7 @@ function rotationPass(rotKey, st, t, set)
     out.steps[#out.steps + 1] = { key = key, rank = sp.rank, casts = n, raw = raw, eff = eff, enabled = enabled and true or false,
                                   cap = cap, fill = step.fill, tank = step.tank,
                                   id = tableFor(set)[key].ranks[sp.rank].id,
-                                  limit = limit, perCast = hpc, aegis = da, overheal = set.overheal[key],
+                                  limit = limit, perCast = hpc, aegis = da, overheal = oh,
                                   time = perCastGcds * gcd, cost = sp.cost, rh = useRH or nil, rhUp = useRH and up or nil,
                                   least = (key == "PWS" and ws) and max(gcd, shieldCd) or nil,
                                   manaBefore = mana + n * sp.cost }
@@ -1363,7 +1394,7 @@ function rotationPass(rotKey, st, t, set)
   -- every target the filler heals (Prayer of Healing: 5), as its own casts count them
   local pauseHeal, pauseAegis = last.expected * last.targets, last.aegis * last.targets
   local fillRaw = extra * pauseHeal
-  local fillEff = fillRaw * (1 - set.overheal[last.key]) + extra * pauseAegis * (1 - pwsOH)
+  local fillEff = fillRaw * (1 - E.OverhealFor(last.key, last, set)) + extra * pauseAegis * (1 - pwsOH)
   out.raw = out.raw + fillRaw + extra * pauseAegis
   out.pauseHeal, out.pauseAegis = pauseHeal, pauseAegis
   out.eff = out.eff + fillEff
@@ -1853,7 +1884,7 @@ end
 -- and how much of the fight it takes (an instant still takes a global cooldown).
 local function castValue(key, rank, st, t, set)
   local sp = E.Spell(key, rank, st, t, set)
-  local oh = set.overheal[key] or 0
+  local oh = E.OverhealFor(key, sp, set)
   local heal = (sp.expected * (1 - oh) + sp.aegis * (1 - (set.overheal.PWS or 0))) * sp.targets
   local gcd = 1.5 / (1 + st.haste)
   return heal, sp.cost, max(sp.cast, gcd), sp
@@ -1889,16 +1920,27 @@ function E.SpellRanks(key, st, t, set)
   local def = tableFor(set)[key]
   local top = def and E.MaxRank(key, st.level, set.known, set)
   if not top then return {} end
-  local out, bestR, bestH = {}, nil, nil
+  local out, bestR, bestH, bestRawR, bestRawH = {}, nil, nil, nil, nil
   for r = 1, top do
     local heal, cost, time, sp = castValue(key, r, st, t, set)
     local full = def.ranks[r].coeff or def.coeff
     local hpm = cost > 0 and heal / cost or math.huge
+    -- raw, as other addons show it: before overheal, on your target(s) only (Holy Binding's
+    -- heal on you apart), at the spell's full cost (no Litany of Light refund)
+    local b = sp.bodies or 1
+    local raw = (sp.expected + sp.aegis) / b * sp.targets
+    local fullCost = cost + (sp.parts.refund or 0)          -- the spell's cost, no Litany of Light refund
     out[#out + 1] = { rank = r, heal = heal, cost = cost, hpm = hpm, hps = heal / time, id = def.ranks[r].id,
-                      power = (full and full > 0) and sp.coeff / full or 1, lvl = def.ranks[r].lvl }
+                      power = (full and full > 0) and sp.coeff / full or 1, lvl = def.ranks[r].lvl,
+                      overheal = E.OverhealFor(key, sp, set),
+                      raw = { heal = sp.heal / b, expected = sp.expected / b, targets = sp.targets,
+                              onYou = sp.expected * (b - 1) / b, refund = sp.parts.refund or 0,
+                              hpm = fullCost > 0 and raw / fullCost or math.huge, hps = raw / time } }
     if not bestH or hpm > bestH + 1e-9 then bestR, bestH = r, hpm end
+    local rh = out[#out].raw.hpm
+    if not bestRawH or rh > bestRawH + 1e-9 then bestRawR, bestRawH = r, rh end
   end
-  for _, row in ipairs(out) do row.best = (row.rank == bestR) end
+  for _, row in ipairs(out) do row.best, row.bestRaw = (row.rank == bestR), (row.rank == bestRawR) end
   table.sort(out, function(a1, b1) return a1.rank > b1.rank end)
   return out
 end

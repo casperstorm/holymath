@@ -223,7 +223,7 @@ function P.FillDefaults()
   for _, p in pairs(ns.db.profiles or {}) do
     if type(p) == "table" then
       p.settings = type(p.settings) == "table" and p.settings or {}
-      E.MigratePotions(p.settings)
+      E.MigrateSettings(p.settings)
       merge(p.settings, d.settings)
       if not (p.rotation and E.ROTATIONS[p.rotation]) then p.rotation = d.rotation end
     end
@@ -247,7 +247,7 @@ function P.Load(name)
   -- a profile saved by an older version gets the settings added since (their defaults)
   local d = ClassDefaults(ns.model)
   p.settings = type(p.settings) == "table" and p.settings or {}
-  E.MigratePotions(p.settings)
+  E.MigrateSettings(p.settings)
   merge(p.settings, d.settings)
   if not (p.rotation and E.ROTATIONS[p.rotation]) then p.rotation = d.rotation end
   ns.db.settings, ns.db.rotation = E.copy(p.settings), p.rotation
@@ -943,8 +943,8 @@ f:SetScript("OnEvent", function(self, event, unit)
     ns.enabled = ns.model ~= nil
     if not ns.enabled then return end
     HolyMathDB[class] = HolyMathDB[class] or {}
-    -- "mana potion on cooldown" from before the potion list becomes the list
-    ns.model.MigratePotions(HolyMathDB[class].settings)
+    -- older saved settings: the potion list, shield waste (Models/Priest.lua MigrateSettings)
+    ns.model.MigrateSettings(HolyMathDB[class].settings)
     merge(HolyMathDB[class], ClassDefaults(ns.model))
     merge(HolyMathDB[class], { tooltips = ns.TooltipDefaults() })
     -- options the window no longer has (only upgrades, Shift only, notes): their old defaults

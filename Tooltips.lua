@@ -170,7 +170,7 @@ local function SpellRank(id)
   local this, best
   for _, rk in ipairs(ranks) do
     if rk.rank == s.rank then this = rk end
-    if rk.best then best = rk end
+    if rk.bestRaw then best = rk end   -- by the raw per mana the tooltip shows
   end
   return this, best, #ranks
 end
@@ -190,13 +190,19 @@ local function AddSpellLine(tt, id)
   if not ok then ns.LogError("spellTooltip", this); return end
   if not this then return end
   tt.hmSpell = id
-  local hpm = this.hpm == math.huge and "free" or (fmtHPM(this.hpm) .. " healing per mana")
-  tt:AddLine(string.format("%s: %s, %s per second", TAG, hpm, fmtInt(this.hps)), 1, 1, 1)
+  -- rows, raw like other addons show them: before overheal, at the spell's full cost, on
+  -- your target (Holy Binding's heal on you is a row of its own)
+  local raw = this.raw
+  local function row(label, value) tt:AddDoubleLine("  " .. label, value, 1, 0.82, 0, 1, 1, 1) end
+  tt:AddLine(TAG)
+  row("Heal per mana", fmtHPM(raw.hpm))
+  row("Heal per second", fmtInt(raw.hps))
+  if raw.onYou > 0.5 then row("Also on you (Holy Binding)", fmtInt(raw.onYou)) end
   if n > 1 and best then
     if best.rank == this.rank then
       tt:AddLine(GREEN .. "  Your most efficient rank|r")
     else
-      tt:AddLine(string.format("%s  Most efficient: Rank %d (%s per mana)|r", GRAY, best.rank, fmtHPM(best.hpm)))
+      tt:AddLine(string.format("%s  Most efficient: Rank %d (%s per mana)|r", GRAY, best.rank, fmtHPM(best.raw.hpm)))
     end
   end
 end
