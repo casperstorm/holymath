@@ -267,13 +267,26 @@ expect(HolyMathDB.dump.model and HolyMathDB.dump.model.ehps and HolyMathDB.dump.
 -- item tooltip: better cowl over equipped cowl
 GameTooltip.lines = {}; GameTooltip.fakeLink = "|Hitem:1002:0:|h"
 postCalls[0](GameTooltip)
-realprint("item tooltip ->", GameTooltip.lines[1])
-expect(GameTooltip.lines[1] and GameTooltip.lines[1]:find("%+%d"), "upgrade shows a positive number")
+realprint("item tooltip ->", table.concat(GameTooltip.lines, " / "))
+expect(table.concat(GameTooltip.lines, " / "):find("Over what you wear = |cff40ff40%+%d"), "upgrade shows a positive number, right-aligned under the header")
 
 GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|Hitem:1001:0:|h"
 postCalls[0](GameTooltip)
 realprint("item tooltip ->", GameTooltip.lines[1])
-expect(GameTooltip.lines[1] and GameTooltip.lines[1]:find("equipped"), "equipped item says equipped")
+do
+  -- an equipped item: what it gives you, over an empty slot (the HPS the model loses
+  -- without its stats), indented under a Holy Math header
+  local l = GameTooltip.lines[2] or ""
+  expect(GameTooltip.lines[1] == "|cffffd100Holy Math|r" and l:find("^  Equipped"), "equipped item says equipped, indented")
+  local d = tonumber(l:match("= |cffffffff([%d%.]+) HPS|r$"))
+  local S = ns.State()
+  local st = ns.Game.ItemStats("|Hitem:1001:0:|h")
+  local diff = {}
+  for _, k in ipairs({ "healing", "int", "spirit", "mp5", "crit", "haste" }) do diff[k] = st[k] or 0 end
+  local want = ns.model.Compare(S.rotation, S.st, S.input, diff)
+  expect(d and d > 0 and want and math.abs(d - want) < 0.051, "equipped item shows its worth over an empty slot, in white with no sign or %: " .. l)
+  expect(l:find("^  Equipped = "), "equipped worth: just Equipped, the value on the right")
+end
 
 GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|Hitem:1003:0:|h"
 postCalls[0](GameTooltip)
@@ -457,8 +470,8 @@ do
   ns.ClearVerdicts()
   GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|Hitem:3002:0:|h"
   postCalls[0](GameTooltip)
-  realprint("robe swap ->", GameTooltip.lines[1])
-  expect(GameTooltip.lines[1] and GameTooltip.lines[1]:find("%-%d"), "Beastbond over Civinad Robes shows a loss")
+  realprint("robe swap ->", table.concat(GameTooltip.lines, " / "))
+  expect(table.concat(GameTooltip.lines, " / "):find("%-%d"), "Beastbond over Civinad Robes shows a loss")
   GetInventoryItemLink = realInv
   ns.ClearVerdicts()
 end
@@ -481,8 +494,22 @@ do
   GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|cff0070dd|Hitem:4003:0:|h[Circle of Hope]|h|r"
   postCalls[0](GameTooltip)
   local t = table.concat(GameTooltip.lines, " / ")
-  expect(t:find("%+%d") and t:find("in place of|r |cff1eff00Snake Hoop|r", 1, true),
+  expect(t:find("%+%d") and t:find("In place of |cff1eff00Snake Hoop|r = |cff40ff40+", 1, true),
     "a ring's tooltip names the ring it replaces (" .. t .. ")")
+  -- ...and a line for each ring you wear, the better swap first
+  expect(#GameTooltip.lines == 3 and GameTooltip.lines[2]:find("Snake Hoop", 1, true)
+    and GameTooltip.lines[3]:find("^  In place of |cff1eff00Healer's Band|r = |cffff5050%-"),
+    "a ring: one line for each worn ring, best first (" .. t .. ")")
+  -- a ring you wear, in either slot: its worth over an empty slot, not weighed against the other
+  for _, worn in ipairs({ "|cff1eff00|Hitem:4002:0:|h[Healer's Band]|h|r", "|cff1eff00|Hitem:4001:0:|h[Snake Hoop]|h|r" }) do
+    ns.ClearVerdicts()
+    GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = worn
+    postCalls[0](GameTooltip)
+    t = table.concat(GameTooltip.lines, " / ")
+    expect(t:find("Equipped = |cffffffff%d") and not t:find("Equipped = |cffffffff%+") and not t:find("in place of"),
+      "a worn ring shows its worth (" .. t .. ")")
+  end
+  GameTooltip.fakeLink = "|cff0070dd|Hitem:4003:0:|h[Circle of Hope]|h|r"
   -- one empty ring slot: it goes there
   GetInventoryItemLink = function(u, slot)
     if slot == 11 then return "|cff1eff00|Hitem:4002:0:|h[Healer's Band]|h|r" end
@@ -492,13 +519,26 @@ do
   GameTooltip.lines = {}; GameTooltip.fpLink = nil
   postCalls[0](GameTooltip)
   t = table.concat(GameTooltip.lines, " / ")
-  expect(t:find("in place of|r an empty slot", 1, true), "with a ring slot empty, it goes there (" .. t .. ")")
+  expect(t:find("In place of an empty slot = ", 1, true), "with a ring slot empty, it goes there (" .. t .. ")")
+  expect(#GameTooltip.lines == 3 and GameTooltip.lines[2]:find("empty slot", 1, true) and GameTooltip.lines[3]:find("Healer's Band", 1, true),
+    "with a ring slot empty: the empty slot first, then the ring you wear (" .. t .. ")")
+  -- two of the same ring worn: one line
+  GetInventoryItemLink = function(u, slot)
+    if slot == 11 or slot == 12 then return "|cff1eff00|Hitem:4001:0:|h[Snake Hoop]|h|r" end
+    return realInv(u, slot)
+  end
+  ns.ClearVerdicts()
+  GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|cff0070dd|Hitem:4003:0:|h[Circle of Hope]|h|r"
+  postCalls[0](GameTooltip)
+  t = table.concat(GameTooltip.lines, " / ")
+  expect(#GameTooltip.lines == 2 and t:find("In place of |cff1eff00Snake Hoop|r = ", 1, true), "two of the same ring worn: one line (" .. t .. ")")
   -- a head item: no such line
   GetInventoryItemLink = realInv
   ns.ClearVerdicts()
   GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|Hitem:1002:0:|h"
   postCalls[0](GameTooltip)
-  expect(not table.concat(GameTooltip.lines, " "):find("in place of"), "one-slot items don't name what they replace")
+  local one = table.concat(GameTooltip.lines, " ")
+  expect(not one:find("In place of") and one:find("Over what you wear"), "one-slot items say over what you wear, not which item")
   ns.ClearVerdicts()
 end
 
@@ -594,7 +634,7 @@ do
     ns.ClearVerdicts()
     GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = u[1]
     postCalls[0](GameTooltip)
-    expect((GameTooltip.lines[1] or ""):find("HPS"), "usable, gets a number: " .. u[2])
+    expect(table.concat(GameTooltip.lines, " / "):find("HPS"), "usable, gets a number: " .. u[2])
   end
 end
 
@@ -864,7 +904,7 @@ do
     ns.ClearVerdicts()
     GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = link
     postCalls[0](GameTooltip)
-    return GameTooltip.lines[1] or ""
+    return table.concat(GameTooltip.lines, " / ")
   end
   local tipBefore = tipLine("|Hitem:1002:0:|h")
   local cm = cellRow("stat.critMulti")
@@ -995,7 +1035,7 @@ do
     ns.ClearVerdicts()
     GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = link
     postCalls[0](GameTooltip)
-    return GameTooltip.lines[1] or ""
+    return table.concat(GameTooltip.lines, " / ")
   end
   local better, worse = "|Hitem:1002:0:|h", "|Hitem:3002:0:|h"
   local line = plain(itemTip(better))
@@ -1006,7 +1046,7 @@ do
   c:SetChecked(true); click(c)
   c = O.controls.tipItemNumber; c:SetChecked(false); click(c)
   line = plain(itemTip(better))
-  expect(line:find(": %+[%d.]+%%$") and not line:find("HPS"), "number off: just the % (" .. line .. ")")
+  expect(line:find("= %+[%d.]+%%$") and not line:find("HPS"), "number off: just the % (" .. line .. ")")
   O.controls.tipItemPct:SetChecked(false); click(O.controls.tipItemPct)
   expect(itemTip(better) == "", "number and % both off: no line")
   c:SetChecked(true); click(c); O.controls.tipItemPct:SetChecked(true); click(O.controls.tipItemPct)

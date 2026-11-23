@@ -33,6 +33,18 @@ end
 
 local function itemID(link) return link and tonumber(link:match("item:(%d+)")) end
 
+-- Two links are the same item: the same ID, and the same random suffix ("of Healing")
+-- where the item data knows it (Gear.lua's link key).
+local function sameItem(a, b)
+  if not (a and b) then return false end
+  local key = ns.Options and ns.Options.LinkKey
+  if key then
+    local ka, kb = key(a), key(b)
+    if ka and kb then return ka == kb end
+  end
+  return itemID(a) == itemID(b)
+end
+
 -- An item link's name in its quality colour ("an empty slot" for none), to say which
 -- of two rings or trinkets a number is against.
 function ns.ItemLinkName(link)
@@ -87,6 +99,15 @@ local function Verdict(link)
     return nil
   end
 
+  -- a ring or trinket you wear in one of its two slots: that slot only, so it shows its
+  -- worth instead of being weighed against the other one
+  if #candidates > 1 then
+    for _, cand in ipairs(candidates) do
+      local _, links = sumStats(cand)
+      if sameItem(links[1], link) then candidates = { cand }; break end
+    end
+  end
+
   -- use and proc effects (trinkets above all), on average over your fight with the
   -- playstyle's casts: the item's, less those of what it replaces (Gear.lua, from the
   -- item data)
@@ -102,7 +123,7 @@ local function Verdict(link)
     if not base then return nil end
     local newFx, newHeal = effects(link, base)
     local old, links = sumStats(cand)
-    local same = links[1] and itemID(links[1]) == itemID(link)
+    local same = sameItem(links[1], link)
     local diff, any = {}, newFx ~= nil or newHeal > 0
     local heal = newHeal
     for _, k in ipairs(RELEVANT) do
@@ -124,13 +145,21 @@ local function Verdict(link)
 
   local styles = ns.TooltipStyles(S)
   local first, pick, best = styles[1], nil, nil
+  local each = {}   -- two rings or trinkets: the item in place of each, best first
   for _, cand in ipairs(candidates) do
     local w = weigh(cand, first)
+    if w then each[#each + 1] = { over = w.links[1] or false, d = w.d, pct = w.pct } end
     if w and (not best or w.d > best.d) then best, pick = w, cand end
   end
   if not best then verdictCache[link] = false; return nil end
   local out = { rows = {}, same = best.same }
-  if #candidates > 1 then out.over = best.links[1] or false end   -- two rings or trinkets: false = an empty slot
+  if #candidates > 1 then
+    out.over = best.links[1] or false   -- false = an empty slot
+    table.sort(each, function(a, b) return a.d > b.d end)
+    -- two of the same item worn: one line says it
+    if #each == 2 and each[1].over and each[2].over and sameItem(each[1].over, each[2].over) then each[2] = nil end
+    out.each = each
+  end
   for i, key in ipairs(styles) do
     local w = i == 1 and best or weigh(pick, key)
     if w then
@@ -139,6 +168,19 @@ local function Verdict(link)
     end
   end
   out.hasUse = new.hasUse and not best.newFx   -- an effect the data has is in the number
+  -- the item you wear: what it gives you, against an empty slot, in the first playstyle
+  if best.same then
+    local base = baseFor(S, first)
+    local fx, heal = effects(link, base)
+    local diff = {}
+    for _, k in ipairs(RELEVANT) do diff[k] = (new[k] or 0) + (fx and fx[k] or 0) end
+    local d = E.Compare(first, S.st, S.input, diff)
+    if d then
+      d = d + heal
+      -- a share of your healing now, which has the item in it
+      out.worth = { d = d, pct = base.ehps > 0 and d / base.ehps or 0 }
+    end
+  end
   verdictCache[link] = out
   return out
 end
@@ -169,18 +211,42 @@ local function AddItemLine(tt, link)
   local isSame = v.same
   for _, r in ipairs(v.rows) do if math.abs(r.d) >= 0.05 then isSame = false end end
   tt.fpLink = link
-  -- "+16.2 HPS (+1.8%)", or one of them, in green, red or gray
-  local function value(r)
+  -- "+16.2 HPS (+1.8%)", or one of them, in green, red or gray. worth: what an item you
+  -- wear gives you, not a change, so in white with no sign and no % ("5.9 HPS"; the %
+  -- only when the number is switched off; a loss still red with its minus)
+  local function value(r, worth)
     local col = r.d > 0.05 and GREEN or (r.d < -0.05 and RED or GRAY)
-    local pct = string.format("%+.1f%%", r.pct * 100)
-    local text = showNumber and string.format("%+.1f HPS", r.d) or pct
-    if showNumber and showPct then text = text .. " (" .. pct .. ")" end
+    local fmt = "%+.1f"
+    if worth and r.d >= 0 then col, fmt = "|cffffffff", "%.1f" end
+    local pct = string.format(fmt .. "%%", r.pct * 100)
+    local text = showNumber and string.format(fmt .. " HPS", r.d) or pct
+    if showNumber and showPct and not worth then text = text .. " (" .. pct .. ")" end
     return col .. text .. "|r"
   end
-  if isSame then
+  if isSame and v.worth and math.abs(v.worth.d) >= 0.05 then
+    -- what the item you wear gives you, over an empty slot; indented under the header
+    -- like the game's own lists (Disenchant results)
+    --   Holy Math
+    --     Equipped                          26.2 HPS
+    tt:AddLine(TAG)
+    tt:AddDoubleLine("  Equipped", value(v.worth, true), 1, 1, 1, 1, 1, 1)
+  elseif isSame then
     tt:AddLine(TAG .. ": equipped")
   elseif #v.rows == 1 then
-    tt:AddLine(TAG .. ": " .. value(v.rows[1]))
+    -- the value right-aligned under the header, like the game's own lists
+    --   Holy Math
+    --     Over what you wear                  +20.5 HPS (+1.9%)
+    -- a ring or trinket: a line for each of the two you wear, best first
+    --     In place of Snake Hoop               +7.1 HPS (+0.7%)
+    --     In place of Healer's Band            -3.0 HPS (-0.3%)
+    tt:AddLine(TAG)
+    if v.each and #v.each > 0 then
+      for _, e in ipairs(v.each) do
+        tt:AddDoubleLine("  In place of " .. ns.ItemLinkName(e.over or nil), value(e), 1, 1, 1, 1, 1, 1)
+      end
+    else
+      tt:AddDoubleLine("  Over what you wear", value(v.rows[1]), 1, 1, 1, 1, 1, 1)
+    end
   else
     --   Holy Math
     --     Renew filler          +16.2 HPS (+1.8%)
@@ -188,7 +254,7 @@ local function AddItemLine(tt, link)
     tt:AddLine(TAG)
     for _, r in ipairs(v.rows) do tt:AddDoubleLine("  " .. r.name, value(r), 1, 0.82, 0, 1, 1, 1) end
   end
-  if not isSame and v.over ~= nil then tt:AddLine(GRAY .. "  in place of|r " .. ns.ItemLinkName(v.over or nil)) end
+  if not isSame and #v.rows > 1 and v.over ~= nil then tt:AddLine(GRAY .. "  in place of|r " .. ns.ItemLinkName(v.over or nil)) end
   if v.hasUse then tt:AddLine(GRAY .. "  Use or proc effect not counted|r") end
 end
 
