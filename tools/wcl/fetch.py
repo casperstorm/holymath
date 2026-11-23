@@ -36,7 +36,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-API = os.environ.get("WCL_API", "https://forever.warcraftlogs.com/api/v2/client")
+# The API's address: the first of these that answers with the token (WCL_API to force one).
+# Which one serves Forever's logs wasn't documented where scripts can read it; the one that
+# works is remembered in the cache (api.txt).
+APIS = [os.environ["WCL_API"]] if os.environ.get("WCL_API") else [
+    "https://www.warcraftlogs.com/api/v2/client",
+    "https://forever.warcraftlogs.com/api/v2/client",
+    "https://classic.warcraftlogs.com/api/v2/client",
+    "https://fresh.warcraftlogs.com/api/v2/client",
+]
+API = None
 TOKEN_URL = os.environ.get("WCL_TOKEN_URL", "https://www.warcraftlogs.com/oauth/token")
 CONF = os.path.expanduser("~/.config/holymath/wcl.env")
 CACHE = os.path.expanduser(os.environ.get("WCL_CACHE", "~/.cache/holymath/wcl"))
@@ -93,12 +102,45 @@ def token():
     return t["access_token"]
 
 
+def api():
+    """The API address that answers: remembered, or found by asking each with a tiny query."""
+    global API
+    if API:
+        return API
+    path = os.path.join(CACHE, "api.txt")
+    if os.path.exists(path):
+        API = open(path, encoding="utf-8").read().strip()
+        return API
+    body = json.dumps({"query": "{ rateLimitData { limitPerHour } }"}).encode()
+    for url in APIS:
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Authorization", "Bearer " + token())
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", UA)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                out = json.load(r)
+            if (out.get("data") or {}).get("rateLimitData"):
+                print("API: %s" % url, flush=True)
+                API = url
+                write_private(path, url)
+                return API
+            print("API %s answered without data: %s" % (url, json.dumps(out)[:200]), flush=True)
+        except urllib.error.HTTPError as e:
+            print("API %s: %d %s" % (url, e.code, e.read()[:160].decode("utf-8", "replace").replace("\n", " ")), flush=True)
+        except urllib.error.URLError as e:
+            print("API %s: %s" % (url, e.reason), flush=True)
+    die("no API address answered (tried %s)" % ", ".join(APIS))
+
+
 def gql(query, variables=None):
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
     for attempt in range(5):
-        req = urllib.request.Request(API, data=body, method="POST")
+        req = urllib.request.Request(api(), data=body, method="POST")
         req.add_header("Authorization", "Bearer " + token())
         req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
         req.add_header("User-Agent", UA)
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
@@ -113,7 +155,7 @@ def gql(query, variables=None):
                 except OSError:
                     pass
                 continue
-            die("the API answered %d for %s" % (e.code, API))
+            die("the API answered %d for %s: %s" % (e.code, API, e.read()[:200].decode("utf-8", "replace")))
         if out.get("errors"):
             die("GraphQL error: " + "; ".join(x.get("message", "?") for x in out["errors"]))
         return out["data"]
@@ -252,6 +294,8 @@ def chosen_encounters(data, ids, path):
 
 
 def collect(a):
+    if not os.path.exists(os.path.join(CACHE, "discover.json")):
+        die("run 'discover' first")
     data = json.load(open(os.path.join(CACHE, "discover.json"), encoding="utf-8"))
     cls, specs = priest_specs()
     week = time.strftime("%G-W%V")      # rankings change: fetched again each week (fights don't)
