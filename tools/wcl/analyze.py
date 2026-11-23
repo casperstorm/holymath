@@ -82,7 +82,14 @@ def main():
     ap.add_argument("--out", default=os.path.join(HERE, "out", "estimates.json"))
     a = ap.parse_args()
 
-    files = sorted(glob.glob(os.path.join(CACHE, "**", "priest_*.json"), recursive=True))
+    # only the site fetch.py uses now (site.json: Forever's); other folders hold other games' logs
+    site_path = os.path.join(CACHE, "site.json")
+    if not os.path.exists(site_path):
+        sys.exit("analyze.py: no site.json in %s: run tools/wcl/fetch.py first" % CACHE)
+    api_url, token_url = json.load(open(site_path, encoding="utf-8"))
+    net = lambda u: u.split("//", 1)[-1].split("/", 1)[0]
+    folder = os.path.join(CACHE, "%s__%s" % (net(api_url), net(token_url)))
+    files = sorted(glob.glob(os.path.join(folder, "priest_*.json")))
     if not files:
         sys.exit("analyze.py: nothing in %s: run tools/wcl/fetch.py first" % CACHE)
 
@@ -158,7 +165,7 @@ def main():
 
     names = gear_names()
     out = {
-        "source": "forever.warcraftlogs.com, top-ranked priest healers (fetch.py)",
+        "source": "Warcraft Logs, WoW: Forever (token from %s, API %s), top-ranked priest healers" % (net(token_url), net(api_url)),
         "priestFights": dict(n_priests),
         "fights": {k: len(v) for k, v in length.items()},
         "minHealing": a.min_healing,

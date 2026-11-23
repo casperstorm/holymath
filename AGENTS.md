@@ -205,6 +205,16 @@ GitHub Actions can run all of this (Lua 5.1 or LuaJIT, plus Python 3) without th
 
 Scraping its pages doesn't work: they're built in the browser and sit behind a bot check. The API is the way in.
 
+**Forever only, never another game.** Warcraft Logs runs one site per game version, and the same API address serves different games depending on where the token came from. Forever's API docs (read 23 Nov 2026) give:
+- **Token:** `https://forever.warcraftlogs.com/oauth/token`.
+- **API:** `https://classic.warcraftlogs.com/api/v2/client`.
+
+Using the wrong pair gets the wrong game's logs:
+- a token from Classic's own sign-in returns MoP Classic's logs;
+- `www` returns retail's.
+
+`fetch.py` therefore only ever uses Forever's sign-in, and a site's zones must include at least two names from `zones.txt`. It keeps each address-and-sign-in pair in its own cache folder, and `analyze.py` reads only the one in use.
+
 **Setup (the maintainer, once):**
 1. Signed in on Warcraft Logs, create an API client: name it "Holy Math", use any redirect URL, and don't make it public.
 2. Put its ID and secret in `~/.config/holymath/wcl.env` as `WCL_CLIENT_ID=...` and `WCL_CLIENT_SECRET=...`, then `chmod 600` the file.

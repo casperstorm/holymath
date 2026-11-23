@@ -37,21 +37,24 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# Warcraft Logs runs one site per game version, each with its own API and sign-in. Holy Math
-# uses WoW: Forever's logs ONLY: www is retail and classic/fresh are other Classic versions (their
-# zones share names with Forever's: Scholomance, Upper Blackrock Spire), so none of them is ever
-# tried. These are Forever's candidates, each tried with a token from that site and from www;
-# WCL_API (and WCL_TOKEN_URL) set the address by hand once it's known.
-FOREVER_HOST = "forever.warcraftlogs.com"
-SITES = ([(os.environ["WCL_API"], os.environ.get("WCL_TOKEN_URL", "https://%s/oauth/token" % FOREVER_HOST))]
-         if os.environ.get("WCL_API") else [
-    ("https://%s/api/v2/client" % FOREVER_HOST, "https://%s/oauth/token" % FOREVER_HOST),
-    ("https://%s/api/v2/client" % FOREVER_HOST, "https://www.warcraftlogs.com/oauth/token"),
+# Warcraft Logs runs one site per game version. Forever's API docs
+# (https://forever.warcraftlogs.com/api/docs, read 23 Nov 2026) give Forever's own token URI
+# (forever.warcraftlogs.com/oauth/token) but the Classic API address
+# (classic.warcraftlogs.com/api/v2/client): the token decides which game's data comes back.
+# A token from Classic's own sign-in gets MoP Classic's logs, and www is retail. Holy Math uses
+# WoW: Forever's logs ONLY, so the token always comes from Forever's sign-in, and a site counts
+# only when its zones include at least two of zones.txt's names (Shaper's Terrace and Blackmaw
+# Hold exist only in Forever). WCL_API / WCL_TOKEN_URL override the addresses.
+FOREVER_TOKEN = os.environ.get("WCL_TOKEN_URL", "https://forever.warcraftlogs.com/oauth/token")
+SITES = ([(os.environ["WCL_API"], FOREVER_TOKEN)] if os.environ.get("WCL_API") else [
+    ("https://classic.warcraftlogs.com/api/v2/client", FOREVER_TOKEN),
+    ("https://forever.warcraftlogs.com/api/v2/client", FOREVER_TOKEN),
 ])
+MIN_MATCHES = 2       # zones.txt names a site's zones must include to count as Forever's
 
 
-def is_forever(api_url):
-    return urllib.parse.urlparse(api_url).netloc == FOREVER_HOST
+def is_forever(site_pair):
+    return urllib.parse.urlparse(site_pair[1]).netloc == urllib.parse.urlparse(FOREVER_TOKEN).netloc
 
 
 SITE = None            # (api, token url) in use
@@ -155,7 +158,7 @@ def site():
     path = os.path.join(CACHE, "site.json")
     if os.path.exists(path) and not os.environ.get("WCL_API"):
         SITE = tuple(json.load(open(path, encoding="utf-8")))
-        if is_forever(SITE[0]):
+        if is_forever(SITE):
             return SITE
         SITE = None                          # a remembered non-Forever choice: find Forever's again
     wanted = wanted_names()
@@ -175,12 +178,12 @@ def site():
         if score > best_score:
             best, best_score = (api_url, token_url), score
     if not best:
-        die("Forever's API didn't answer at %s. Find its address on https://%s/api/docs (in a browser) "
-            "and set WCL_API (and WCL_TOKEN_URL if its sign-in differs)" % (", ".join(sorted({x[0] for x in SITES})), FOREVER_HOST))
-    if wanted and best_score <= 0:
-        die("Forever's zones don't match zones.txt: check the names against the zones listed above")
-    if not is_forever(best[0]) and not os.environ.get("WCL_API"):
-        die("refusing %s: Holy Math uses WoW: Forever's logs only" % best[0])
+        die("Forever's API didn't answer at %s (see https://forever.warcraftlogs.com/api/docs; WCL_API sets it)"
+            % ", ".join(sorted({x[0] for x in SITES})))
+    if best_score < min(MIN_MATCHES, len(wanted)):
+        die("these zones aren't Forever's (only %d of zones.txt's names): not using them" % best_score)
+    if not is_forever(best):
+        die("refusing a token from %s: Holy Math uses WoW: Forever's logs only" % host(best[1]))
     SITE = best
     write_private(path, json.dumps(list(best)))
     print("using %s" % best[0], flush=True)
@@ -188,7 +191,10 @@ def site():
 
 
 def site_cache():
-    return os.path.join(CACHE, host(site()[0]))
+    """This site's cache folder: named after the API address and the sign-in, since one API
+    address serves different games' data depending on the token."""
+    api_url, token_url = site()
+    return os.path.join(CACHE, "%s__%s" % (host(api_url), host(token_url)))
 
 
 def gql(query, variables=None, fatal=True):
