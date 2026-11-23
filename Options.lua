@@ -1430,6 +1430,107 @@ local function PotionSettings(p, x, y)
   end
 end
 
+-- Which playstyles item tooltips are worked out for: 1 to 3, ticked in the game's own
+-- dropdown (checkboxes, the menu stays open). "yours" is the one you play, whichever
+-- that is. The closed field lists them:
+--   Playstyles  [ Renew filler, Flash Heal filler  v ]
+-- Without the game's dropdown there is no control (the setting still works).
+local function TooltipStyles(p, x, y)
+  local dd = try("DropdownButton", p, "WowStyle1DropdownTemplate")
+  if not (dd and dd.SetupMenu) then return end
+  local MAX = ns.MAX_TOOLTIP_STYLES or 3
+  local label = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  label:SetPoint("LEFT", p, "TOPLEFT", x + 4, y - 13)
+  label:SetText("Playstyles")
+  dd:SetPoint("LEFT", p, "TOPLEFT", x + 84, y - 13)
+  dd:SetWidth(COL_W - 84)
+  local function list()
+    local tips = db().tooltips
+    if type(tips.itemStyles) ~= "table" or #tips.itemStyles == 0 then tips.itemStyles = { "yours" } end
+    return tips.itemStyles
+  end
+  local function index(k) for i, v in ipairs(list()) do if v == k then return i end end end
+  local function nameOf(k)
+    if k == "yours" then k = db().rotation end
+    local r = k and E.ROTATIONS[k]
+    return r and r.name or ""
+  end
+  -- one you can play now (a playstyle of yours you deleted, or one whose talent you
+  -- dropped, is still in the list but isn't shown and doesn't count)
+  local function playable(k)
+    if k == "yours" then return true end
+    local r = E.ROTATIONS[k]
+    if not r or r.sheetOnly then return false end
+    if not r.requires then return true end
+    local S = ns.State and ns.State()
+    return (S and S.t and S.t[r.requires] or 0) > 0
+  end
+  local function count()
+    local n = 0
+    for _, v in ipairs(list()) do if playable(v) then n = n + 1 end end
+    return n
+  end
+  local function isSelected(k) return index(k) ~= nil end
+  local function canToggle(k)
+    if index(k) then return count() > 1 end   -- at least one
+    return count() < MAX                      -- at most three
+  end
+  local function setSelected(k)
+    if not canToggle(k) then return end
+    local l, i = list(), index(k)
+    if i then table.remove(l, i) else l[#l + 1] = k end
+    if ns.ClearVerdicts then ns.ClearVerdicts() end
+    O.Changed()
+  end
+  local function add(root, text, k, help)
+    local box = root.CreateCheckbox and root:CreateCheckbox(text, isSelected, setSelected, k)
+    if not box then return end
+    if box.SetEnabled then box:SetEnabled(function() return canToggle(k) end) end
+    if box.SetTooltip and help then
+      box:SetTooltip(function(tooltip) tooltip:SetText(nameOf(k), 1, 1, 1); tooltip:AddLine(help, nil, nil, nil, true) end)
+    end
+  end
+  dd:SetupMenu(function(_, root)
+    -- playstyles that are gone for good leave the list
+    if next(E.ROTATIONS) then
+      local l = list()
+      for i = #l, 1, -1 do
+        if l[i] ~= "yours" and not E.ROTATIONS[l[i]] then table.remove(l, i) end
+      end
+      if #l == 0 then l[1] = "yours" end
+    end
+    add(root, "The one you play (" .. nameOf("yours") .. ")", "yours",
+      "Whichever playstyle you choose on the Settings or Playstyles tab, so it follows when you change it.")
+    if root.CreateDivider then root:CreateDivider() end
+    local keys, mine = rotationKeys()
+    for i, k in ipairs(keys) do
+      if i == mine and root.CreateTitle then root:CreateTitle("Yours") end
+      add(root, O.PlaystyleMenuText(k), k, E.ROTATIONS[k].help)
+    end
+  end)
+  if dd.SetSelectionTranslator then
+    -- one ticked entry at a time (the game joins them with commas); without one: all
+    dd:SetSelectionTranslator(function(sel)
+      local k = type(sel) == "table" and sel.data
+      if k then return nameOf(k) end
+      local names = {}
+      for _, v in ipairs(list()) do names[#names + 1] = nameOf(v) end
+      return table.concat(names, ", ")
+    end)
+  end
+  local hit = CreateFrame("Frame", nil, p)
+  hit:SetPoint("LEFT", p, "TOPLEFT", x, y - 13)
+  hit:SetSize(80, 24)
+  hit:EnableMouse(true)
+  local help = "The playstyles item tooltips work the item out for, one line each: up to " .. MAX ..
+    ", at least one. \"The one you play\" follows your playstyle when you change it.\n\n" ..
+    "Holy Math\n  Renew filler           +16.2 HPS (+1.8%)\n  Flash Heal filler      +12.0 HPS (+1.9%)"
+  Tip(dd, "Playstyles on item tooltips", help)
+  Tip(hit, "Playstyles on item tooltips", help)
+  O.controls.tipStyles = dd
+  O.rows[#O.rows + 1] = function() if dd.GenerateMenu then pcall(dd.GenerateMenu, dd) end end
+end
+
 -- Tooltips, on the Settings tab: the item line and what it shows, and the spell line.
 local function TooltipSettings(p, x, y)
   local tips = function() return db().tooltips end
@@ -1443,7 +1544,8 @@ local function TooltipSettings(p, x, y)
     "worked out by running the whole model with it equipped.", "items")
   opt("tipItemNumber", y - 48, "Show the number (+16.2 HPS)", "The change in healing per second.", "itemNumber")
   opt("tipItemPct", y - 72, "Show it in % (+1.8%)", "The change as a share of your healing per second.", "itemPercent")
-  opt("tipSpells", y - 96, "Show Holy Math on spell tooltips",
+  TooltipStyles(p, x, y - 96)
+  opt("tipSpells", y - 126, "Show Holy Math on spell tooltips",
     "A line on the tooltips of the healing spells you know: what that rank heals per mana and per second " ..
     "after the overheal you expect, and which of your ranks is the most efficient (heals the most per mana). " ..
     "The same numbers as Your spells on the Math tab.\n\nThe game's own spell tooltip can leave out " ..
@@ -1674,7 +1776,7 @@ local function Build()
 
   -- Your spells and their overheal live on the Math tab, with every other number
   -- the model uses (right column, under the tooltips)
-  y = TOP - 172 - 140
+  y = TOP - 172 - 168
   Header(p, "Spells and overheal", RIGHT, y)
   Label(p, "Your spells, their ranks and the overheal you expect per spell are at the top of the Math tab.",
     "GameFontHighlightSmall", RIGHT, y - 20, COL_W)
@@ -1742,7 +1844,7 @@ local function Build()
   TooltipSettings(p, RIGHT, TOP - 172)
 
   -- the minimap button (Minimap.lua), under Spells and overheal
-  Check(p, "minimap", RIGHT, TOP - 172 - 140 - 88, "Show the minimap button",
+  Check(p, "minimap", RIGHT, TOP - 172 - 168 - 88, "Show the minimap button",
     "A small Holy Math button on the edge of the minimap: click opens this window, right-click opens it at " ..
     "the Gear tab, drag moves it. /hm minimap does the same as this switch.",
     function() return ns.Minimap and ns.Minimap.Shown() end,

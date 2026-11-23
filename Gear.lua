@@ -98,13 +98,15 @@ end
 
 -- What a linked item's use and proc effects are worth to you (stats on average, healing
 -- a second), from the item data, in your fight now: for the item tooltips everywhere.
-function ns.GearEffectsFor(link, S)
+-- r: the playstyle's result whose casts the procs roll on (default: yours).
+function ns.GearEffectsFor(link, S, r)
   local D, solver = ns.GearData, ns.GearSolve
   if not (D and solver and S and S.weights and S.weights.base) then return nil end
   local key = O.LinkKey(link)
   local it = key and D.byKey and (D.byKey[key] or D.byKey[key:match("^(%d+)")])
   if not (it and it.fx) then return nil end
-  local r, set = S.weights.base, S.input.settings
+  local set = S.input.settings
+  r = r or S.weights.base
   local ctx = { fl = set.fightLength, casts = {}, oh = set.overheal and set.overheal.FLASH or 0, pull = set.pullEvery }
   local total = (r.fiveSecondCasts or 0) + (r.innerFocus and r.innerFocus.casts or 0)
   for _, s in ipairs(r.steps or {}) do

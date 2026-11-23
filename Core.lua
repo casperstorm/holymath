@@ -22,11 +22,16 @@ end
 ns.ClassDefaults = ClassDefaults
 
 -- What the tooltips show (Settings tab of the window): the item line at all,
--- the change in healing per second, the change in %, and the spell line.
-local TOOLTIP_DEFAULTS = { items = true, itemNumber = true, itemPercent = true, spells = true }
+-- the change in healing per second, the change in %, the playstyles it is worked
+-- out for (1 to 3; "yours" = the one you play, whichever it is) and the spell line.
+local TOOLTIP_DEFAULTS = { items = true, itemNumber = true, itemPercent = true, spells = true,
+                           itemStyles = { "yours" } }
+ns.MAX_TOOLTIP_STYLES = 3
 function ns.TooltipDefaults()
   local d = {}
-  for k, v in pairs(TOOLTIP_DEFAULTS) do d[k] = v end
+  for k, v in pairs(TOOLTIP_DEFAULTS) do
+    if type(v) == "table" then d[k] = {}; for i, x in ipairs(v) do d[k][i] = x end else d[k] = v end
+  end
   return d
 end
 

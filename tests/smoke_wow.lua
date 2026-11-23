@@ -100,6 +100,7 @@ local TEMPLATES = {
       local root = {}
       local function item() return { SetTooltip = noop, SetEnabled = noop } end
       function root:CreateRadio(text, isSel, setSel, data) isSel(data); return item() end
+      function root:CreateCheckbox(text, isSel, setSel, data) isSel(data); return item() end
       function root:CreateButton() return item() end
       root.CreateTitle, root.CreateDivider = noop, noop
       self.gen(self, root)
@@ -970,6 +971,74 @@ do
   O.controls.tipItemPct:SetChecked(false); click(O.controls.tipItemPct)
   expect(itemTip(better) == "", "number and % both off: no line")
   c:SetChecked(true); click(c); O.controls.tipItemPct:SetChecked(true); click(O.controls.tipItemPct)
+  -- the playstyles item tooltips are worked out for: 1 to 3, "yours" by default
+  local sd = O.controls.tipStyles
+  expect(sd and type(db.tooltips.itemStyles) == "table" and #db.tooltips.itemStyles == 1
+    and db.tooltips.itemStyles[1] == "yours", "Settings tab: item tooltips' playstyles, your own by default")
+  local function styleMenu()
+    local m = {}
+    sd.gen(sd, { CreateCheckbox = function(_, text, isSel, setSel, data)
+        local e = { text = text, data = data, isSel = isSel, setSel = setSel }
+        function e:SetEnabled(fn) self.enabled = fn end
+        function e:SetTooltip() end
+        m[#m + 1] = e; m[data] = e
+        return e
+      end, CreateTitle = noop, CreateDivider = noop })
+    return m
+  end
+  local m = styleMenu()
+  expect(m.yours and m.yours.isSel("yours") and m.flashFill and not m.flashFill.isSel("flashFill"),
+    "... the menu has yours (ticked) and every playstyle (" .. #m .. " entries)")
+  expect(not m.yours.enabled(), "... the last one ticked can't be unticked")
+  m.flashFill.setSel("flashFill"); m.ghFill.setSel("ghFill")
+  expect(#db.tooltips.itemStyles == 3 and db.tooltips.itemStyles[2] == "flashFill", "... ticking adds them in order")
+  m = styleMenu()
+  expect(not m.pohFill.enabled() and m.yours.enabled(), "... with three ticked, no fourth")
+  m.pohFill.setSel("pohFill")
+  expect(#db.tooltips.itemStyles == 3, "... and a fourth is refused")
+  ns.ClearVerdicts()
+  GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = better
+  postCalls[0](GameTooltip)
+  local L = GameTooltip.lines
+  local yours = ns.model.ROTATIONS[db.rotation].name
+  expect(plain(L[1]) == "Holy Math" and #L >= 4 and plain(L[2]):find("^  " .. yours:gsub("%p", "%%%0") .. " = %+[%d.]+ HPS %(%+[%d.]+%%%)$")
+    and plain(L[3]):find("^  Flash Heal filler = %+[%d.]+ HPS") and plain(L[4]):find("^  Greater Heal filler = %+[%d.]+ HPS"),
+    "... the tooltip: Holy Math, then a line per playstyle (" .. plain(table.concat(L, " / ")) .. ")")
+  -- each line is that playstyle's own model run, not the first one's scaled
+  local v = ns.ItemVerdict(better)
+  expect(v and v.rows[2].key == "flashFill" and math.abs(v.rows[2].d - v.rows[1].d) > 1e-6,
+    "... each playstyle gets its own number")
+  -- a playstyle you can't play (or that's gone) is left out
+  db.tooltips.itemStyles[3] = "noSuchPlaystyle"
+  ns.ClearVerdicts()
+  expect(#ns.ItemVerdict(better).rows == 2, "... a playstyle that's gone is left out")
+  -- a deleted one doesn't take up a place: three ticked with it, a fourth still fits,
+  -- and it leaves the list the next time the menu is built
+  m = styleMenu()
+  expect(m.pohFill.enabled() and #db.tooltips.itemStyles == 2, "... a playstyle that's gone neither counts nor stays")
+  m.ghFill.setSel("ghFill")
+  -- procs roll on each playstyle's own casts: Dormant Heart of the Mountain (+40
+  -- healing after a Greater Heal) is worth more to Greater Heal filler than to Renew filler
+  do
+    local S = ns.State()
+    local function rot(k)
+      local t = ns.model.Talents(S.input.talents, S.input.settings.rules, S.input.settings.overrides)
+      return ns.model.Rotation(k, S.st, t, S.input.settings)
+    end
+    local heart = "|cff0070dd|Hitem:249473::::::::|h[Dormant Heart of the Mountain]|h|r"
+    local gh, renew = ns.GearEffectsFor(heart, S, rot("ghFill")), ns.GearEffectsFor(heart, S, rot("renew"))
+    expect(gh and renew and (gh.healing or 0) > (renew.healing or 0) + 1,
+      "... a proc on Greater Heal counts by each playstyle's Greater Heals (" ..
+      tostring(gh and gh.healing) .. " vs " .. tostring(renew and renew.healing) .. ")")
+  end
+  m = styleMenu(); m.yours.setSel("yours")
+  expect(#db.tooltips.itemStyles == 2 and db.tooltips.itemStyles[1] == "flashFill", "... unticking yours keeps the others")
+  expect(plain(itemTip(better)):find("^Holy Math$"), "... two playstyles: still a line each")
+  db.tooltips.itemStyles = { "flashFill" }
+  line = plain(itemTip(better))
+  expect(line:find("^Holy Math: %+[%d.]+ HPS"), "... one playstyle: the one line, as before (" .. line .. ")")
+  db.tooltips.itemStyles = { "yours" }
+  ns.ClearVerdicts()
   local realInv = GetInventoryItemLink
   GetInventoryItemLink = function(u, slot) if slot == 5 then return "|Hitem:3001:0:|h" end return realInv(u, slot) end
   expect(itemTip(worse):find("%-%d"), "a worse item shows a loss")
@@ -978,8 +1047,10 @@ do
   expect(itemTip(better) == "", "item tooltips off: no line")
   c:SetChecked(true); click(c)
   db.tooltips.itemPercent = false; db.tooltips.items = false; db.tooltips.spells = false
+  db.tooltips.itemStyles = { "flashFill", "ghFill" }
   click(O.controls.Defaults)
-  expect(db.tooltips.items and db.tooltips.itemPercent and db.tooltips.itemNumber and db.tooltips.spells,
+  expect(db.tooltips.items and db.tooltips.itemPercent and db.tooltips.itemNumber and db.tooltips.spells
+    and #db.tooltips.itemStyles == 1 and db.tooltips.itemStyles[1] == "yours",
     "Defaults puts the tooltip options back too")
   click(O.controls["tab:settings"])
   SlashCmdList.HOLYMATH("")

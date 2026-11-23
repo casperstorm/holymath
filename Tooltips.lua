@@ -43,9 +43,49 @@ function ns.ItemLinkName(link)
   return col and (col .. name .. "|r") or name
 end
 
-local verdictCache = {}
-function ns.ClearVerdicts() verdictCache = {} end
+local verdictCache, baseCache = {}, {}
+function ns.ClearVerdicts() verdictCache, baseCache = {}, {} end
 
+-- Can you play this playstyle now (it exists, and you have the talent it needs)?
+local function usable(key, S)
+  local r = key and E.ROTATIONS and E.ROTATIONS[key]
+  if not r or r.sheetOnly then return false end
+  return not r.requires or ((S.t and S.t[r.requires]) or 0) > 0
+end
+
+-- The playstyles item tooltips are worked out for (Settings tab): 1 to 3, in the
+-- order you ticked them, "yours" being the one you play. Gone or unusable ones are
+-- left out; none left: yours.
+function ns.TooltipStyles(S)
+  S = S or ns.State()
+  local tip = ns.db and ns.db.tooltips or {}
+  local list = type(tip.itemStyles) == "table" and tip.itemStyles or { "yours" }
+  local out, seen = {}, {}
+  for _, k in ipairs(list) do
+    if k == "yours" then k = S and S.rotation end
+    if type(k) == "string" and not seen[k] and S and usable(k, S) and #out < (ns.MAX_TOOLTIP_STYLES or 3) then
+      seen[k] = true
+      out[#out + 1] = k
+    end
+  end
+  if #out == 0 and S and S.rotation then out[1] = S.rotation end
+  return out
+end
+
+-- A playstyle's result with your stats now (yours is already worked out).
+local function baseFor(S, key)
+  if key == S.rotation and S.weights and S.weights.base then return S.weights.base end
+  if baseCache[key] == nil then
+    local input = S.input
+    local t = E.Talents(input.talents, input.settings.rules, input.settings.overrides)
+    baseCache[key] = E.Rotation(key, S.st, t, input.settings) or false
+  end
+  return baseCache[key] or nil
+end
+
+-- What the item does for you in each playstyle: { rows = { { key, name, d, pct } },
+-- same, over, hasUse }. A ring or trinket is weighed against the one it beats most
+-- in the first playstyle, and the others against that same one.
 local function Verdict(link)
   local S = ns.State()
   if not S or not S.weights then return nil end
@@ -66,17 +106,20 @@ local function Verdict(link)
     return nil
   end
 
-  -- use and proc effects (trinkets above all), on average over your fight: the item's,
-  -- less those of what it replaces (Gear.lua, from the item data)
-  local function effects(l)
+  -- use and proc effects (trinkets above all), on average over your fight with the
+  -- playstyle's casts: the item's, less those of what it replaces (Gear.lua, from the
+  -- item data)
+  local function effects(l, r)
     if not (l and ns.GearEffectsFor) then return nil, 0 end
-    local ok, add, heal = pcall(ns.GearEffectsFor, l, S)
+    local ok, add, heal = pcall(ns.GearEffectsFor, l, S, r)
     if ok and add then return add, heal or 0 end
     return nil, 0
   end
-  local newFx, newHeal = effects(link)
-  local best
-  for _, cand in ipairs(candidates) do
+  -- the item in place of one candidate, in one playstyle: d (effective HPS), pct
+  local function weigh(cand, key)
+    local base = baseFor(S, key)
+    if not base then return nil end
+    local newFx, newHeal = effects(link, base)
     local old, links = sumStats(cand)
     local same = links[1] and itemID(links[1]) == itemID(link)
     local diff, any = {}, newFx ~= nil or newHeal > 0
@@ -86,28 +129,39 @@ local function Verdict(link)
       if (new[k] or 0) ~= 0 or (old[k] or 0) ~= 0 then any = true end
     end
     for _, l in ipairs(links) do
-      local oldFx, oldHeal = effects(l)
+      local oldFx, oldHeal = effects(l, base)
       if oldFx then any = true; for k, v in pairs(oldFx) do diff[k] = (diff[k] or 0) - v end end
       heal = heal - oldHeal
     end
-    if any or same then
-      local d, pct = E.Compare(S.rotation, S.st, S.input, diff)
-      if d then
-        local base = S.weights.base and S.weights.base.ehps or 0
-        d = d + heal
-        pct = base > 0 and d / base or pct
-        if not best or d > best.d then
-          -- two rings or trinkets: say which one it's against
-          best = { d = d, pct = pct, same = same }
-          if #candidates > 1 then best.over = links[1] or false end   -- false: an empty slot
-        end
-      end
+    if not (any or same) then return nil end
+    local d, pct = E.Compare(key, S.st, S.input, diff)
+    if not d then return nil end
+    d = d + heal
+    pct = base.ehps > 0 and d / base.ehps or pct
+    return { d = d, pct = pct, same = same, links = links, newFx = newFx }
+  end
+
+  local styles = ns.TooltipStyles(S)
+  local first, pick, best = styles[1], nil, nil
+  for _, cand in ipairs(candidates) do
+    local w = weigh(cand, first)
+    if w and (not best or w.d > best.d) then best, pick = w, cand end
+  end
+  if not best then verdictCache[link] = false; return nil end
+  local out = { rows = {}, same = best.same }
+  if #candidates > 1 then out.over = best.links[1] or false end   -- two rings or trinkets: false = an empty slot
+  for i, key in ipairs(styles) do
+    local w = i == 1 and best or weigh(pick, key)
+    if w then
+      local r = E.ROTATIONS[key]
+      out.rows[#out.rows + 1] = { key = key, name = r and r.name or key, d = w.d, pct = w.pct }
     end
   end
-  if best then best.hasUse = new.hasUse and not newFx end   -- an effect the data has is in the number
-  verdictCache[link] = best or false
-  return best
+  out.hasUse = new.hasUse and not best.newFx   -- an effect the data has is in the number
+  verdictCache[link] = out
+  return out
 end
+ns.ItemVerdict = Verdict
 
 local function AddItemLine(tt, link)
   ns.Count("itemHook")
@@ -130,19 +184,30 @@ local function AddItemLine(tt, link)
   end
   local ok, v = pcall(Verdict, link)
   if not ok then ns.LogError("itemTooltip", v); return end
-  if not v then return end
-  local isSame = v.same and math.abs(v.d) < 0.05
+  if not v or #v.rows == 0 then return end
+  local isSame = v.same
+  for _, r in ipairs(v.rows) do if math.abs(r.d) >= 0.05 then isSame = false end end
   tt.fpLink = link
+  -- "+16.2 HPS (+1.8%)", or one of them, in green, red or gray
+  local function value(r)
+    local col = r.d > 0.05 and GREEN or (r.d < -0.05 and RED or GRAY)
+    local pct = string.format("%+.1f%%", r.pct * 100)
+    local text = showNumber and string.format("%+.1f HPS", r.d) or pct
+    if showNumber and showPct then text = text .. " (" .. pct .. ")" end
+    return col .. text .. "|r"
+  end
   if isSame then
     tt:AddLine(TAG .. ": equipped")
+  elseif #v.rows == 1 then
+    tt:AddLine(TAG .. ": " .. value(v.rows[1]))
   else
-    local col = v.d > 0.05 and GREEN or (v.d < -0.05 and RED or GRAY)
-    local pct = string.format("%+.1f%%", v.pct * 100)
-    local text = showNumber and string.format("%+.1f HPS", v.d) or pct      -- "+16.2 HPS (+1.8%)", or one of them
-    if showNumber and showPct then text = text .. " (" .. pct .. ")" end
-    tt:AddLine(string.format("%s: %s%s|r", TAG, col, text))
-    if v.over ~= nil then tt:AddLine(GRAY .. "  in place of|r " .. ns.ItemLinkName(v.over or nil)) end
+    --   Holy Math
+    --     Renew filler          +16.2 HPS (+1.8%)
+    --     Flash Heal filler     +12.0 HPS (+1.9%)
+    tt:AddLine(TAG)
+    for _, r in ipairs(v.rows) do tt:AddDoubleLine("  " .. r.name, value(r), 1, 0.82, 0, 1, 1, 1) end
   end
+  if not isSame and v.over ~= nil then tt:AddLine(GRAY .. "  in place of|r " .. ns.ItemLinkName(v.over or nil)) end
   if v.hasUse then tt:AddLine(GRAY .. "  Use or proc effect not counted|r") end
 end
 
