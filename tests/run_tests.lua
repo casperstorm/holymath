@@ -590,8 +590,13 @@ do
   near("level 60: game data 0.0168% per int", E.CritPerInt(60), 0.0168, 1e-9)
   near("level 50: measured 0.0208% per int", E.CritPerInt(50), 0.0208, 1e-9)
   near("level 49: measured 0.0213% per int", E.CritPerInt(49), 0.0213, 1e-9)
-  near("level 55: halfway between 50 and 60", E.CritPerInt(55), 0.0188, 1e-9)
-  near("level 48: extended along 49-50", E.CritPerInt(48), 0.0218, 1e-9)
+  near("level 55: the game's table", E.CritPerInt(55), 0.0186, 1e-9)
+  near("level 20: the game's table (no longer extended from 49-50: it was 0.0358)", E.CritPerInt(20), 0.0583, 1e-9)
+  local tableOK = 1
+  for lvl, v in pairs(E.CRIT_PER_INT_MEASURED) do if math.abs(E.CRIT_PER_INT_BY_LEVEL[lvl] - v) > 1e-9 then tableOK = 0 end end
+  near("the table matches every level measured in game", tableOK, 1)
+  near("Power Infusion costs 20% of base mana: 275 at 60", math.floor(0.2 * E.BaseMana(60) + 0.5), 275)
+  near("Meditation: the game's curve, 17% at rank 1", E.CastingRegenShare({ meditation = 1 }), 0.17, 1e-9)
   -- the two dumps: no crit on gear, Holy Specialization 3/3 (3%) added on top
   local f49, f50 = dofile("tests/fixture_client_holy.lua"), dofile("tests/fixture_client_holy50.lua")
   near("dump at 49 fits 0.8% + 204 int", f49.crit - 0.03, (0.8 + 204 * E.CritPerInt(49)) / 100, 1e-6)
@@ -1411,6 +1416,20 @@ do
   local has = false
   for _, it in ipairs(poolT) do if it == robe then has = true end end
   ok("Truefaith Vestments only with Tailoring", robe and has and #poolT > #pool)
+  -- set bonuses from Spell Coda's review, checked in wowsims' rows
+  local function piecesOf(setId, n)
+    local list = {}
+    for _, it in ipairs(D.items) do if it.set == setId and #list < n then list[#list + 1] = it end end
+    local items = {}
+    for i, it in ipairs(list) do items["s" .. i] = it end
+    return items
+  end
+  local storm = GS.Bonuses(D, piecesOf(1972, 6))
+  ok("Stormcloth Regalia 6 pieces: +10 spirit and +22 healing", storm.spirit == 10 and storm.healing == 22)
+  local high = GS.Bonuses(D, piecesOf(473, 3))
+  ok("Highlander's Intent 3 pieces: +1% spell crit", high.crit == 1)
+  local mag = GS.Bonuses(D, piecesOf(181, 6))
+  ok("Magister's Regalia 6 pieces: +18 healing, the mana proc, 8 MP5", mag.healing == 18 and mag.proc == 200 and mag.mp5 == 8)
   ok("the search stays small: " .. r60.runs .. " model runs at 60", r60.runs < 600)
   -- trinket effects, averaged over a 2-minute fight (0.6 casts a second, 4 Greater Heals)
   local function named(n) for _, it in ipairs(D.items) do if it.name == n then return it end end end

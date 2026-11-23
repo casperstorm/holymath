@@ -341,6 +341,14 @@ SETS = {
     549: {2: ({"healing": 23}, "+23 healing")}, 390: {6: ({"healing": 23}, "+23 healing")},
     344: {2: ({"healing": 23}, "+23 healing")}, 389: {6: ({"healing": 23}, "+23 healing")},
     2134: {3: ({"spirit": 10}, "+10 spirit")}, 2133: {3: ({"int": 10}, "+10 intellect")},
+    # from Spell Coda's review (23 Nov 2026), each checked in wowsims' spell rows and item sets:
+    81: {3: ({"healing": 23}, "+23 healing")},                          # The Postmaster (14047)
+    122: {5: ({"healing": 23}, "+23 healing")},                         # Necropile Raiment (14047)
+    181: {3: ({"healing": 18}, "+18 healing"), 5: ({"proc": 200}, "5% a cast: 200 mana"),
+          6: ({"mp5": 8}, "8 MP5")},                                    # Magister's Regalia (9346, 450527, 18378)
+    183: {3: ({"healing": 18}, "+18 healing"), 6: ({"mp5": 8}, "8 MP5")},  # Dreadmist Raiment (9346, 18378)
+    473: {3: ({"crit": 1}, "+1% spell crit")}, 485: {3: ({"crit": 1}, "+1% spell crit")},  # Highlander's/Defiler's (18384)
+    1972: {3: ({"spirit": 10}, "+10 spirit"), 6: ({"healing": 22}, "+22 healing")},  # Stormcloth Regalia (1258496, 1258494)
 }
 
 # --- drop what something else beats ---------------------------------------------

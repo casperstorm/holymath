@@ -84,9 +84,12 @@ function E.CritTalent(ranks)
   return ranks.holySpecialization or 0, 2, 6, "Holy Spec"
 end
 
--- Share of spirit regen that continues while casting (Meditation: 1/6 per rank).
+-- Share of spirit regen that continues while casting (Meditation, the game's curve).
 function E.CastingRegenShare(ranks)
-  return (ranks.meditation or 0) * (0.5 / 3)
+  local r = ranks.meditation or 0
+  local c = E.DATA and E.DATA.talents and E.DATA.talents.meditation
+  if c and r > 0 then return c[math.min(r, #c)] / 100 end   -- the game's curve: 17/33/50%
+  return r * (0.5 / 3)
 end
 
 local max, min, ceil, exp = math.max, math.min, math.ceil, math.exp
@@ -272,30 +275,40 @@ function E.Downrank(coeff, rk, playerLevel, rules)
   return max(coeff * 0.1, coeff - below * 0.05 * coeff)
 end
 
--- Spell crit (percent) one point of intellect gives, by level. Level 60 is the
--- game data (wowsims, PlayerExpectedStat). The game data has no other levels, so
--- the rest are measured from the client: with no crit on gear, a priest's spell
--- crit is 0.8% + intellect x this, and the dumps fit it to four decimals
--- (level 49: 204 int -> 5.1452%; level 50: 208 int -> 5.1264%; 20 Nov 2026).
--- Between known levels it is interpolated; below the lowest it is extended
--- along the two lowest. Returns the value and how it was found.
+-- Spell crit (percent) one point of intellect gives, by level 1-60: the game's table
+-- (a priest's row of the client's spell-crit-per-intellect data, as Spell Coda carries it,
+-- MIT licence, (c) jezzi23). It matches what the client showed exactly where it was
+-- measured (E.CRIT_PER_INT_MEASURED: with no crit on gear, a priest's spell crit is 0.8% +
+-- intellect x this; level 49: 204 int -> 5.1452%, level 50: 208 int -> 5.1264%, 20 Nov
+-- 2026) and wowsims' level 60. Returns the value and where it comes from.
+E.CRIT_PER_INT_BY_LEVEL = {
+  0.1909, 0.1826, 0.1750, 0.1680, 0.1556, 0.1500, 0.1448, 0.1400, 0.1355, 0.1273,
+  0.1167, 0.1050, 0.0977, 0.0875, 0.0808, 0.0764, 0.0700, 0.0667, 0.0627, 0.0583,
+  0.0560, 0.0525, 0.0506, 0.0477, 0.0457, 0.0438, 0.0420, 0.0404, 0.0389, 0.0372,
+  0.0359, 0.0347, 0.0336, 0.0323, 0.0313, 0.0304, 0.0294, 0.0286, 0.0278, 0.0269,
+  0.0263, 0.0255, 0.0249, 0.0241, 0.0235, 0.0230, 0.0223, 0.0219, 0.0213, 0.0208,
+  0.0204, 0.0199, 0.0195, 0.0191, 0.0186, 0.0183, 0.0179, 0.0176, 0.0171, 0.0168,
+}
 E.CRIT_PER_INT_MEASURED = { [49] = 0.0213, [50] = 0.0208 }
 function E.CritPerInt(level)
-  local pts = {}
-  for l, v in pairs(E.CRIT_PER_INT_MEASURED) do pts[#pts + 1] = { l, v, "measured in game" } end
-  if DATA.critPerInt60 then pts[#pts + 1] = { 60, DATA.critPerInt60, "game data" } end
-  table.sort(pts, function(a, b) return a[1] < b[1] end)
-  level = level or 60
-  for _, p in ipairs(pts) do if p[1] == level then return p[2], p[3] end end
-  if #pts == 0 then return 1 / 60, "sheet" end
-  if #pts == 1 then return pts[1][2], "estimated" end
-  local lo, hi = pts[1], pts[2]
-  if level > pts[#pts][1] then lo, hi = pts[#pts - 1], pts[#pts] end
-  for i = 1, #pts - 1 do
-    if level > pts[i][1] and level < pts[i + 1][1] then lo, hi = pts[i], pts[i + 1] end
-  end
-  local v = lo[2] + (hi[2] - lo[2]) * (level - lo[1]) / (hi[1] - lo[1])
-  return max(v, 0.001), "estimated"
+  level = math.floor((level or 60) + 0.5)
+  if level == 60 and DATA.critPerInt60 then return DATA.critPerInt60, "game data" end
+  local v = E.CRIT_PER_INT_BY_LEVEL[min(max(level, 1), #E.CRIT_PER_INT_BY_LEVEL)]
+  return v, "game data"
+end
+
+-- A priest's base mana by level 1-60 (the game's table, as Spell Coda carries it; level
+-- 60's 1376 is wowsims' too). Spells that cost a share of base mana use it (Power Infusion).
+E.BASE_MANA_BY_LEVEL = {
+  110, 119, 129, 140, 137, 150, 164, 179, 195, 212,
+  215, 234, 254, 260, 282, 305, 329, 339, 365, 377,
+  405, 434, 449, 480, 497, 530, 549, 584, 605, 627,
+  665, 689, 728, 752, 776, 800, 839, 863, 887, 911,
+  950, 974, 998, 1022, 1046, 1070, 1094, 1118, 1142, 1166,
+  1190, 1214, 1238, 1262, 1271, 1295, 1319, 1343, 1352, 1376,
+}
+function E.BaseMana(level)
+  return E.BASE_MANA_BY_LEVEL[min(max(math.floor((level or 60) + 0.5), 1), #E.BASE_MANA_BY_LEVEL)]
 end
 
 ---------------------------------------------------------------------------
@@ -1094,6 +1107,8 @@ function E.ManaParts(st, t, set)
   local innN = max(1, ceil((fl - 15) / 360))
   local innEach = (set.innervate and 1 or 0) * (st.oocRegen * 5 - st.combatRegen) * 4
   local piN = max(1, fl / 180)
+  -- Power Infusion costs 20% of base mana (the game data; 275 at 60); the sheet says 250
+  local piCost = (set.rules or E.RULES).table == "sheet" and 250 or math.floor(0.2 * E.BaseMana(st.level) + 0.5)
   return {
     { key = "pool", mana = st.manaPool },
     { key = "mp5", mana = ticks * st.mp5, ticks = ticks, per = st.mp5 },
@@ -1102,7 +1117,7 @@ function E.ManaParts(st, t, set)
       per = pots.sheet and pots.sheet.per or nil, plan = pots },
     { key = "manaTide", mana = tideN * set.manaTidesInGroup * 290 * 4, n = tideN * set.manaTidesInGroup, per = 290 * 4 },
     { key = "innervate", mana = innN * innEach, n = set.innervate and innN or 0, per = innEach },
-    { key = "powerInfusion", mana = set.powerInfusionOut and -250 * piN or 0, n = set.powerInfusionOut and piN or 0, per = -250 },
+    { key = "powerInfusion", mana = set.powerInfusionOut and -piCost * piN or 0, n = set.powerInfusionOut and piN or 0, per = -piCost },
   }
 end
 
