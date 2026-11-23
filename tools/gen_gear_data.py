@@ -117,7 +117,8 @@ for chunk in re.split(r"\n\t\{ID: ", spell_body)[1:]:
             mm = re.search(r"\b" + key + r": (-?[\d.]+)", b)
             return float(mm.group(1)) if mm else 0.0
         effs.append(dict(type=e.group(1), aura=e.group(2), bp=enum("BasePoints"), misc=int(enum("Misc")),
-                         period=enum("PeriodMs"), trigger=int(enum("TriggerID"))))
+                         period=enum("PeriodMs"), trigger=int(enum("TriggerID")),
+                         target=int((re.search(r"ImplicitTarget\{(\d+)", b) or [0, 0])[1])))
         if e.group(2) == "A_PROC_TRIGGER_SPELL" and enum("TriggerID"):
             triggered_by[int(enum("TriggerID"))] = int(m.group(1))
     spells[int(m.group(1))] = dict(dur=hnum("DurationMs"), chance=hnum("ProcChance"),
@@ -131,6 +132,12 @@ HEAL_FLAGS = 0x400 | 0x4000
 # procs on one named spell, which the row doesn't say (wowsims, sim/common/forever/items_trinkets.go):
 # Dormant Heart of the Mountain's Eternal Power, on Greater Heal
 PROC_ON = {1249118: "GH"}
+
+
+# a heal counts only on your target (Blessed Prayer Beads, Ankh of Life: implicit target 21, a
+# friendly target), not one on yourself (Lifestone, Behemoth Bones: 1, the caster): your HPS is the
+# healing you do for others
+TARGET_ALLY = 21
 
 
 def buff_value(sid):
@@ -159,12 +166,14 @@ def buff_value(sid):
             v["mp5"] = v.get("mp5", 0) + bp * 5000 / e["period"]
         elif t == "E_ENERGIZE" and e["misc"] == 0:
             v["mana"] = v.get("mana", 0) + bp
-        elif t == "E_HEAL":
+        elif t == "E_HEAL" and e["target"] == TARGET_ALLY:
             v["heal"] = v.get("heal", 0) + bp
         elif a == "A_MOD_POWER_COST_SCHOOL" and bp < 0:
             v["cost"] = v.get("cost", 0) - bp
             if sp["chance"]:
                 v["n"] = 1       # the buff procs off (is used up by) the next spell: one cast (Robes of Insight)
+    if "heal" in v and "mana" in v:
+        del v["heal"]    # one target for both (Major Recombobulator): on yourself, for the mana
     return v
 
 
@@ -240,6 +249,17 @@ def lua(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def prof_of(it):
+    """The profession the item needs. wowsims leaves it out for every Engineering item (the game's
+    tooltip says "Requires Engineering": Major Recombobulator, Rose Colored Goggles, Green Lens,
+    Floppy Goggles), so an item crafted by Engineering needs Engineering."""
+    if it.get("requiredProfession"):
+        return PROF.get(it["requiredProfession"], "")
+    if any((s.get("crafted") or {}).get("profession") == 4 for s in it.get("sources") or []):
+        return "Engineering"
+    return ""
+
+
 items = []
 for it in d["items"]:
     if it.get("phase") != 1 or it.get("reqLvl", 0) > 60:
@@ -303,7 +323,7 @@ for it in d["items"]:
         items.append(dict(key=str(it["id"]) + key, sid=int(key[1:]) if key else 0, id=it["id"], name=it["name"] + suffix, suffix=suffix.strip(),
                           slot=slot, lvl=level, q=it.get("quality", 0), unique=bool(it.get("unique")),
                           limit=it.get("limitCategory", 0) or 0, use=uncounted,
-                          prof=PROF.get(it.get("requiredProfession"), "") if it.get("requiredProfession") else "",
+                          prof=prof_of(it),
                           fx=fx, set=it.get("setId", 0) or 0, setName=it.get("setName", ""), sides=per_side, stats=v))
 
 # Set bonuses that matter for healing (wowsims/forever's set rows, sim/common/forever/items_sets.go

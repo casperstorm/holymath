@@ -374,7 +374,7 @@ function O.GearEffectText(f)
     parts[#parts + 1] = string.format("%d mana over %s", f.mp5 * f.d / 5 + 0.5, minutes(f.d)); over = true
   elseif f.mp5 then parts[#parts + 1] = f.mp5 .. " MP5" end
   if f.mana then parts[#parts + 1] = f.mana .. " mana" end
-  if f.heal then parts[#parts + 1] = "heals you for " .. f.heal end
+  if f.heal then parts[#parts + 1] = "heals your target for " .. f.heal end
   if f.cost then parts[#parts + 1] = f.cost .. " less mana " .. (f.n and "for the next spell" or "on each spell") end
   local what = table.concat(parts, ", ")
   if (f.d or 0) > 0 and not f.n and not (over and #parts == 1) then what = what .. " for " .. minutes(f.d) end

@@ -1404,8 +1404,15 @@ do
   near("Blue Dragon: 3% a cast, 150 spirit for 15 s", add.spirit, 150 * (1 - math.exp(-0.03 * 0.6 * 15)))
   add = GS.Effects(named("Dormant Heart of the Mountain"), ctx)
   near("Dormant Heart: +40 healing for 15 s after each Greater Heal (4 in the fight)", add.healing, 40 * math.min(1, 4 / 120 * 15))
-  local _, heal = GS.Effects(named("Lifestone"), ctx)
-  near("Lifestone: an 800 heal on use, after your Flash Heal overheal", heal, 800 / 120 * 0.75)
+  local _, heal = GS.Effects(named("Blessed Prayer Beads"), ctx)
+  near("Blessed Prayer Beads: a 648 heal on your target on use, after your Flash Heal overheal", heal, 648 / 120 * 0.75)
+  ok("Lifestone and Behemoth Bones (heals on yourself only) don't count, so aren't in the list",
+     not named("Lifestone") and not named("Behemoth Bones"))
+  local recomb = named("Major Recombobulator")
+  ok("Major Recombobulator: Engineering only, and its mana counts, not its heal (one target for both)",
+     recomb and recomb.prof == "Engineering" and recomb.fx and recomb.fx[1].mana == 304 and not recomb.fx[1].heal)
+  ok("Engineering goggles need Engineering (wowsims leaves it out; the game says so)",
+     named("Rose Colored Goggles") and named("Rose Colored Goggles").prof == "Engineering")
   local mark = GS.Effects(named("Mark of the Dragon Lord"), ctx)
   near("Mark of the Dragon Lord: 22 MP5 for 30 min, up the whole fight", mark.mp5, 22)
   add = GS.Effects(named("Mindtap Talisman"), ctx)
