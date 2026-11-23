@@ -48,7 +48,7 @@ import urllib.request
 # Hold exist only in Forever). WCL_API / WCL_TOKEN_URL override the addresses.
 FOREVER_TOKEN = os.environ.get("WCL_TOKEN_URL", "https://forever.warcraftlogs.com/oauth/token")
 SITES = ([(os.environ["WCL_API"], FOREVER_TOKEN)] if os.environ.get("WCL_API") else [
-    ("https://classic.warcraftlogs.com/api/v2/client", FOREVER_TOKEN),
+    ("https://classic.warcraftlogs.com/api/v2/client", FOREVER_TOKEN),     # what Forever's API docs give
     ("https://forever.warcraftlogs.com/api/v2/client", FOREVER_TOKEN),
 ])
 MIN_MATCHES = 2       # zones.txt names a site's zones must include to count as Forever's
@@ -151,8 +151,21 @@ def wanted_names():
     return set(from_file)
 
 
+FOREVER_ZONES = range(3000, 3040)   # Forever's zone ids (3000 is "Dungeons"); not in the zones list
+
+
+def forever_zones(api_url, token_url):
+    """Forever's zones, asked for by id: the zones list leaves them out (3000 "Dungeons", 34
+    encounters, each a whole dungeon: Hall of Thanes, Scholomance, ...)."""
+    parts = " ".join("z%d: zone(id: %d) { id name frozen encounters { id name } }" % (i, i) for i in FOREVER_ZONES)
+    out = post(api_url, token_url, "{ worldData { %s } }" % parts)
+    wd = (out.get("data") or {}).get("worldData") or {}
+    return [z for z in (wd.get("z%d" % i) for i in FOREVER_ZONES) if z]
+
+
 def site():
-    """The site whose zones are Forever's: remembered, or found by asking each."""
+    """The API and sign-in to use: Forever's token (always) with the first API address whose
+    Forever zones (3000 up) hold at least two of zones.txt's names. Remembered in site.json."""
     global SITE
     if SITE:
         return SITE
@@ -163,32 +176,24 @@ def site():
             return SITE
         SITE = None                          # a remembered non-Forever choice: find Forever's again
     wanted = wanted_names()
-    best, best_score = None, -1
     for api_url, token_url in SITES:
-        try:
-            out = post(api_url, token_url, "{ worldData { zones { name encounters { name } } } }")
-        except (GQLError, urllib.error.HTTPError, urllib.error.URLError) as e:
-            code = getattr(e, "code", "")
-            print("site %s (token from %s): %s %s" % (api_url, host(token_url), code, getattr(e, "reason", e)), flush=True)
+        if not is_forever((api_url, token_url)):
             continue
-        zones = ((out.get("data") or {}).get("worldData") or {}).get("zones") or []
+        try:
+            zones = forever_zones(api_url, token_url)
+        except (GQLError, urllib.error.HTTPError, urllib.error.URLError) as e:
+            print("site %s (token from %s): %s %s" % (api_url, host(token_url), getattr(e, "code", ""), getattr(e, "reason", e)), flush=True)
+            continue
         names = {norm(z["name"]) for z in zones} | {norm(e["name"]) for z in zones for e in (z.get("encounters") or [])}
         score = len(wanted & names)
-        print("site %s (token from %s): %d zones, %d of zones.txt's names: %s" % (
-            api_url, host(token_url), len(zones), score, ", ".join(z["name"] for z in zones[:6])), flush=True)
-        if score > best_score:
-            best, best_score = (api_url, token_url), score
-    if not best:
-        die("Forever's API didn't answer at %s (see https://forever.warcraftlogs.com/api/docs; WCL_API sets it)"
-            % ", ".join(sorted({x[0] for x in SITES})))
-    if best_score < min(MIN_MATCHES, len(wanted)):
-        die("these zones aren't Forever's (only %d of zones.txt's names): not using them" % best_score)
-    if not is_forever(best):
-        die("refusing a token from %s: Holy Math uses WoW: Forever's logs only" % host(best[1]))
-    SITE = best
-    write_private(path, json.dumps(list(best)))
-    print("using %s" % best[0], flush=True)
-    return SITE
+        print("site %s (token from %s): Forever zones %s; %d of zones.txt's names" % (
+            api_url, host(token_url), ", ".join("%d %s" % (z["id"], z["name"]) for z in zones), score), flush=True)
+        if zones and score >= min(MIN_MATCHES, len(wanted)):
+            SITE = (api_url, token_url)
+            write_private(path, json.dumps(list(SITE)))
+            print("using %s with a token from %s" % (api_url, host(token_url)), flush=True)
+            return SITE
+    die("no API gave Forever's zones (3000 up) with zones.txt's names (see https://forever.warcraftlogs.com/api/docs; WCL_API sets it)")
 
 
 def site_cache():
@@ -260,15 +265,17 @@ def cached(name, fn):
 
 # --- discover ---------------------------------------------------------------------------
 def discover(_a):
-    data = gql("""{
-      worldData { zones { id name frozen encounters { id name } partitions { id name default } } }
-      gameData { classes { id name slug specs { id name slug } } }
-    }""")
+    """Forever's zones (asked for by id, 3000 up) and the priest specs, into discover.json."""
+    api_url, token_url = site()
+    zones = forever_zones(api_url, token_url)
+    data = gql("{ gameData { classes { id name slug specs { id name slug } } } }")
+    data["worldData"] = {"zones": zones}
     write_private(os.path.join(site_cache(), "discover.json"), json.dumps(data, indent=1))
     priest = [c for c in data["gameData"]["classes"] if c["slug"].lower() == "priest"]
     print("priest specs:", ", ".join(s["name"] + " (" + s["slug"] + ")" for c in priest for s in c["specs"]) or "none found")
-    for z in data["worldData"]["zones"]:
-        print("zone %d %s: %d encounters%s" % (z["id"], z["name"], len(z["encounters"] or []), " (frozen)" if z.get("frozen") else ""))
+    for z in zones:
+        print("zone %d %s%s: %s" % (z["id"], z["name"], " (frozen)" if z.get("frozen") else "",
+                                    ", ".join("%d %s" % (e["id"], e["name"]) for e in (z.get("encounters") or []))))
     print("saved to " + os.path.join(site_cache(), "discover.json"))
 
 
