@@ -37,21 +37,23 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# Warcraft Logs runs one site per game version, each with its own API and sign-in: the
-# www site answers with retail's data, which Holy Math never uses. These are tried in turn, each with a token from its
-# own site, and the one whose zones match the most names in zones.txt is used (WCL_API and
-# WCL_TOKEN_URL force one). The choice is remembered in the cache (site.json), and each
-# site's answers are cached in their own folder, so ids from two sites never mix.
-SITES = ([(os.environ["WCL_API"], os.environ.get("WCL_TOKEN_URL", "https://www.warcraftlogs.com/oauth/token"))]
+# Warcraft Logs runs one site per game version, each with its own API and sign-in. Holy Math
+# uses WoW: Forever's logs ONLY: www is retail and classic/fresh are other Classic versions (their
+# zones share names with Forever's: Scholomance, Upper Blackrock Spire), so none of them is ever
+# tried. These are Forever's candidates, each tried with a token from that site and from www;
+# WCL_API (and WCL_TOKEN_URL) set the address by hand once it's known.
+FOREVER_HOST = "forever.warcraftlogs.com"
+SITES = ([(os.environ["WCL_API"], os.environ.get("WCL_TOKEN_URL", "https://%s/oauth/token" % FOREVER_HOST))]
          if os.environ.get("WCL_API") else [
-    ("https://forever.warcraftlogs.com/api/v2/client", "https://forever.warcraftlogs.com/oauth/token"),
-    ("https://forever.warcraftlogs.com/api/v2/client", "https://www.warcraftlogs.com/oauth/token"),
-    ("https://classic.warcraftlogs.com/api/v2/client", "https://classic.warcraftlogs.com/oauth/token"),
-    ("https://fresh.warcraftlogs.com/api/v2/client", "https://fresh.warcraftlogs.com/oauth/token"),
+    ("https://%s/api/v2/client" % FOREVER_HOST, "https://%s/oauth/token" % FOREVER_HOST),
+    ("https://%s/api/v2/client" % FOREVER_HOST, "https://www.warcraftlogs.com/oauth/token"),
 ])
-# Holy Math is for WoW: Forever. Retail's API (www) is never used, not even as a fallback: its
-# zones can share names with Forever's (Upper Blackrock Spire) and would win by mistake.
-RETAIL = "www.warcraftlogs.com/api"
+
+
+def is_forever(api_url):
+    return urllib.parse.urlparse(api_url).netloc == FOREVER_HOST
+
+
 SITE = None            # (api, token url) in use
 ZONES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zones.txt")
 
@@ -153,9 +155,9 @@ def site():
     path = os.path.join(CACHE, "site.json")
     if os.path.exists(path) and not os.environ.get("WCL_API"):
         SITE = tuple(json.load(open(path, encoding="utf-8")))
-        if RETAIL not in SITE[0]:
+        if is_forever(SITE[0]):
             return SITE
-        SITE = None                          # a remembered retail choice: find Forever's again
+        SITE = None                          # a remembered non-Forever choice: find Forever's again
     wanted = wanted_names()
     best, best_score = None, -1
     for api_url, token_url in SITES:
@@ -172,10 +174,13 @@ def site():
             api_url, host(token_url), len(zones), score, ", ".join(z["name"] for z in zones[:6])), flush=True)
         if score > best_score:
             best, best_score = (api_url, token_url), score
-    if not best or (wanted and best_score <= 0):
-        die("no site's zones match zones.txt: check the names against the zones listed above")
-    if RETAIL in best[0]:
-        die("refusing retail's API (%s): Holy Math uses WoW: Forever's logs only" % best[0])
+    if not best:
+        die("Forever's API didn't answer at %s. Find its address on https://%s/api/docs (in a browser) "
+            "and set WCL_API (and WCL_TOKEN_URL if its sign-in differs)" % (", ".join(sorted({x[0] for x in SITES})), FOREVER_HOST))
+    if wanted and best_score <= 0:
+        die("Forever's zones don't match zones.txt: check the names against the zones listed above")
+    if not is_forever(best[0]) and not os.environ.get("WCL_API"):
+        die("refusing %s: Holy Math uses WoW: Forever's logs only" % best[0])
     SITE = best
     write_private(path, json.dumps(list(best)))
     print("using %s" % best[0], flush=True)
