@@ -23,6 +23,7 @@ Usage (run from the HolyMath folder):
 Which raids and dungeons: tools/wcl/zones.txt (empty = every zone that isn't frozen).
   python3 -I tools/wcl/fetch.py report <code>       # one report you name (a public one)
   python3 -I tools/wcl/fetch.py query '<graphql>'   # anything else, printed (for checking fields)
+  python3 -I tools/wcl/fetch.py probe               # which API serves Forever's zone 3000
 
 It watches the API's points budget (rateLimitData) and waits when it's nearly used up.
 """
@@ -396,6 +397,29 @@ def report(a):
     print("%d fights of %s cached (%d priest entries)" % (len(fights), a.code, n))
 
 
+def probe(_a):
+    """Ask each Warcraft Logs API (with Forever's token and with its own site's) for Forever's
+    zone 3000 (wowsims' evidence names it: "forever.warcraftlogs.com, zone 3000") and for the
+    game versions it serves. Prints what answers; changes nothing."""
+    q = "{ worldData { zone(id: 3000) { id name frozen encounters { id name } } expansions { id name } } }"
+    for api_host in ["classic", "fresh", "forever", "www", "sod", "vanilla"]:
+        api_url = "https://%s.warcraftlogs.com/api/v2/client" % api_host
+        for tok_host in sorted({"forever", api_host}):
+            token_url = "https://%s.warcraftlogs.com/oauth/token" % tok_host
+            try:
+                out = post(api_url, token_url, q)
+                d = (out.get("data") or {}).get("worldData") or {}
+                z = d.get("zone")
+                print("%-8s token %-8s zone 3000: %s; expansions: %s%s" % (
+                    api_host, tok_host,
+                    ("%s (%d encounters: %s)" % (z["name"], len(z.get("encounters") or []),
+                     ", ".join(e["name"] for e in (z.get("encounters") or [])[:12]))) if z else "none",
+                    ", ".join("%s %s" % (e["id"], e["name"]) for e in (d.get("expansions") or [])),
+                    ("; errors: " + "; ".join(x.get("message", "?") for x in out["errors"])) if out.get("errors") else ""), flush=True)
+            except (GQLError, urllib.error.HTTPError, urllib.error.URLError) as e:
+                print("%-8s token %-8s %s %s" % (api_host, tok_host, getattr(e, "code", ""), getattr(e, "reason", e)), flush=True)
+
+
 def query(a):
     print(json.dumps(gql(a.graphql), indent=1))
 
@@ -404,6 +428,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("discover").set_defaults(fn=discover)
+    sub.add_parser("probe").set_defaults(fn=probe)
     c = sub.add_parser("collect")
     c.add_argument("--per-encounter", type=int, default=50, help="top ranked priest healers per encounter and spec")
     c.add_argument("--zone", type=int, action="append", help="only this zone id (repeatable; overrides zones.txt)")
