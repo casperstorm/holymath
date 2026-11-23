@@ -192,10 +192,23 @@ def site():
     for api_url, token_url in SITES:
         if not is_forever((api_url, token_url)):
             continue
-        try:
-            zones = forever_zones(api_url, token_url)
-        except (GQLError, urllib.error.HTTPError, urllib.error.URLError) as e:
-            print("site %s (token from %s): %s %s" % (api_url, host(token_url), getattr(e, "code", ""), getattr(e, "reason", e)), flush=True)
+        zones, waited = None, 0
+        while zones is None:
+            try:
+                zones = forever_zones(api_url, token_url)
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and waited < 3900:
+                    wait = int(e.headers.get("Retry-After") or 0) or 300
+                    print("site %s: 429, the hour's points are spent: waiting %d s" % (api_url, wait), flush=True)
+                    time.sleep(wait)
+                    waited += wait
+                    continue
+                print("site %s (token from %s): %s %s" % (api_url, host(token_url), e.code, e.reason), flush=True)
+                break
+            except (GQLError, urllib.error.URLError) as e:
+                print("site %s (token from %s): %s" % (api_url, host(token_url), getattr(e, "reason", e)), flush=True)
+                break
+        if zones is None:
             continue
         names = {norm(z["name"]) for z in zones} | {norm(e["name"]) for z in zones for e in (z.get("encounters") or [])}
         score = len(wanted & names)
@@ -291,6 +304,12 @@ def cached(name, fn):
 def discover(_a):
     """Forever's zones (asked for by id, 3000 up) and the priest specs, into discover.json."""
     api_url, token_url = site()
+    path = os.path.join(site_cache(), "discover.json")
+    if os.path.exists(path) and time.time() - os.path.getmtime(path) < 7 * 86400:
+        data = json.load(open(path, encoding="utf-8"))
+        print("Forever's zones from discover.json (under a week old): %s" % ", ".join(
+            "%d %s" % (z["id"], z["name"]) for z in data["worldData"]["zones"]), flush=True)
+        return
     zones = forever_zones(api_url, token_url)
     data = gql("{ gameData { classes { id name slug specs { id name slug } } } }")
     data["worldData"] = {"zones": zones}
