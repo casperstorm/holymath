@@ -13,7 +13,8 @@ Setup, once:
          WCL_CLIENT_SECRET=...
      chmod 600 ~/.config/holymath/wcl.env
      (or set WCL_CLIENT_ID / WCL_CLIENT_SECRET in the environment). The secret is never
-     printed or written anywhere else; the token it gets is cached with mode 600.
+     printed or written anywhere else; the tokens it gets are cached with mode 600 (the
+     workflow deletes them before saving its cache).
 
 Usage (run from the HolyMath folder):
   python3 -I tools/wcl/fetch.py discover            # zones, encounters, priest specs -> cache
@@ -36,17 +37,28 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# The API's address: the first of these that answers with the token (WCL_API to force one).
-# Which one serves Forever's logs wasn't documented where scripts can read it; the one that
-# works is remembered in the cache (api.txt).
-APIS = [os.environ["WCL_API"]] if os.environ.get("WCL_API") else [
-    "https://www.warcraftlogs.com/api/v2/client",
-    "https://forever.warcraftlogs.com/api/v2/client",
-    "https://classic.warcraftlogs.com/api/v2/client",
-    "https://fresh.warcraftlogs.com/api/v2/client",
-]
-API = None
-TOKEN_URL = os.environ.get("WCL_TOKEN_URL", "https://www.warcraftlogs.com/oauth/token")
+# Warcraft Logs runs one site per game version, each with its own API and sign-in: the
+# www site answers with retail's data. These are tried in turn, each with a token from its
+# own site, and the one whose zones match the most names in zones.txt is used (WCL_API and
+# WCL_TOKEN_URL force one). The choice is remembered in the cache (site.json), and each
+# site's answers are cached in their own folder, so ids from two sites never mix.
+SITES = ([(os.environ["WCL_API"], os.environ.get("WCL_TOKEN_URL", "https://www.warcraftlogs.com/oauth/token"))]
+         if os.environ.get("WCL_API") else [
+    ("https://forever.warcraftlogs.com/api/v2/client", "https://forever.warcraftlogs.com/oauth/token"),
+    ("https://forever.warcraftlogs.com/api/v2/client", "https://www.warcraftlogs.com/oauth/token"),
+    ("https://classic.warcraftlogs.com/api/v2/client", "https://classic.warcraftlogs.com/oauth/token"),
+    ("https://fresh.warcraftlogs.com/api/v2/client", "https://fresh.warcraftlogs.com/oauth/token"),
+    ("https://www.warcraftlogs.com/api/v2/client", "https://www.warcraftlogs.com/oauth/token"),
+])
+SITE = None            # (api, token url) in use
+ZONES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zones.txt")
+
+
+def norm(name):
+    """A name without case, spaces or punctuation: "diremaul" matches "Dire Maul"."""
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
 CONF = os.path.expanduser("~/.config/holymath/wcl.env")
 CACHE = os.path.expanduser(os.environ.get("WCL_CACHE", "~/.cache/holymath/wcl"))
 UA = "HolyMath-tools/1.0 (addon maintenance script)"
@@ -81,14 +93,23 @@ def write_private(path, text):
         f.write(text)
 
 
-def token():
-    path = os.path.join(CACHE, "token.json")
+class GQLError(Exception):
+    pass
+
+
+def host(url):
+    return urllib.parse.urlparse(url).netloc
+
+
+def token(token_url=None):
+    token_url = token_url or site()[1]
+    path = os.path.join(CACHE, "token_%s.json" % host(token_url))
     if os.path.exists(path):
         t = json.load(open(path, encoding="utf-8"))
         if t.get("expires_at", 0) > time.time() + 300:
             return t["access_token"]
     cid, sec = credentials()
-    req = urllib.request.Request(TOKEN_URL, data=b"grant_type=client_credentials", method="POST")
+    req = urllib.request.Request(token_url, data=b"grant_type=client_credentials", method="POST")
     req.add_header("Authorization", "Basic " + base64.b64encode(("%s:%s" % (cid, sec)).encode()).decode())
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     req.add_header("User-Agent", UA)
@@ -96,68 +117,94 @@ def token():
         with urllib.request.urlopen(req, timeout=30) as r:
             t = json.load(r)
     except urllib.error.HTTPError as e:
-        die("the token request failed (%d): check the client ID and secret" % e.code)
+        raise GQLError("the token request to %s failed (%d)" % (token_url, e.code))
     t["expires_at"] = time.time() + int(t.get("expires_in", 3600))
     write_private(path, json.dumps(t))
     return t["access_token"]
 
 
-def api():
-    """The API address that answers: remembered, or found by asking each with a tiny query."""
-    global API
-    if API:
-        return API
-    path = os.path.join(CACHE, "api.txt")
-    if os.path.exists(path):
-        API = open(path, encoding="utf-8").read().strip()
-        return API
-    body = json.dumps({"query": "{ rateLimitData { limitPerHour } }"}).encode()
-    for url in APIS:
-        req = urllib.request.Request(url, data=body, method="POST")
-        req.add_header("Authorization", "Bearer " + token())
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Accept", "application/json")
-        req.add_header("User-Agent", UA)
+def post(api_url, token_url, query, variables=None):
+    req = urllib.request.Request(api_url, data=json.dumps({"query": query, "variables": variables or {}}).encode(), method="POST")
+    req.add_header("Authorization", "Bearer " + token(token_url))
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", UA)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)
+
+
+def wanted_names():
+    from_file = []
+    if os.path.exists(ZONES_FILE):
+        for line in open(ZONES_FILE, encoding="utf-8"):
+            line = line.split("#", 1)[0].strip()
+            if line:
+                from_file.append(norm(line))
+    return set(from_file)
+
+
+def site():
+    """The site whose zones are Forever's: remembered, or found by asking each."""
+    global SITE
+    if SITE:
+        return SITE
+    path = os.path.join(CACHE, "site.json")
+    if os.path.exists(path) and not os.environ.get("WCL_API"):
+        SITE = tuple(json.load(open(path, encoding="utf-8")))
+        return SITE
+    wanted = wanted_names()
+    best, best_score = None, -1
+    for api_url, token_url in SITES:
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                out = json.load(r)
-            if (out.get("data") or {}).get("rateLimitData"):
-                print("API: %s" % url, flush=True)
-                API = url
-                write_private(path, url)
-                return API
-            print("API %s answered without data: %s" % (url, json.dumps(out)[:200]), flush=True)
-        except urllib.error.HTTPError as e:
-            print("API %s: %d %s" % (url, e.code, e.read()[:160].decode("utf-8", "replace").replace("\n", " ")), flush=True)
-        except urllib.error.URLError as e:
-            print("API %s: %s" % (url, e.reason), flush=True)
-    die("no API address answered (tried %s)" % ", ".join(APIS))
+            out = post(api_url, token_url, "{ worldData { zones { name encounters { name } } } }")
+        except (GQLError, urllib.error.HTTPError, urllib.error.URLError) as e:
+            code = getattr(e, "code", "")
+            print("site %s (token from %s): %s %s" % (api_url, host(token_url), code, getattr(e, "reason", e)), flush=True)
+            continue
+        zones = ((out.get("data") or {}).get("worldData") or {}).get("zones") or []
+        names = {norm(z["name"]) for z in zones} | {norm(e["name"]) for z in zones for e in (z.get("encounters") or [])}
+        score = len(wanted & names)
+        print("site %s (token from %s): %d zones, %d of zones.txt's names: %s" % (
+            api_url, host(token_url), len(zones), score, ", ".join(z["name"] for z in zones[:6])), flush=True)
+        if score > best_score:
+            best, best_score = (api_url, token_url), score
+    if not best or (wanted and best_score <= 0):
+        die("no site's zones match zones.txt: check the names against the zones listed above")
+    SITE = best
+    write_private(path, json.dumps(list(best)))
+    print("using %s" % best[0], flush=True)
+    return SITE
 
 
-def gql(query, variables=None):
-    body = json.dumps({"query": query, "variables": variables or {}}).encode()
+def site_cache():
+    return os.path.join(CACHE, host(site()[0]))
+
+
+def gql(query, variables=None, fatal=True):
+    """A query on the chosen site. A GraphQL error ends the run, or with fatal=False raises
+    GQLError (an archived or private report: skip it)."""
+    api_url, token_url = site()
     for attempt in range(5):
-        req = urllib.request.Request(api(), data=body, method="POST")
-        req.add_header("Authorization", "Bearer " + token())
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Accept", "application/json")
-        req.add_header("User-Agent", UA)
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                out = json.load(r)
+            out = post(api_url, token_url, query, variables)
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 time.sleep(60 * (attempt + 1))
                 continue
             if e.code == 401:
                 try:
-                    os.remove(os.path.join(CACHE, "token.json"))
+                    os.remove(os.path.join(CACHE, "token_%s.json" % host(token_url)))
                 except OSError:
                     pass
                 continue
-            die("the API answered %d for %s: %s" % (e.code, API, e.read()[:200].decode("utf-8", "replace")))
+            die("the API answered %d for %s: %s" % (e.code, api_url, e.read()[:200].decode("utf-8", "replace")))
+        except GQLError as e:
+            die(str(e))
         if out.get("errors"):
-            die("GraphQL error: " + "; ".join(x.get("message", "?") for x in out["errors"]))
+            msg = "; ".join(sorted({x.get("message", "?") for x in out["errors"]}))
+            if fatal:
+                die("GraphQL error: " + msg)
+            raise GQLError(msg)
         return out["data"]
     die("the API kept refusing (rate limit?)")
 
@@ -178,11 +225,17 @@ def budget():
 
 
 def cached(name, fn):
-    path = os.path.join(CACHE, name)
+    """An answer from this site's cache folder, or fetched and kept. A report that can't be
+    read (archived, private) is remembered as skipped: None."""
+    path = os.path.join(site_cache(), name)
     if os.path.exists(path):
         return json.load(open(path, encoding="utf-8"))
     budget()
-    data = fn()
+    try:
+        data = fn()
+    except GQLError as e:
+        print("skipped %s: %s" % (name, e), flush=True)
+        data = None
     write_private(path, json.dumps(data))
     return data
 
@@ -193,12 +246,12 @@ def discover(_a):
       worldData { zones { id name frozen encounters { id name } partitions { id name default } } }
       gameData { classes { id name slug specs { id name slug } } }
     }""")
-    write_private(os.path.join(CACHE, "discover.json"), json.dumps(data, indent=1))
+    write_private(os.path.join(site_cache(), "discover.json"), json.dumps(data, indent=1))
     priest = [c for c in data["gameData"]["classes"] if c["slug"].lower() == "priest"]
     print("priest specs:", ", ".join(s["name"] + " (" + s["slug"] + ")" for c in priest for s in c["specs"]) or "none found")
     for z in data["worldData"]["zones"]:
         print("zone %d %s: %d encounters%s" % (z["id"], z["name"], len(z["encounters"] or []), " (frozen)" if z.get("frozen") else ""))
-    print("saved to " + os.path.join(CACHE, "discover.json"))
+    print("saved to " + os.path.join(site_cache(), "discover.json"))
 
 
 # --- collect ----------------------------------------------------------------------------
@@ -225,7 +278,9 @@ PRIEST_TABLES = """query($code: String!, $fight: Int!, $src: Int!) {
 
 def fight_and_priests(code, fight, names=None):
     """Cache the fight, then each priest in it (only those named, when names are given)."""
-    f = cached("fight_%s_%d.json" % (code, fight), lambda: gql(REPORT_FIGHT, {"code": code, "fight": fight}))
+    f = cached("fight_%s_%d.json" % (code, fight), lambda: gql(REPORT_FIGHT, {"code": code, "fight": fight}, fatal=False))
+    if not f:
+        return 0
     actors = f["reportData"]["report"]["masterData"]["actors"]
     n = 0
     for act in actors:
@@ -234,13 +289,13 @@ def fight_and_priests(code, fight, names=None):
         if names and act.get("name") not in names:
             continue
         cached("priest_%s_%d_%d.json" % (code, fight, act["id"]),
-               lambda: gql(PRIEST_TABLES, {"code": code, "fight": fight, "src": act["id"]}))
+               lambda: gql(PRIEST_TABLES, {"code": code, "fight": fight, "src": act["id"]}, fatal=False))
         n += 1
     return n
 
 
 def priest_specs():
-    path = os.path.join(CACHE, "discover.json")
+    path = os.path.join(site_cache(), "discover.json")
     if not os.path.exists(path):
         die("run 'discover' first")
     data = json.load(open(path, encoding="utf-8"))
@@ -248,14 +303,6 @@ def priest_specs():
         if c["slug"].lower() == "priest":
             return c["name"], [s["name"] for s in c["specs"] if s["slug"].lower() != "shadow"]
     die("no priest class in the discover data")
-
-
-ZONES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zones.txt")
-
-
-def norm(name):
-    """A name without case, spaces or punctuation: "diremaul" matches "Dire Maul"."""
-    return "".join(ch for ch in name.lower() if ch.isalnum())
 
 
 def chosen_encounters(data, ids, path):
@@ -294,9 +341,9 @@ def chosen_encounters(data, ids, path):
 
 
 def collect(a):
-    if not os.path.exists(os.path.join(CACHE, "discover.json")):
+    if not os.path.exists(os.path.join(site_cache(), "discover.json")):
         die("run 'discover' first")
-    data = json.load(open(os.path.join(CACHE, "discover.json"), encoding="utf-8"))
+    data = json.load(open(os.path.join(site_cache(), "discover.json"), encoding="utf-8"))
     cls, specs = priest_specs()
     week = time.strftime("%G-W%V")      # rankings change: fetched again each week (fights don't)
     n_fights = 0
@@ -305,8 +352,8 @@ def collect(a):
             ranks = []
             for page in range(1, 100):
                 got = cached("rank_%s_%d_%s_%d.json" % (week, enc["id"], spec, page),
-                             lambda: gql(RANKINGS, {"enc": enc["id"], "cls": cls, "spec": spec, "page": page}))
-                cr = got["worldData"]["encounter"]["characterRankings"] or {}
+                             lambda: gql(RANKINGS, {"enc": enc["id"], "cls": cls, "spec": spec, "page": page}, fatal=False))
+                cr = ((got or {}).get("worldData") or {}).get("encounter", {}).get("characterRankings") or {}
                 ranks += cr.get("rankings") or []
                 if len(ranks) >= a.per_encounter or not cr.get("hasMorePages"):
                     break

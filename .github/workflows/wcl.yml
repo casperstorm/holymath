@@ -60,7 +60,7 @@ jobs:
 
       - name: Forget the token
         if: always()
-        run: rm -f "$WCL_CACHE/token.json"
+        run: rm -f "$WCL_CACHE"/token*.json
 
       - name: Save the log cache
         if: always()

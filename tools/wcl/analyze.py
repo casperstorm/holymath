@@ -82,7 +82,7 @@ def main():
     ap.add_argument("--out", default=os.path.join(HERE, "out", "estimates.json"))
     a = ap.parse_args()
 
-    files = sorted(glob.glob(os.path.join(CACHE, "priest_*.json")))
+    files = sorted(glob.glob(os.path.join(CACHE, "**", "priest_*.json"), recursive=True))
     if not files:
         sys.exit("analyze.py: nothing in %s: run tools/wcl/fetch.py first" % CACHE)
 
@@ -101,10 +101,13 @@ def main():
         if not m:
             continue
         code, fid, src = m.group(1), int(m.group(2)), int(m.group(3))
-        fpath = os.path.join(CACHE, "fight_%s_%d.json" % (code, fid))
+        fpath = os.path.join(os.path.dirname(path), "fight_%s_%d.json" % (code, fid))
         if not os.path.exists(fpath):
             continue
-        rep = json.load(open(fpath, encoding="utf-8"))["reportData"]["report"]
+        fdata, pdata = json.load(open(fpath, encoding="utf-8")), json.load(open(path, encoding="utf-8"))
+        if not (fdata and pdata):
+            continue                         # skipped: archived or private
+        rep = fdata["reportData"]["report"]
         fights = rep.get("fights") or []
         if not fights:
             continue
@@ -116,7 +119,7 @@ def main():
             length[kind].append(secs)
         n_priests[kind] += 1
 
-        pr = json.load(open(path, encoding="utf-8"))["reportData"]["report"]
+        pr = pdata["reportData"]["report"]
         heals = entries(pr.get("healing"))
         total = sum(e.get("total", 0) or 0 for e in heals)
         per = collections.defaultdict(lambda: [0.0, 0.0])
