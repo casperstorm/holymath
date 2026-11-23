@@ -98,7 +98,13 @@ local TEMPLATES = {
     function f:GenerateMenu()
       if not self.gen then return end
       local root = {}
-      local function item() return { SetTooltip = noop, SetEnabled = noop } end
+      local item
+      item = function()
+        local e = { SetTooltip = noop, SetEnabled = noop, SetScrollMode = noop }
+        function e:CreateButton() return item() end
+        function e:CreateCheckbox(text, isSel, setSel, data) isSel(data); return item() end
+        return e
+      end
       function root:CreateRadio(text, isSel, setSel, data) isSel(data); return item() end
       function root:CreateCheckbox(text, isSel, setSel, data) isSel(data); return item() end
       function root:CreateButton() return item() end
@@ -1997,6 +2003,69 @@ do
   local same = O.gearResult
   O.FillGear()
   expect(O.gearResult == same, "no new work while nothing changed")
+  -- the Filter menu: where items come from, the zones they drop in, random suffixes, what you have
+  do
+    local fd = O.controls.gearFilter
+    local function filterMenu()
+      local m = { boxes = {}, buttons = {} }
+      local function node()
+        local n = { SetTooltip = noop, SetScrollMode = noop, CreateTitle = noop, CreateDivider = noop }
+        function n:CreateCheckbox(text, isSel, setSel, data)
+          local e = node(); e.isSel, e.setSel, e.data = isSel, setSel, data; m.boxes[text] = e; return e
+        end
+        function n:CreateButton(text, fn) local e = node(); e.fn = fn; m.buttons[text] = e; return e end
+        return n
+      end
+      fd.gen(fd, node())
+      return m
+    end
+    local m = fd and filterMenu()
+    expect(m and m.boxes.Quests and m.boxes.Quests.isSel("quest") and m.buttons.Zones and m.boxes.Scholomance
+      and m.boxes.Scholomance.isSel("Scholomance") and m.boxes["Only what I have"]
+      and not m.boxes["Only what I have"].isSel("owned") and m.boxes["No random-suffix items"] and m.buttons["Reset filters"],
+      "a Filter menu: sources, zones, only what you have, random suffixes, reset; nothing filtered at first")
+    local full = O.gearResult
+    m.boxes.Quests.setSel("quest")
+    local K = ns.GearSolve.KIND
+    local onlyQuest = false
+    for _, it in pairs(O.gearResult.items) do if it.kinds == K.quest then onlyQuest = true end end
+    expect(HolyMathDB.gear.off.quest and O.gearResult ~= full and not onlyQuest
+      and O.gearNote.text:find("Filtered:|r no quests", 1, true),
+      "quests off: worked out again, no quest-only items (" .. O.gearNote.text .. ")")
+    -- one zone's drops and nothing else
+    for _, k in ipairs({ "Crafted", "Vendors", "Reputation", "World drops and no known source" }) do
+      local e = filterMenu().boxes[k]; e.setSel(e.data)
+    end
+    m = filterMenu(); m.buttons.None.fn(); m = filterMenu(); m.boxes.Scholomance.setSel("Scholomance")
+    local D, zi = ns.GearData
+    for i, z in ipairs(D.zoneNames) do if z == "Scholomance" then zi = i end end
+    local bad, n = {}, 0
+    for _, it in pairs(O.gearResult.items) do
+      n = n + 1
+      local from = false
+      for _, z in ipairs(it.zones or {}) do if z == zi then from = true end end
+      if not from then bad[#bad + 1] = it.name end
+    end
+    expect(n > 0 and #bad == 0 and O.gearNote.text:find("drops from 1 of " .. #D.zoneNames .. " zones", 1, true),
+      "only Scholomance's drops: every pick drops there (" .. table.concat(bad, ", ") .. ")")
+    expect(filterMenu().boxes.Scholomance.isSel("Scholomance") and not filterMenu().boxes.Stratholme.isSel("Stratholme"),
+      "... the menu shows which zones are ticked")
+    m.buttons["Reset filters"].fn()
+    expect(not O.GearFiltered() and math.abs(O.gearResult.hps - full.hps) < 1e-6 and not O.gearNote.text:find("Filtered"),
+      "Reset filters: the full list again")
+    filterMenu().boxes["No random-suffix items"].setSel("noSuffix")
+    bad = {}
+    for _, it in pairs(O.gearResult.items) do if it.suffix ~= "" then bad[#bad + 1] = it.name end end
+    expect(#bad == 0 and O.gearNote.text:find("no random suffixes", 1, true), "no random suffixes: none picked")
+    filterMenu().boxes["No random-suffix items"].setSel("noSuffix")
+    filterMenu().boxes["Only what I have"].setSel("owned")
+    bad = {}
+    for _, it in pairs(O.gearResult.items) do if not O.GearOwned(it.id) then bad[#bad + 1] = it.name end end
+    expect(#bad == 0 and O.gearNote.text:find("only what you have", 1, true), "only what I have: nothing you don't have (" ..
+      table.concat(bad, ", ") .. ")")
+    filterMenu().buttons["Reset filters"].fn()
+    same = O.gearResult
+  end
   HolyMathDB.gear.pvp = true; O.gearKey = nil; O.FillGear()
   expect(O.gearResult ~= same and O.gearResult.hps >= same.hps - 1e-6, "with PvP gear: worked out again, at least as good")
   UnitFactionGroup = function() return "Alliance" end

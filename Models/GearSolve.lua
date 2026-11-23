@@ -153,12 +153,40 @@ function GS.SlotsOf(it)
   return { it.slot }
 end
 
+-- The Gear tab's filters (Gear.lua): where an item comes from (it.kinds, bits), the zones
+-- it drops in (it.zones, indexes into D.zoneNames), random suffixes, and what you have.
+--   f = { off = { [bit] = true } kinds left out, noZone = { ["Scholomance"] = true },
+--         noSuffix = true, owned = function(it) -> true when you have it }
+-- An item stays when any of its sources passes: a drop only from a zone not left out.
+GS.KIND = { drop = 1, quest = 2, crafted = 4, vendor = 8, rep = 16, pvp = 32, world = 64 }
+local function hasBit(n, b) return math.floor((n or 0) / b) % 2 == 1 end
+function GS.Passes(D, it, f)
+  if not f then return true end
+  if f.noSuffix and it.suffix ~= "" then return false end
+  local kinds = it.kinds or GS.KIND.world
+  local off, noZone = f.off or {}, f.noZone or {}
+  local from = false
+  for _, b in pairs(GS.KIND) do
+    if not from and hasBit(kinds, b) and not off[b] then
+      if b ~= GS.KIND.drop or not next(noZone) then from = true
+      else
+        for _, z in ipairs(it.zones or {}) do
+          if not noZone[(D.zoneNames or {})[z] or ""] then from = true end
+        end
+      end
+    end
+  end
+  -- what you have last: it asks the game
+  return from and (not f.owned or f.owned(it))
+end
+
 -- What you can wear at your level, on your side (PvP rewards only with pvp, an item
--- only one profession can use only when you have it).
-function GS.Pool(D, side, level, pvp, profs)
+-- only one profession can use only when you have it), and what the filters keep.
+function GS.Pool(D, side, level, pvp, profs, filter)
   local pool = {}
   for _, it in ipairs(D.items) do
-    if it[side] and it.lvl <= level and (pvp or not it.pvp[side]) and (it.prof == "" or (profs and profs[it.prof])) then
+    if it[side] and it.lvl <= level and (pvp or not it.pvp[side]) and (it.prof == "" or (profs and profs[it.prof]))
+       and GS.Passes(D, it, filter) then
       pool[#pool + 1] = it
     end
   end
@@ -187,7 +215,8 @@ end
 
 -- args: E (the model), st (your stats now), input (S.input), rot (playstyle key),
 --   D (GearData), side ("A"/"H"), level, pvp, profs ({ Tailoring = true }),
---   current ({ slot = stats now, without enchants }), currentIds ({ slot = item id }),
+--   filter (the Gear tab's filters, GS.Passes), current ({ slot = stats now, without enchants }),
+--   currentIds ({ slot = item id }),
 --   weights (your stat weights now), yield (called between model runs)
 function GS.Solve(a)
   local E, D = a.E, a.D
@@ -298,7 +327,7 @@ function GS.Solve(a)
   end
   setFight(first)
 
-  local pool = GS.Pool(D, a.side, a.level, a.pvp, a.profs)
+  local pool = GS.Pool(D, a.side, a.level, a.pvp, a.profs, a.filter)
 
   local function gearOf(items)
     local g, heal = {}, 0

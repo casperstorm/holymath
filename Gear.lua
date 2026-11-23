@@ -6,7 +6,7 @@
      the best in slot. Laid out like KeystoneLoot's loot window, with a row per
      slot instead of per dungeon:
 
-       List [ Without PvP gear  v ]   At level 51, Renew filler: 737 HPS with this gear, +94 over what you wear
+       List [ Without PvP gear  v ]  Playstyle [ Renew filler  v ]               [ Filter  v ]
                                       Sets: Vestments of the Virtuous 4 (8 MP5, 5% a cast: 200 mana)
        +--------------------------------------------------------------------------+
        | [slot] Head       [best]  [2nd][3rd][4th][5th] | [slot] Legs   ...        |
@@ -78,6 +78,55 @@ function O.GearSide()
 end
 
 local function GS() return ns.GearSolve end
+
+-- The Filter menu (top right of the tab): where items come from, the zones they drop in,
+-- random suffixes, only what you have. Saved in HolyMathDB.gear:
+--   off = { quest = true, ... } (kinds left out), noZone = { ["Scholomance"] = true },
+--   noSuffix = true, owned = true
+-- key, the menu's words, the "Filtered:" line's
+O.GEAR_KINDS = {
+  { "drop", "Drops (dungeons and named enemies)", "drops" }, { "quest", "Quests", "quests" },
+  { "crafted", "Crafted", "crafted" }, { "vendor", "Vendors", "vendors" }, { "rep", "Reputation", "reputation" },
+  { "world", "World drops and no known source", "world drops" },
+}
+function O.GearFiltered()
+  local g = settings()
+  if g.noSuffix or g.owned or next(g.noZone or {}) then return true end
+  for _, k in ipairs(O.GEAR_KINDS) do if (g.off or {})[k[1]] then return true end end
+  return false
+end
+-- for GearSolve (GS.Passes); nil when nothing is filtered
+function O.GearFilter()
+  if not O.GearFiltered() then return nil end
+  local g, K = settings(), GS().KIND
+  local f = { off = {}, noZone = {}, noSuffix = g.noSuffix or nil }
+  for name, on in pairs(g.off or {}) do if on and K[name] then f.off[K[name]] = true end end
+  if not g.pvp then f.off[K.pvp] = true end   -- "Without PvP gear": a PvP source doesn't count
+  for z, on in pairs(g.noZone or {}) do if on then f.noZone[z] = true end end
+  if g.owned then
+    local seen = {}   -- each item asked once (its random suffixes share it)
+    f.owned = function(it)
+      if seen[it.id] == nil then seen[it.id] = O.GearOwned(it.id) and true or false end
+      return seen[it.id]
+    end
+  end
+  return f
+end
+-- "Filtered: no quests or crafted, 3 of 45 zones, no random suffixes, only what you have."
+function O.GearFilterText(D)
+  if not O.GearFiltered() then return "" end
+  local g, parts, offs = settings(), {}, {}
+  for _, k in ipairs(O.GEAR_KINDS) do
+    if (g.off or {})[k[1]] then offs[#offs + 1] = k[3] end
+  end
+  if #offs > 0 then parts[#parts + 1] = "no " .. table.concat(offs, ", ") end
+  local zones, out = D and D.zoneNames or {}, 0
+  for _, z in ipairs(zones) do if (g.noZone or {})[z] then out = out + 1 end end
+  if out > 0 then parts[#parts + 1] = string.format("drops from %d of %d zones", #zones - out, #zones) end
+  if g.noSuffix then parts[#parts + 1] = "no random suffixes" end
+  if g.owned then parts[#parts + 1] = "only what you have" end
+  return " |cffffd100Filtered:|r " .. table.concat(parts, ", ") .. "."
+end
 
 -- An item link's key in the item data: "id", or "id:suffix" when its first bonus ID is a
 -- random suffix the data knows (the link's 13th field is how many bonus IDs follow).
@@ -487,6 +536,86 @@ local function SlotRow(pane, i, def)
   return row
 end
 
+-- Filter [v], top right: the game's filter dropdown (a reset button when anything is
+-- filtered), or its plain dropdown showing "Filter". Checkboxes keep the menu open.
+function O.GearFilterMenu(pane, right, y)
+  local dd = U.try("DropdownButton", pane, "WowStyle1FilterDropdownTemplate")
+  if not (dd and dd.SetupMenu) then dd = U.try("DropdownButton", pane, "WowStyle1DropdownTemplate") end
+  if not (dd and dd.SetupMenu) then return end
+  dd:SetWidth(110)
+  dd:SetPoint("TOPRIGHT", pane, "TOPLEFT", right, y)
+  local function changed() O.gearKey = nil; O.FillGear() end
+  local function g() return settings() end
+  local function kindOn(k) return not (g().off or {})[k] end
+  local function setKind(k)
+    g().off = g().off or {}
+    g().off[k] = kindOn(k) or nil
+    changed()
+  end
+  local function zoneOn(z) return not (g().noZone or {})[z] end
+  local function setZone(z)
+    g().noZone = g().noZone or {}
+    g().noZone[z] = zoneOn(z) or nil
+    changed()
+  end
+  local function flag(k) return g()[k] == true end
+  local function setFlag(k) g()[k] = (not flag(k)) or nil; changed() end
+  local function reset()
+    local s = g()
+    s.off, s.noZone, s.noSuffix, s.owned = nil, nil, nil, nil
+    changed()
+  end
+  local function tip(desc, title, text)
+    if desc and desc.SetTooltip then
+      desc:SetTooltip(function(tt) tt:SetText(title, 1, 1, 1); tt:AddLine(text, nil, nil, nil, true) end)
+    end
+  end
+  dd:SetupMenu(function(_, root)
+    if root.CreateTitle then root:CreateTitle("Where it comes from") end
+    for _, k in ipairs(O.GEAR_KINDS) do root:CreateCheckbox(k[2], kindOn, setKind, k[1]) end
+    local D = data()
+    local zones = root.CreateButton and root:CreateButton("Zones")
+    if zones and D and D.zoneNames then
+      if zones.SetScrollMode then pcall(zones.SetScrollMode, zones, 400) end
+      zones:CreateButton("All", function()
+        g().noZone = nil; changed()
+        return MenuResponse and MenuResponse.Refresh
+      end)
+      zones:CreateButton("None", function()
+        g().noZone = {}
+        for _, z in ipairs(D.zoneNames) do g().noZone[z] = true end
+        changed()
+        return MenuResponse and MenuResponse.Refresh
+      end)
+      for _, z in ipairs(D.zoneNames) do zones:CreateCheckbox(z, zoneOn, setZone, z) end
+      tip(zones, "Zones", "Which dungeons and zones drops count from. An item that also comes from a quest, " ..
+        "a vendor and so on still counts when that is ticked.")
+    end
+    if root.CreateDivider then root:CreateDivider() end
+    tip(root:CreateCheckbox("Only what I have", flag, setFlag, "owned"), "Only what I have",
+      "Only items you wear or have in your bags or bank: the best you can put on right now.")
+    tip(root:CreateCheckbox("No random-suffix items", flag, setFlag, "noSuffix"), "No random-suffix items",
+      "Leave out items with a random suffix (\"of the Owl\", \"of Healing\"): world drops you can't aim for.")
+    if root.CreateDivider then root:CreateDivider() end
+    if root.CreateButton then root:CreateButton("Reset filters", reset) end
+  end)
+  -- the closed field always reads "Filter" (the filter template does that itself)
+  local function label()
+    local text = O.GearFiltered() and "Filter |cffffd100(on)|r" or "Filter"
+    if dd.Text and dd.Text.SetText then dd.Text:SetText(text) end
+  end
+  if dd.SetSelectionTranslator then dd:SetSelectionTranslator(function() return "Filter" end) end
+  if dd.SetDefaultText then dd:SetDefaultText("Filter") end
+  if dd.UpdateToMenuSelections and hooksecurefunc then pcall(hooksecurefunc, dd, "UpdateToMenuSelections", label) end
+  if dd.SetIsDefaultCallback then pcall(dd.SetIsDefaultCallback, dd, function() return not O.GearFiltered() end) end
+  if dd.SetDefaultCallback then pcall(dd.SetDefaultCallback, dd, reset) end
+  U.Tip(dd, "Filter", "Which items the list picks from: where they come from, the zones they drop in, " ..
+    "random suffixes, or only what you have. A slot nothing passes shows no items.")
+  O.controls.gearFilter = dd
+  O.gearFilterLabel = label
+  label()
+end
+
 function O.BuildGear(pane)
   U = O.UI
   local y = U.TOP
@@ -526,6 +655,8 @@ function O.BuildGear(pane)
   psLabel:ClearAllPoints()
   psLabel:SetPoint("RIGHT", O.gearPlaystyle, "LEFT", -8, 0)
   O.controls.gearPlaystyle = O.gearPlaystyle
+
+  O.GearFilterMenu(pane, U.LEFT + W, y)
 
   O.gearNote = U.Label(pane, "", "GameFontDisableSmall", U.LEFT, y - 34, W)
 
@@ -576,6 +707,8 @@ function O.BuildGear(pane)
         end
         return
       end
+      -- only what you have: your bags are the list
+      if event == "BAG_UPDATE_DELAYED" and settings().owned then O.gearKey, O.gearDue = nil, true end
       if O.tab == "gear" and O.frame and O.frame:IsShown() then O.FillGear() end
     end)
   end
@@ -619,8 +752,10 @@ function O.GearSolveNow(S)
   local level = (S.input and S.input.level) or (UnitLevel and UnitLevel("player")) or 60
   -- the state table itself (a new one each time anything changed), the list, your side, your level
   -- and what you chose (playstyle, every setting, talents): a change there is worked out at once
-  local key = (settings().pvp and "pvp" or "pve") .. "|" .. O.GearSide() .. "|" .. level .. "|" .. tostring(S.rotation) ..
-    "|" .. O.Fingerprint(S.input.settings) .. "|" .. O.Fingerprint(S.input.talents)
+  local g = settings()
+  local key = (g.pvp and "pvp" or "pve") .. "|" .. O.GearSide() .. "|" .. level .. "|" .. tostring(S.rotation) ..
+    "|" .. O.Fingerprint(S.input.settings) .. "|" .. O.Fingerprint(S.input.talents) ..
+    "|" .. O.Fingerprint({ g.off or {}, g.noZone or {}, g.noSuffix or false, g.owned or false })
   if O.gearState == S and O.gearKey == key then return end
   -- in combat your stats aren't read again: keep the list, work it out after the fight
   if InCombatLockdown and InCombatLockdown() and O.gearResult then return end
@@ -654,7 +789,8 @@ function O.GearSolveNow(S)
     if ids[slot] then keys[slot] = (link and O.LinkKey(link)) or tostring(ids[slot]) end
   end
   local args = { E = ns.model, st = S.st, input = S.input, rot = S.rotation, D = D, side = O.GearSide(), level = level,
-                 pvp = settings().pvp, profs = O.GearProfessions(), current = current, currentIds = ids, currentKeys = keys,
+                 pvp = settings().pvp, profs = O.GearProfessions(), filter = O.GearFilter(),
+                 current = current, currentIds = ids, currentKeys = keys,
                  twoHandWorn = G and G.TwoHanderEquipped and G.TwoHanderEquipped() or nil,
                  weights = S.weights, yield = coroutine.yield }
   local co = coroutine.create(function() return solver.Solve(args) end)
@@ -694,6 +830,7 @@ function O.FillGear()
   local D = data()
   if O.gearList and O.gearList.refresh then O.gearList.refresh() end
   if O.gearPlaystyle and O.gearPlaystyle.refresh then O.gearPlaystyle.refresh() end
+  if O.gearFilterLabel then O.gearFilterLabel() end
   local S = ns.State and ns.State()
   if not (S and S.weights) then
     O.gearNote:SetText((InCombatLockdown and InCombatLockdown() and S and S.st and S.st.invalid)
@@ -712,8 +849,8 @@ function O.FillGear()
     return
   end
   local gain = r.hps - r.now
-  O.gearNote:SetText(string.format("Level %d, %s.%s%s",
-    r.level, sideName, setsText(r.sets, D),
+  O.gearNote:SetText(string.format("Level %d, %s.%s%s%s",
+    r.level, sideName, setsText(r.sets, D), O.GearFilterText(D),
     O.gearWorking and "  Updating..." or ""))
 
   local wv = r.weapons or {}

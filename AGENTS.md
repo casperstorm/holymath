@@ -55,7 +55,7 @@ All game data comes from [wowsims/forever](https://github.com/wowsims/forever) (
    python3 -I tools/gen_gear_data.py /tmp/wowsims-forever > Models/GearData.lua
    python3 -I tools/gen_priest_data.py /tmp/wowsims-forever > Models/PriestData.lua
    ```
-   The gear generator prints how many items it kept, about 3,400 of 6,900 as of Nov 2026. A big jump either way needs explaining before you go on.
+   The gear generator prints how many items it kept, about 4,600 of 6,900 as of Nov 2026. It drops an item only when five items that can be had wherever it can (every source kind and zone it has, no random suffix where it has none) beat it, so the Gear tab's filters never hide an item whose betters they filtered away. A big jump either way needs explaining before you go on.
 3. **A new content phase:** only items whose wowsims `phase` is at most `PHASE` (in `tools/gen_gear_data.py`) are "out now". When Forever opens the next phase, raise `PHASE` and regenerate. Don't do it before the phase is live.
 4. **Tables in `tools/gen_gear_data.py` that need hand upkeep:**
    - **`SETS`** holds the set bonuses that matter for healing, taken from wowsims' set code (`sim/common/forever/items_sets.go`, `sim/priest/item_sets.go`). A new healer set needs a row here, or its bonuses won't count.

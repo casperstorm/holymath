@@ -1416,6 +1416,58 @@ do
   local has = false
   for _, it in ipairs(poolT) do if it == robe then has = true end end
   ok("Truefaith Vestments only with Tailoring", robe and has and #poolT > #pool)
+  -- the Gear tab's filters: where items come from, the zones they drop in, random suffixes, what you have
+  do
+    local K = GS.KIND
+    local function solveF(filter)
+      local inp = character(60, "H")
+      inp.gear = { healing = 0, int = 0, crit = 0, haste = 0, mp5 = 0, spirit = 0, spelldamage = 0 }
+      return GS.Solve({ E = E, st = E.Derive(inp), input = inp, rot = "renew", D = D, side = "H", level = 60,
+                        pvp = false, profs = {}, filter = filter })
+    end
+    local zi
+    for i, z in ipairs(D.zoneNames) do if z == "Scholomance" then zi = i end end
+    ok("the data has the zones items drop in (" .. #D.zoneNames .. ", Scholomance among them)", zi and #D.zoneNames > 20)
+    local fake = { kinds = K.drop + K.quest, zones = { zi }, suffix = "" }
+    ok("a drop and a quest reward: kept with drops off (the quest)", GS.Passes(D, fake, { off = { [K.drop] = true } }))
+    ok("... and with Scholomance off (the quest)", GS.Passes(D, fake, { noZone = { Scholomance = true } }))
+    ok("... but not with quests off and Scholomance off",
+      not GS.Passes(D, fake, { off = { [K.quest] = true }, noZone = { Scholomance = true } }))
+    ok("... nor with random suffixes off when it has one", not GS.Passes(D, { kinds = K.quest, suffix = "of the Owl" }, { noSuffix = true }))
+    -- only Scholomance's drops: every pick drops there, and still a full list's worth
+    local noZone = {}
+    for _, z in ipairs(D.zoneNames) do if z ~= "Scholomance" then noZone[z] = true end end
+    local off = { [K.quest] = true, [K.crafted] = true, [K.vendor] = true, [K.rep] = true, [K.world] = true,
+                  [K.pvp] = true }   -- the Gear tab leaves PvP sources out on "Without PvP gear"
+    local r = solveF({ off = off, noZone = noZone })
+    local bad, n = {}, 0
+    for _, slot in ipairs(GS.SLOTS) do
+      local it = r.items[slot]
+      if it then
+        n = n + 1
+        local from = false
+        for _, z in ipairs(it.zones or {}) do if z == zi then from = true end end
+        if not from then bad[#bad + 1] = it.name end
+      end
+    end
+    ok(string.format("only Scholomance: %d slots, every pick from there (%s), %.0f HPS", n, table.concat(bad, ", "), r.hps),
+      #bad == 0 and n >= 8 and r.hps < r60.hps)
+    -- no random suffixes; only what you have
+    r = solveF({ noSuffix = true })
+    bad = {}
+    for _, it in pairs(r.items) do if it.suffix ~= "" then bad[#bad + 1] = it.name end end
+    ok("no random suffixes: none picked (" .. table.concat(bad, ", ") .. ")", #bad == 0 and r.hps <= r60.hps + 1e-6)
+    local have = {}
+    for _, slot in ipairs({ "head", "chest", "legs", "trinket1" }) do have[r60.items[slot].id] = true end
+    r = solveF({ owned = function(it) return have[it.id] end })
+    n = 0
+    for _, it in pairs(r.items) do n = n + 1; if not have[it.id] then n = -99 end end
+    ok("only what you have: just those (" .. n .. " picked)", n == 4)
+    -- the generator keeps an item unless items it can be had wherever it can beat it: with
+    -- quests off, the best is never worse than the best of the full list less quest rewards
+    local noQuest = solveF({ off = { [K.quest] = true } })
+    ok(string.format("quests off: %.0f HPS, at most the full list's %.0f", noQuest.hps, r60.hps), noQuest.hps <= r60.hps + 1e-6)
+  end
   -- set bonuses from Spell Coda's review, checked in wowsims' rows
   local function piecesOf(setId, n)
     local list = {}

@@ -12,8 +12,11 @@ as easy to get: both sides', no profession, not PvP-only), as a row on the Gear
 tab shows five. Set pieces always stay. The Gear tab
 picks the best for you in game (Models/GearSolve.lua).
 
-Where to get an item isn't shipped (the Gear tab links each item's Wowhead page);
-the sources only decide which side can get it and what is PvP.
+Where to get an item is shipped only as the Gear tab's filters need it: the kinds of
+source (a drop, a quest, crafted, a vendor, reputation, PvP, a world drop) and the zones
+it drops in. The sources also decide which side can get it and what is PvP. An item is
+dropped only for items that can be had wherever it can (every kind and zone it has),
+so a filter never leaves out an item whose betters it filtered away.
 
 Usage (run from the HolyMath folder):
     python3 -I tools/gen_gear_data.py /some/where/forever > Models/GearData.lua
@@ -317,6 +320,16 @@ for it in d["items"]:
         per_side[side] = (text, group, kinds)
     if not per_side:
         continue
+    # the Gear tab's filters: the kinds of source and the zones it drops in (a world drop,
+    # or no source at all, is "world")
+    cats = set()
+    for x in srcs:
+        if x[2] == "dungeon":
+            cats.add(("zone", x[1]))
+        else:
+            cats.add((x[2] if x[2] != "unknown" else "world",))
+    if not cats:
+        cats.add(("world",))
     # when you can get it: the required level, or the item level less 5 when that is higher (as almost
     # every item states it: 5169 of 5416 in phase 1). Quest rewards often state no level, and some
     # Forever items "level 1" though they come from level-45 content (Stick No Rock, Eye of Mugg).
@@ -328,7 +341,8 @@ for it in d["items"]:
                           slot=slot, lvl=level, q=it.get("quality", 0), unique=bool(it.get("unique")),
                           limit=it.get("limitCategory", 0) or 0, use=uncounted,
                           prof=prof_of(it),
-                          fx=fx, set=it.get("setId", 0) or 0, setName=it.get("setName", ""), sides=per_side, stats=v))
+                          fx=fx, set=it.get("setId", 0) or 0, setName=it.get("setName", ""), sides=per_side, stats=v,
+                          cats=cats))
 
 # Set bonuses that matter for healing (wowsims/forever's set rows, sim/common/forever/items_sets.go
 # and sim/priest/item_sets.go). proc: 5% a cast for this much mana.
@@ -360,12 +374,18 @@ def pvp_only(it, side):
 
 
 def easier(a, b):
-    """a is at least as easy to get as b: every side b has, no profession b doesn't need, not PvP-only where b isn't."""
+    """a is at least as easy to get as b: every side b has, no profession b doesn't need, not PvP-only where b isn't,
+    every kind of source and zone b has (whatever the Gear tab's filters keep b for, they keep a for), and no random
+    suffix where b has none."""
     for side in b["sides"]:
         if side not in a["sides"]:
             return False
         if pvp_only(a, side) and not pvp_only(b, side):
             return False
+    if not b["cats"] <= a["cats"]:
+        return False
+    if a["suffix"] and not b["suffix"]:
+        return False
     return a["prof"] in ("", b["prof"])
 
 
@@ -438,6 +458,12 @@ SLOT_CODE = ["head", "neck", "shoulder", "back", "chest", "wrist", "hands", "wai
              "twohand", "mainhand", "offhand", "wand"]
 PROF_CODE = ["", "Alchemy", "Blacksmithing", "Enchanting", "Engineering", "Herbalism", "Inscription", "Jewelcrafting",
              "Leatherworking", "Mining", "Skinning", "Tailoring"]
+# source kinds as bits, and the drop zones by index into zoneNames (the Gear tab's filters)
+KIND_BIT = {"dungeon": 1, "quest": 2, "crafted": 4, "vendor": 8, "rep": 16, "pvp": 32, "world": 64}
+zone_names = sorted({c[1] for it in keep for c in it["cats"] if c[0] == "zone"})
+ZONE_INDEX = {z: i + 1 for i, z in enumerate(zone_names)}
+w("  -- the zones items drop in (the Gear tab's zone filter)")
+w("  zoneNames = { %s }," % ", ".join(lua(z) for z in zone_names))
 rows = []
 for it in keep:
     # which side can get it: 1 Alliance, 2 Horde, 3 both
@@ -448,14 +474,21 @@ for it in keep:
     if it["fx"]:
         fxs = ",{" + ",".join("{" + ",".join("%s=%s" % (k, lua(v) if isinstance(v, str) else ("%g" % v))
                                             for k, v in sorted(f.items()) if v) + "}" for f in it["fx"]) + "}"
-    rows.append(("{%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d" + fxs.replace("%", "%%") + "}") % (
+    kinds = 0
+    for c in it["cats"]:
+        kinds |= KIND_BIT["dungeon" if c[0] == "zone" else c[0]]
+    zs = sorted(ZONE_INDEX[c[1]] for c in it["cats"] if c[0] == "zone")
+    zonesLua = ("{" + ",".join(str(z) for z in zs) + "}") if zs else "0"
+    rows.append(("{%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d," + zonesLua + fxs.replace("%", "%%") + "}") % (
         it["id"], lua(it["name"]), it["sid"], SLOT_CODE.index(it["slot"]) + 1, it["lvl"], it["q"],
         1 if it["unique"] else 0, 1 if it["use"] else 0, it["limit"], it["set"], PROF_CODE.index(it["prof"]),
         side, pvp, st.get("healing", 0), st.get("int", 0), st.get("spirit", 0), st.get("mp5", 0),
-        st.get("critR", 0), st.get("hasteR", 0)))
+        st.get("critR", 0), st.get("hasteR", 0), kinds))
 w("  -- id, name (with its random suffix), suffix id, slot, level, quality, unique, use/proc, equip limit,")
 w("  -- set, profession, who can get it (1 Alliance, 2 Horde, 3 both), PvP only (1 Alliance, 2 Horde, 3 both),")
-w("  -- healing, intellect, spirit, MP5, crit rating, haste rating, and its effects a healer gets something from:")
+w("  -- healing, intellect, spirit, MP5, crit rating, haste rating, where it comes from (bits: 1 a drop, 2 a quest,")
+w("  -- 4 crafted, 8 a vendor, 16 reputation, 32 PvP, 64 a world drop or no source), the zones it drops in (indexes")
+w("  -- into zoneNames, or 0), and its effects a healer gets something from:")
 w("  --   use=1, d (lasts, s), cd (cooldown, s); or p (chance a heal procs it), on (only that spell), icd, d;")
 w("  --   with stats it gives (healing, int, spirit, mp5, crit in %), mana (a use), heal (a use), cost (mana off each cast)")
 w("  rows = {")
@@ -478,7 +511,8 @@ w("  end")
 w("  local it = { id = r[1], name = r[2], key = r[3] ~= 0 and (r[1] .. \":\" .. r[3]) or tostring(r[1]),")
 w("    suffix = r[3] ~= 0 and (r[2]:match(\" (of [%a' ]+)$\") or \"\") or \"\", slot = SLOTS[r[4]], lvl = r[5], q = r[6],")
 w("    unique = r[7] == 1, use = r[8] == 1, limit = r[9], set = r[10], setName = D.setNames[r[10]] or \"\",")
-w("    prof = PROFS[r[11] + 1], pvp = { A = r[13] % 2 == 1, H = r[13] >= 2 }, stats = stats, fx = r[20] }")
+w("    prof = PROFS[r[11] + 1], pvp = { A = r[13] % 2 == 1, H = r[13] >= 2 }, stats = stats, kinds = r[20],")
+w("    zones = r[21] ~= 0 and r[21] or nil, fx = r[22] }")
 w("  if r[12] % 2 == 1 then it.A = true end")
 w("  if r[12] >= 2 then it.H = true end")
 w("  D.items[i] = it")
