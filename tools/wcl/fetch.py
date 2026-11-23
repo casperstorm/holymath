@@ -107,6 +107,17 @@ class GQLError(Exception):
     pass
 
 
+class RateLimited(Exception):
+    """The API's points for the hour are spent and the run has no time left to wait."""
+
+
+DEADLINE = [0.0]       # time.time() by which a run must stop (0: no limit)
+
+
+def time_left():
+    return float("inf") if not DEADLINE[0] else DEADLINE[0] - time.time()
+
+
 def host(url):
     return urllib.parse.urlparse(url).netloc
 
@@ -214,7 +225,11 @@ def gql(query, variables=None, fatal=True):
             out = post(api_url, token_url, query, variables)
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                time.sleep(60 * (attempt + 1))
+                wait = int(e.headers.get("Retry-After") or 0) or 60 * (attempt + 1)
+                if wait + 30 > time_left() or attempt >= 3:
+                    raise RateLimited("the API answered 429 (points spent)")
+                print("429: waiting %d s" % wait, flush=True)
+                time.sleep(wait)
                 continue
             if e.code == 401:
                 try:
@@ -231,21 +246,28 @@ def gql(query, variables=None, fatal=True):
                 die("GraphQL error: " + msg)
             raise GQLError(msg)
         return out["data"]
-    die("the API kept refusing (rate limit?)")
+    raise RateLimited("the API kept refusing")
 
 
 _budget_checked = [0.0]
 
 
+def points():
+    return gql("{ rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn } }")["rateLimitData"]
+
+
 def budget():
-    """Wait when the hour's points are nearly spent (checked at most once a minute)."""
-    if time.time() - _budget_checked[0] < 60:
+    """Wait when the hour's points are nearly spent (checked every 20 s), or stop the run
+    (RateLimited) when the wait wouldn't fit in its time."""
+    if time.time() - _budget_checked[0] < 20:
         return
     _budget_checked[0] = time.time()
-    d = gql("{ rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn } }")["rateLimitData"]
-    if d["pointsSpentThisHour"] > 0.9 * d["limitPerHour"]:
-        wait = int(d["pointsResetIn"]) + 5
-        print("points budget nearly spent (%d of %d): waiting %d s" % (d["pointsSpentThisHour"], d["limitPerHour"], wait), flush=True)
+    d = points()
+    if d["pointsSpentThisHour"] > 0.93 * d["limitPerHour"]:
+        wait = int(d["pointsResetIn"]) + 10
+        if wait + 60 > time_left():
+            raise RateLimited("points for the hour spent (%d of %d), no time left to wait" % (d["pointsSpentThisHour"], d["limitPerHour"]))
+        print("points for the hour nearly spent (%d of %d): waiting %d s" % (d["pointsSpentThisHour"], d["limitPerHour"], wait), flush=True)
         time.sleep(wait)
 
 
@@ -412,6 +434,8 @@ def collect(a):
     priests are added when Warcraft Logs ranks them (it ranks no Forever dungeon)."""
     if not os.path.exists(os.path.join(site_cache(), "discover.json")):
         die("run 'discover' first")
+    if a.max_minutes:
+        DEADLINE[0] = time.time() + a.max_minutes * 60
     data = json.load(open(os.path.join(site_cache(), "discover.json"), encoding="utf-8"))
     chosen = chosen_encounters(data, a.zone, a.zones_file)
     wanted = {e["id"]: (z, e) for z, e in chosen}
@@ -438,6 +462,17 @@ def collect(a):
                     ranked += fight_and_priests(rp["code"], rp["fightID"], names={r.get("name")})
 
     # every report we know of
+    try:
+        d = points()
+        print("API points: %d of %d spent this hour" % (d["pointsSpentThisHour"], d["limitPerHour"]), flush=True)
+        read_reports(a, wanted, zone_ids, ranked)
+        d = points()
+        print("API points: %d of %d spent this hour" % (d["pointsSpentThisHour"], d["limitPerHour"]), flush=True)
+    except RateLimited as e:
+        print("stopping: %s; the next run carries on from the cache" % e, flush=True)
+
+
+def read_reports(a, wanted, zone_ids, ranked):
     codes = seed_codes(a)
     print("%d report codes to read (%d ranked raid priests)" % (len(codes), ranked), flush=True)
     per_enc = collections.Counter()
@@ -515,6 +550,7 @@ def main():
     c.add_argument("--per-encounter", type=int, default=50, help="raids: top-ranked priest healers per encounter and spec")
     c.add_argument("--seeds", action="append", help="a file or folder of report codes or links (repeatable), e.g. wowsims' docs/evidence")
     c.add_argument("--max-reports", type=int, default=0, help="read at most this many new reports this run (0: all)")
+    c.add_argument("--max-minutes", type=int, default=0, help="stop cleanly after this long, waiting out spent points until then (0: no limit)")
     c.add_argument("--zone", type=int, action="append", help="only this zone id (repeatable; overrides zones.txt)")
     c.add_argument("--zones-file", default=ZONES_FILE, help="the raids, dungeons and bosses to collect (default tools/wcl/zones.txt)")
     c.set_defaults(fn=collect)

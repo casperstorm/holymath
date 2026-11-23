@@ -20,9 +20,9 @@ on:
         required: false
         default: '50'
       max_reports:
-        description: 'New reports to read this run (the rest wait for the next run)'
+        description: 'New reports to read this run, 0 = as many as 5 hours of API points allow (the rest wait for the next run)'
         required: false
-        default: '2000'
+        default: '0'
       simulate:
         description: 'Also run the simulation with the measured overheal (yes/no)'
         required: false
@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   schedule:
-    - cron: '17 5 * * 1'     # Mondays 05:17 UTC
+    - cron: '17 5 * * *'     # daily 05:17 UTC while reports wait to be read (weekly once caught up)
 
 permissions:
   contents: read
@@ -48,7 +48,7 @@ concurrency:
 jobs:
   estimates:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 350
     env:
       WCL_CACHE: ${{ github.workspace }}/../wcl-cache
     steps:
@@ -76,7 +76,7 @@ jobs:
           if [ -n "$GRAPHQL" ]; then python3 -I tools/wcl/fetch.py query "$GRAPHQL"; exit 1; fi
           python3 -I tools/wcl/fetch.py discover | tee discover.txt
           python3 -I tools/wcl/fetch.py collect --per-encounter "${{ github.event.inputs.per_encounter || '50' }}" \
-            --max-reports "${{ github.event.inputs.max_reports || '2000' }}" --seeds "$RUNNER_TEMP/wowsims/docs/evidence"
+            --max-reports "${{ github.event.inputs.max_reports || '0' }}" --max-minutes 320 --seeds "$RUNNER_TEMP/wowsims/docs/evidence"
 
       - name: Forget the token
         if: always()
