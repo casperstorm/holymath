@@ -197,6 +197,11 @@ GitHub Actions can run all of this (Lua 5.1 or LuaJIT, plus Python 3) without th
 
 ## 6. Real priests' logs (Warcraft Logs)
 
+> **Paused (23 Nov 2026).** Warcraft Logs ranks no players in Forever's dungeons ("Invalid raid zone specified"). Without rankings, finding the best priest parses means reading report after report: about 200 reports per hour of API points, and only one in ten had a priest in a listed dungeon. That doesn't scale. The maintainer chose to wait until Warcraft Logs ranks Forever's dungeons, or adds a filter for top parses.
+> - **The daily schedule is removed;** the workflow still runs by hand.
+> - **To resume,** test `worldData { encounter(id: 10289) { characterRankings(className: "Priest", specName: "Holy", metric: hps) } }` with the workflow's `graphql` input. Once it returns rankings instead of an error, restore the ranking-based collection: `collect` already tries rankings for any zone other than 3000.
+> - **Until then,** the addon's overheal defaults stay guesses. The simulation's low, typical and high levels show which picks hold up anyway.
+
 [forever.warcraftlogs.com](https://forever.warcraftlogs.com) holds public logs of real Forever fights. Its API gives what our model can only guess:
 - **Overheal per spell:** the number that decides playstyle recommendations more than any other.
 - **Real fight lengths.**

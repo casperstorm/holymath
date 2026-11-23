@@ -35,8 +35,7 @@ on:
         description: 'Only run this GraphQL query on Forever and print the answer (for checking fields)'
         required: false
         default: ''
-  schedule:
-    - cron: '17 5 * * *'     # daily 05:17 UTC while reports wait to be read (weekly once caught up)
+  # No schedule: paused until Warcraft Logs ranks Forever's dungeons (AGENTS.md section 6).
 
 permissions:
   contents: read
