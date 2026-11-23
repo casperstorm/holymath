@@ -33,6 +33,16 @@ end
 
 local function itemID(link) return link and tonumber(link:match("item:(%d+)")) end
 
+-- An item link's name in its quality colour ("an empty slot" for none), to say which
+-- of two rings or trinkets a number is against.
+function ns.ItemLinkName(link)
+  if type(link) ~= "string" then return "an empty slot" end
+  local name = link:match("|h%[(.-)%]|h")
+  if not name then return "an empty slot" end
+  local col = link:match("^(|c%x%x%x%x%x%x%x%x)")
+  return col and (col .. name .. "|r") or name
+end
+
 local verdictCache = {}
 function ns.ClearVerdicts() verdictCache = {} end
 
@@ -86,7 +96,11 @@ local function Verdict(link)
         local base = S.weights.base and S.weights.base.ehps or 0
         d = d + heal
         pct = base > 0 and d / base or pct
-        if not best or d > best.d then best = { d = d, pct = pct, same = same } end
+        if not best or d > best.d then
+          -- two rings or trinkets: say which one it's against
+          best = { d = d, pct = pct, same = same }
+          if #candidates > 1 then best.over = links[1] or false end   -- false: an empty slot
+        end
       end
     end
   end
@@ -127,6 +141,7 @@ local function AddItemLine(tt, link)
     local text = showNumber and string.format("%+.1f HPS", v.d) or pct      -- "+16.2 HPS (+1.8%)", or one of them
     if showNumber and showPct then text = text .. " (" .. pct .. ")" end
     tt:AddLine(string.format("%s: %s%s|r", TAG, col, text))
+    if v.over ~= nil then tt:AddLine(GRAY .. "  in place of|r " .. ns.ItemLinkName(v.over or nil)) end
   end
   if v.hasUse then tt:AddLine(GRAY .. "  Use or proc effect not counted|r") end
 end

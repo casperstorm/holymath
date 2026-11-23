@@ -60,6 +60,10 @@ It's worked out in well under a second, a few milliseconds a frame while the tab
 
 ![The Gear tab: the mathematically best gear for you at your level, slot by slot](media/gear.webp)
 
+Hover an item on the Gear tab for what it's worth to you over what you wear:
+
+![An item's tooltip on the Gear tab: what it gains you over what you wear](media/tooltip.webp)
+
 **Profiles** (top right of the window): keep several sets of settings under any name, e.g. "1 bounce", "3 bounces", "5 min, no Mana Tide", and switch between them. A profile holds the fight, the playstyle and the overheal per spell; values you typed over the game's on the Math tab are not part of it. The loaded profile saves itself: whatever you change goes into it, and "New profile" starts one from your settings now. The list shows what each profile heals per second with your gear right now, so you can compare them without switching, and hovering one shows how it differs from your current settings.
 
 ## Where the numbers come from

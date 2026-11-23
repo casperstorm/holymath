@@ -589,7 +589,10 @@ function GS.Solve(a)
         local r = rotationNow(with(a.st, total))
         d = r and (r.ehps + wornHeal + heal - now.ehps) or 0
       end
-      if not best or wearing or d > best.d then best = { d = d, worn = wearing } end
+      if not best or wearing or d > best.d then
+        -- a ring or trinket: which of the two it goes over (its inventory slot)
+        best = { d = d, worn = wearing, inv = #options > 1 and GS.INV[opt[1]] or nil }
+      end
       if wearing then break end
     end
     return best

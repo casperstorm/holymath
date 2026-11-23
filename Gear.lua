@@ -217,6 +217,13 @@ local REPLACES = { head = { 1 }, neck = { 2 }, shoulder = { 3 }, back = { 15 }, 
   mainhand = { 16 }, offhand = { 17 }, twohand = { 16, 17, both = true }, wand = { 18 } }
 -- What the item (this version of it) is worth to you over what you wear: the whole
 -- model, as the item tooltips do; a ring or trinket against the one it beats most.
+-- what a gain is against: one of two rings or trinkets by name (inv: its slot), else
+-- what you wear
+local function overName(inv)
+  if not inv then return "what you wear" end
+  local link = GetInventoryItemLink and GetInventoryItemLink("player", inv)
+  return ns.ItemLinkName and ns.ItemLinkName(link) or "what you wear"
+end
 local function gainText(it)
   -- worked out with the list (the same number as its green arrow)
   local r = O.gearResult
@@ -225,8 +232,8 @@ local function gainText(it)
     if g.pair then return "You wear a two-hander: this counts only with the other hand (the weapon rows).", 0.6, 0.6, 0.6 end
     if g.worn then return "You wear it.", 0.6, 0.6, 0.6 end
     local up = g.d >= 0
-    return string.format("%s%.1f HPS (%s%.1f%%) over what you wear", up and "+" or "", g.d, up and "+" or "",
-      g.d / math.max(1, r.now) * 100), up and 0.25 or 1, up and 1 or 0.31, up and 0.25 or 0.31
+    return string.format("%s%.1f HPS (%s%.1f%%) over %s", up and "+" or "", g.d, up and "+" or "",
+      g.d / math.max(1, r.now) * 100, overName(g.inv)), up and 0.25 or 1, up and 1 or 0.31, up and 0.25 or 0.31
   end
   local S, solver = ns.State and ns.State(), ns.GearSolve
   if not (S and S.weights and solver and G and ns.model) then return nil end
@@ -244,12 +251,12 @@ local function gainText(it)
       if GetInventoryItemID and GetInventoryItemID("player", inv) == it.id then wearing = true end
     end
     local ok, d, pct = pcall(ns.model.Compare, S.rotation, S.st, S.input, diff)
-    if ok and d and (not best or d > best.d) then best = { d = d, pct = pct, wearing = wearing } end
+    if ok and d and (not best or d > best.d) then best = { d = d, pct = pct, wearing = wearing, inv = #options > 1 and opt[1] or nil } end
   end
   if not best then return nil end
   if best.wearing and math.abs(best.d) < 0.05 then return "You wear it.", 0.6, 0.6, 0.6 end
   local up = best.d >= 0
-  return string.format("%s%.1f HPS (%s%.1f%%) over what you wear", up and "+" or "", best.d, up and "+" or "", (best.pct or 0) * 100),
+  return string.format("%s%.1f HPS (%s%.1f%%) over %s", up and "+" or "", best.d, up and "+" or "", (best.pct or 0) * 100, overName(best.inv)),
     up and 0.25 or 1, up and 1 or 0.31, up and 0.25 or 0.31
 end
 

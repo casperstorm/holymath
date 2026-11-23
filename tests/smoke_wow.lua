@@ -445,6 +445,45 @@ do
   ns.ClearVerdicts()
 end
 
+-- a ring: of the two you wear, it says which one the number is against (the one it
+-- does best over)
+do
+  ITEMS["|Hitem:4001:0:|h"] = { loc = "INVTYPE_FINGER", lines = { "Snake Hoop", "+5 Intellect" } }
+  ITEMS["|Hitem:4002:0:|h"] = { loc = "INVTYPE_FINGER", lines = { "Healer's Band", "+8 Intellect",
+    "Equip: Increases healing done by spells and effects by up to 40." } }
+  ITEMS["|Hitem:4003:0:|h"] = { loc = "INVTYPE_FINGER", lines = { "Circle of Hope", "+6 Intellect",
+    "Equip: Increases healing done by spells and effects by up to 9." } }
+  local realInv = GetInventoryItemLink
+  GetInventoryItemLink = function(u, slot)
+    if slot == 11 then return "|cff1eff00|Hitem:4002:0:|h[Healer's Band]|h|r" end
+    if slot == 12 then return "|cff1eff00|Hitem:4001:0:|h[Snake Hoop]|h|r" end
+    return realInv(u, slot)
+  end
+  ns.ClearVerdicts()
+  GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|cff0070dd|Hitem:4003:0:|h[Circle of Hope]|h|r"
+  postCalls[0](GameTooltip)
+  local t = table.concat(GameTooltip.lines, " / ")
+  expect(t:find("%+%d") and t:find("in place of|r |cff1eff00Snake Hoop|r", 1, true),
+    "a ring's tooltip names the ring it replaces (" .. t .. ")")
+  -- one empty ring slot: it goes there
+  GetInventoryItemLink = function(u, slot)
+    if slot == 11 then return "|cff1eff00|Hitem:4002:0:|h[Healer's Band]|h|r" end
+    return realInv(u, slot)
+  end
+  ns.ClearVerdicts()
+  GameTooltip.lines = {}; GameTooltip.fpLink = nil
+  postCalls[0](GameTooltip)
+  t = table.concat(GameTooltip.lines, " / ")
+  expect(t:find("in place of|r an empty slot", 1, true), "with a ring slot empty, it goes there (" .. t .. ")")
+  -- a head item: no such line
+  GetInventoryItemLink = realInv
+  ns.ClearVerdicts()
+  GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|Hitem:1002:0:|h"
+  postCalls[0](GameTooltip)
+  expect(not table.concat(GameTooltip.lines, " "):find("in place of"), "one-slot items don't name what they replace")
+  ns.ClearVerdicts()
+end
+
 -- /hm check reports the tooltip comparison
 printed = {}
 SlashCmdList.HOLYMATH("check")
