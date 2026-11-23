@@ -551,7 +551,11 @@ local function Summary()
   print(string.format("  Your stats: healing %.0f, int %.0f, spirit %.0f, crit %.1f%%, MP5 %.0f, mana %.0f, regen %.0f/%.0f per 5 s (out of / in combat)",
     st.healing, st.int, st.spirit, st.crit * 100, st.mp5, st.manaPool, st.oocRegen, st.combatRegen))
   if #S.info.how.missing > 0 then
-    print("  |cffff5050Could not read:|r " .. table.concat(S.info.how.missing, ", "))
+    if InCombatLockdown and InCombatLockdown() then
+      print("  Your stats can't be read in combat; Holy Math fills them in when the fight ends.")
+    else
+      print("  |cffff5050Could not read:|r " .. table.concat(S.info.how.missing, ", "))
+    end
   end
   local mine = ns.OverrideCount and ns.OverrideCount() or 0
   if mine > 0 then
@@ -885,6 +889,11 @@ SlashCmdList.HOLYMATH = function(msg)
   cmd = (cmd or ""):lower()
   if not ns.enabled then return say("made for priests - it stays off on other classes.") end
   if cmd == "" or cmd == "options" or cmd == "config" then ns.Options.Toggle()
+  elseif cmd == "minimap" then
+    local on = not ns.Minimap.Shown()
+    ns.Minimap.SetShown(on)
+    if ns.Options and ns.Options.frame and ns.Options.frame:IsShown() then ns.Options.Refresh() end
+    say(on and "minimap button shown." or "minimap button hidden (/hm minimap shows it again).")
   elseif cmd == "show" or cmd == "recalc" then Summary()
   elseif cmd == "check" then Check()
   elseif cmd == "dump" then Dump()
@@ -918,7 +927,7 @@ SlashCmdList.HOLYMATH = function(msg)
     ns.MarkDirty()
     if ns.Options and ns.Options.frame and ns.Options.frame:IsShown() then ns.Options.Changed(true) end
     say("%d value(s) you typed on the Math tab are back to the game's.", n)
-  else say("/hm (options window) | /hm show (summary in chat) | /hm check | /hm dump | /hm set ... | /hm profile [name] | /hm playstyle [name] | /hm reset (your Math tab values)") end
+  else say("/hm (options window) | /hm show (summary in chat) | /hm check | /hm dump | /hm set ... | /hm profile [name] | /hm playstyle [name] | /hm minimap | /hm reset (your Math tab values)") end
 end
 
 ---------------------------------------------------------------------------
@@ -955,6 +964,19 @@ f:SetScript("OnEvent", function(self, event, unit)
     -- the rest of the addon working if it does.
     local ok, err = pcall(ns.HookTooltips)
     if not ok then ns.hookError = tostring(err); ns.LogError("hookTooltips", err) end
+    -- Read your stats once, out of combat, a little after login: in combat the game
+    -- won't give them out, so that read is what the window and tooltips use if
+    -- you first look in a fight (it updates when the fight ends)
+    if C_Timer and C_Timer.After then
+      C_Timer.After(3, function()
+        if not (InCombatLockdown and InCombatLockdown()) then ns.State(true); ns.warmed = true end
+      end)
+    end
+    -- the minimap button (Minimap.lua)
+    if ns.Minimap then
+      local okM, errM = pcall(ns.Minimap.Create)
+      if not okM then ns.LogError("minimap", errM) end
+    end
     for _, ev in ipairs({ "PLAYER_EQUIPMENT_CHANGED", "UNIT_AURA", "UNIT_STATS", "PLAYER_LEVEL_UP",
                           "SPELLS_CHANGED", "TRAIT_CONFIG_UPDATED", "CHARACTER_POINTS_CHANGED",
                           "PLAYER_REGEN_ENABLED", "UNIT_MAXPOWER",

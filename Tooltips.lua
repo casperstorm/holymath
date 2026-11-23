@@ -56,27 +56,53 @@ local function Verdict(link)
     return nil
   end
 
+  -- use and proc effects (trinkets above all), on average over your fight: the item's,
+  -- less those of what it replaces (Gear.lua, from the item data)
+  local function effects(l)
+    if not (l and ns.GearEffectsFor) then return nil, 0 end
+    local ok, add, heal = pcall(ns.GearEffectsFor, l, S)
+    if ok and add then return add, heal or 0 end
+    return nil, 0
+  end
+  local newFx, newHeal = effects(link)
   local best
   for _, cand in ipairs(candidates) do
     local old, links = sumStats(cand)
     local same = links[1] and itemID(links[1]) == itemID(link)
-    local diff, any = {}, false
+    local diff, any = {}, newFx ~= nil or newHeal > 0
+    local heal = newHeal
     for _, k in ipairs(RELEVANT) do
-      diff[k] = (new[k] or 0) - (old[k] or 0)
+      diff[k] = (new[k] or 0) - (old[k] or 0) + (newFx and newFx[k] or 0)
       if (new[k] or 0) ~= 0 or (old[k] or 0) ~= 0 then any = true end
+    end
+    for _, l in ipairs(links) do
+      local oldFx, oldHeal = effects(l)
+      if oldFx then any = true; for k, v in pairs(oldFx) do diff[k] = (diff[k] or 0) - v end end
+      heal = heal - oldHeal
     end
     if any or same then
       local d, pct = E.Compare(S.rotation, S.st, S.input, diff)
-      if d and (not best or d > best.d) then best = { d = d, pct = pct, same = same } end
+      if d then
+        local base = S.weights.base and S.weights.base.ehps or 0
+        d = d + heal
+        pct = base > 0 and d / base or pct
+        if not best or d > best.d then best = { d = d, pct = pct, same = same } end
+      end
     end
   end
-  if best then best.hasUse = new.hasUse end
+  if best then best.hasUse = new.hasUse and not newFx end   -- an effect the data has is in the number
   verdictCache[link] = best or false
   return best
 end
 
 local function AddItemLine(tt, link)
   ns.Count("itemHook")
+  -- the Gear tab's own tooltip: its lines instead (with the item's random suffix), each
+  -- time the game draws it
+  if ns.enabled and tt.hmGearTip then
+    if ns.Options and ns.Options.GearTipLines and tt.hmGearItem then pcall(ns.Options.GearTipLines, tt) end
+    return
+  end
   if not ns.enabled or type(link) ~= "string" or tt.fpLink == link then return end
   local tip = ns.db and ns.db.tooltips or {}
   local showNumber, showPct = tip.itemNumber ~= false, tip.itemPercent ~= false

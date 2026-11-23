@@ -366,6 +366,9 @@ local function Choice(parent, width, ready, choices, get, set, label, help)
   return dd
 end
 
+-- for the Gear tab
+O.IconButton, O.Choice = IconButton, Choice
+
 local function rankLabel(d, S)
   if d.rank == nil then return "Best rank" end
   if d.rank == "top" then return "Highest rank" end

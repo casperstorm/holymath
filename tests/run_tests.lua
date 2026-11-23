@@ -1306,5 +1306,197 @@ do
   ok("the strip: with Soul Warding shields go back to back", second and (second - first) < 4)
 end
 
+print("-- Gear tab: the best gear for you at your level (Models/GearSolve.lua)")
+do
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+  local D = dofile("Models/GearData.lua")
+  local GS = dofile("Models/GearSolve.lua")
+  local function ok(label, cond) near(label, cond and 1 or 0, 1) end
+  local function character(level, side)
+    local inp = E.copy(E.DEFAULTS)
+    inp.settings.rules = E.RULES; inp.settings.known = nil; inp.settings.fightLength = 120
+    inp.settings.shadowSpiritBuff = false
+    inp.race = { human = side == "A", troll = side == "H", dwarf = false, gnome = false }
+    inp.level = level
+    -- the 17/32 build (the talent search's best)
+    inp.talents = { twinDisciplines = 5, mentalStrength = 5, mentalAgility = 3, innerFocus = 1, meditation = 3,
+      improvedRenew = 3, holySpecialization = 5, divineFury = 5, inspiration = 3, improvedHealing = 3, holyBinding = 1,
+      bindingHeal = 1, litanyOfLight = 2, spiritualGuidance = 5, spiritualHealing = 3, prayerOfMending = 1,
+      improvedPWS = 0, soulWarding = 0, penance = 0, renewedHope = 0, divineAegis = 0 }
+    return inp
+  end
+  local function solve(level, side, pvp, profs, current, gearOn)
+    local inp = character(level, side)
+    inp.gear = gearOn or { healing = 0, int = 0, crit = 0, haste = 0, mp5 = 0, spirit = 0, spelldamage = 0 }
+    local st = E.Derive(inp)
+    return GS.Solve({ E = E, st = st, input = inp, rot = "renew", D = D, side = side, level = level, pvp = pvp,
+                      profs = profs or {}, current = current })
+  end
+  local function check(label, r, level, side, pvp, profs)
+    local bad, limits = {}, {}
+    for _, slot in ipairs(GS.SLOTS) do
+      local it = r.items[slot]
+      if it then
+        if not it[side] then bad[#bad + 1] = it.name .. ": not for this side" end
+        if it.lvl > level then bad[#bad + 1] = it.name .. ": level " .. it.lvl end
+        if it.prof ~= "" and not (profs and profs[it.prof]) then bad[#bad + 1] = it.name .. ": " .. it.prof .. " only" end
+        if it.pvp[side] and not pvp then bad[#bad + 1] = it.name .. ": PvP" end
+        if it.limit ~= 0 then
+          if limits[it.limit] then bad[#bad + 1] = it.name .. ": two of one equip limit" end
+          limits[it.limit] = true
+        end
+      end
+      local names = {}
+      if it then names[it.name] = true end
+      for _, a in ipairs(r.alts[slot] or {}) do
+        if names[a.name] then bad[#bad + 1] = slot .. ": " .. a.name .. " twice" end
+        names[a.name] = true
+      end
+    end
+    local w = r.items.weapon
+    if w and w.slot == "twohand" and r.items.offhand then bad[#bad + 1] = "an off hand with a two-hander" end
+    local wv = r.weapons or {}
+    if wv.twohand and wv.twohand.item.slot ~= "twohand" then bad[#bad + 1] = "the two-hander isn't one" end
+    if wv.onehand and (wv.onehand.item.slot ~= "mainhand" or wv.onehand.offhand.slot ~= "offhand") then bad[#bad + 1] = "the one-hand way is wrong" end
+    local better = (wv.twohand and wv.onehand) and (wv.twohand.hps >= wv.onehand.hps and "twohand" or "onehand")
+    if better and wv.worn ~= better then bad[#bad + 1] = "the worse weapon way is worn" end
+    if wv.worn == "twohand" and w ~= wv.twohand.item then bad[#bad + 1] = "worn two-hander isn't the best" end
+    if wv.worn == "onehand" and (w ~= wv.onehand.item or r.items.offhand ~= wv.onehand.offhand) then bad[#bad + 1] = "worn one-hand way isn't the best" end
+    local best = math.max(wv.twohand and wv.twohand.hps or 0, wv.onehand and wv.onehand.hps or 0)
+    if math.abs(best - r.hps) > 1e-6 then bad[#bad + 1] = string.format("the better weapon way (%.1f) isn't the list's HPS (%.1f)", best, r.hps) end
+    ok(label .. string.format(": %.0f HPS, all wearable (%s)", r.hps, table.concat(bad, "; ")), #bad == 0 and r.hps > r.now)
+  end
+  local r60 = solve(60, "H", false)
+  check("level 60, Horde", r60, 60, "H", false)
+  ok(string.format("level 60, Horde, 17/32: at least as good as the long search found (868 HPS): %.1f", r60.hps), r60.hps >= 868.0 - 0.05)
+  local r51 = solve(51, "H", false)
+  check("level 51: only what you can wear at 51", r51, 51, "H", false)
+  check("level 30, Alliance", solve(30, "A", false), 30, "A", false)
+  check("level 60, Alliance, with PvP gear", solve(60, "A", true), 60, "A", true)
+  -- what you wear comes off first: wearing something doesn't change the answer
+  local robe
+  for _, it in ipairs(D.items) do if it.name == "Truefaith Vestments" then robe = it end end
+  local worn = { chest = { healing = 73, spirit = 16 } }
+  local r2 = solve(60, "H", false, {}, worn, { healing = 73, int = 0, crit = 0, haste = 0, mp5 = 0, spirit = 16, spelldamage = 0 })
+  near("what you wear comes off: the same best (" .. string.format("%.1f", r2.hps) .. ")", r2.hps, r60.hps, 1e-6)
+  ok("... and the gain counts from what you wear", r2.now > r60.now)
+  -- a profession's own items count when you have it
+  local pool = GS.Pool(D, "H", 60, false, {})
+  local poolT = GS.Pool(D, "H", 60, false, { Tailoring = true })
+  local has = false
+  for _, it in ipairs(poolT) do if it == robe then has = true end end
+  ok("Truefaith Vestments only with Tailoring", robe and has and #poolT > #pool)
+  ok("the search stays small: " .. r60.runs .. " model runs at 60", r60.runs < 600)
+  -- trinket effects, averaged over a 2-minute fight (0.6 casts a second, 4 Greater Heals)
+  local function named(n) for _, it in ipairs(D.items) do if it.name == n then return it end end end
+  local ctx = { fl = 120, cps = 0.6, casts = { GH = 4 }, oh = 0.25 }
+  local add = GS.Effects(named("Serenity Field"), ctx)
+  near("Serenity Field: +72 spirit for 15 s, once in a 2-minute fight", add.spirit, 72 * 15 / 120)
+  add = GS.Effects(named("Mindtap Talisman"), ctx)
+  near("Mindtap Talisman: 1,250 mana (7-min cooldown, a pull every 10 min: every fight) as MP5", add.mp5, 1250 / 120 * 5)
+  add = GS.Effects(named("Second Wind"), ctx)
+  near("Second Wind: 630 mana, its 15-min cooldown ready in 2 fights of 3 (a pull every 10 min)", add.mp5, 630 * (600 / 900) / 120 * 5, 1e-6)
+  add = GS.Effects(named("Burst of Knowledge"), ctx)
+  near("Burst of Knowledge: 150 mana off each cast for 10 s", add.mp5, 150 * 0.6 * 10 / 120 * 5)
+  add = GS.Effects(named("Robes of Insight"), ctx)
+  near("Robes of Insight: 200 mana off the next spell only", add.mp5, 200 * 1 / 120 * 5)
+  add = GS.Effects(named("Darkmoon Card: Blue Dragon"), ctx)
+  near("Blue Dragon: 3% a cast, 150 spirit for 15 s", add.spirit, 150 * (1 - math.exp(-0.03 * 0.6 * 15)))
+  add = GS.Effects(named("Dormant Heart of the Mountain"), ctx)
+  near("Dormant Heart: +40 healing for 15 s after each Greater Heal (4 in the fight)", add.healing, 40 * math.min(1, 4 / 120 * 15))
+  local _, heal = GS.Effects(named("Lifestone"), ctx)
+  near("Lifestone: an 800 heal on use, after your Flash Heal overheal", heal, 800 / 120 * 0.75)
+  local mark = GS.Effects(named("Mark of the Dragon Lord"), ctx)
+  near("Mark of the Dragon Lord: 22 MP5 for 30 min, up the whole fight", mark.mp5, 22)
+  add = GS.Effects(named("Mindtap Talisman"), ctx)
+  near("... and its catch: Tapped Mind, -60 intellect for 2 minutes after", add.int, -60)
+  local emblem = named("Draconic Infused Emblem")
+  ok("Draconic Infused Emblem's proc (harmful spells only) never counts for a healer", not (emblem and emblem.fx))
+  ok("no drink and no channel among the effects (Skum's Bucket, Circle of Flame)",
+     not named("Skum's Bucket") or not named("Skum's Bucket").fx)
+  -- wearing what it picks: the same pick, and no gain (the set's mana proc counts for what you wear too)
+  local current, ids, gear = {}, {}, { healing = 0, int = 0, crit = 0, haste = 0, mp5 = 0, spirit = 0, spelldamage = 0 }
+  for slot, it in pairs(r60.items) do
+    local st = GS.Stats(it)
+    current[slot], ids[slot] = st, it.id
+    for k, v in pairs(st) do gear[k] = gear[k] + v end
+  end
+  local b = GS.Bonuses(D, r60.items)
+  for _, k in ipairs({ "healing", "int", "spirit", "mp5" }) do gear[k] = gear[k] + (b[k] or 0) end
+  local inp = character(60, "H")
+  inp.gear = gear
+  local again = GS.Solve({ E = E, st = E.Derive(inp), input = inp, rot = "renew", D = D, side = "H", level = 60,
+                           profs = {}, current = current, currentIds = ids })
+  local same = true
+  for slot, it in pairs(r60.items) do if again.items[slot] ~= it then same = false end end
+  ok("wearing its own pick: the same pick", same)
+  local allWorn, noArrow = true, true
+  for _, it in pairs(again.items) do
+    local g = again.gains[it.key]
+    if not (g and g.worn) then allWorn = false end
+  end
+  for key, g in pairs(again.gains) do
+    if not g.worn and g.d > 0.05 then
+      -- a shown item better than what's worn in its slot can only be another set-less swap; the pick's own items never are
+      for _, it in pairs(again.items) do if it.key == key then noArrow = false end end
+    end
+  end
+  ok("... each item it wears is marked as worn, none of them as an upgrade", allWorn and noArrow)
+  -- an arrow's number is what that one swap really does (set bonuses won or lost included)
+  local function wear(items)
+    local cur, idz, keys, gear = {}, {}, {}, { healing = 0, int = 0, crit = 0, haste = 0, mp5 = 0, spirit = 0, spelldamage = 0 }
+    for slot, it in pairs(items) do
+      local st = GS.Stats(it)
+      cur[slot], idz[slot], keys[slot] = st, it.id, it.key
+      for k, v in pairs(st) do gear[k] = gear[k] + v end
+    end
+    local bb = GS.Bonuses(D, items)
+    for _, k in ipairs({ "healing", "int", "spirit", "mp5" }) do gear[k] = gear[k] + (bb[k] or 0) end
+    local i2 = character(60, "H"); i2.gear = gear
+    return GS.Solve({ E = E, st = E.Derive(i2), input = i2, rot = "renew", D = D, side = "H", level = 60, profs = {},
+                      current = cur, currentIds = idz, currentKeys = keys })
+  end
+  local worst, checked = 0, 0
+  for slot, it in pairs(r60.items) do
+    if it.set ~= 0 then
+      for i = 1, 3 do
+        local alt = again.alts[slot] and again.alts[slot][i]
+        local g = alt and again.gains[alt.key]
+        if g and not g.worn and not g.pair then
+          local sw = {}
+          for s2, x in pairs(r60.items) do sw[s2] = x end
+          sw[slot] = alt
+          local real = wear(sw).now - again.now
+          worst = math.max(worst, math.abs(real - g.d))
+          checked = checked + 1
+        end
+      end
+    end
+  end
+  ok(string.format("an arrow's number is what the swap does, set bonuses included (%d swaps, worst %.1f HPS off)", checked, worst),
+     checked > 5 and worst < 1.5)
+  -- the weapon rows show the weapons the list counts
+  for _, case in ipairs({ { "A", true, 60, "ghFill" }, { "H", true, 60, "pwsTank" }, { "H", false, 120, "renew" } }) do
+    local i3 = character(60, case[1]); i3.settings.fightLength = case[3]
+    i3.gear = { healing = 0, int = 0, crit = 0, haste = 0, mp5 = 0, spirit = 0, spelldamage = 0 }
+    local rw = GS.Solve({ E = E, st = E.Derive(i3), input = i3, rot = case[4], D = D, side = case[1], level = 60, pvp = case[2], profs = {} })
+    local wv = rw.weapons
+    local shownWay = wv.worn == "twohand" and wv.twohand or wv.onehand
+    ok(string.format("%s %s, %d s fight: the weapon rows show the weapons counted", case[1], case[4], case[3]),
+       shownWay and shownWay.item == rw.items.weapon and shownWay.offhand == rw.items.offhand)
+  end
+  -- with a two-hander on, a main hand or off hand alone gets no number (it counts only as a pair)
+  local staffOn = {}
+  for s2, x in pairs(r60.items) do staffOn[s2] = x end
+  local staff
+  for _, it in ipairs(D.items) do if it.slot == "twohand" and it.lvl <= 60 and it.H then staff = it; break end end
+  staffOn.weapon, staffOn.offhand = staff, nil
+  local rs = wear(staffOn)
+  local pairOnly = true
+  for _, x in ipairs(rs.alts.offhand or {}) do local g = rs.gains[x.key]; if g and not g.pair then pairOnly = false end end
+  ok("a two-hander on: off hands get no arrow of their own", pairOnly and #(rs.alts.offhand or {}) > 0)
+  near("... and no gain over what you wear (" .. string.format("%.2f", again.hps - again.now) .. ")", again.hps - again.now, 0, 1e-6)
+end
+
 print(string.format("\n%d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

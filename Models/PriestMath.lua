@@ -540,6 +540,12 @@ local function assumptionsSection(rows, S)
                 help = "In long fights you run out of mana, so mana (MP5, spirit, intellect) is worth more; " ..
                        "in short fights healing power counts most. A typical raid boss: about 2 minutes." },
               { "fightLength" }, "sec", set.fightLength))
+  add(setting({ "Time between pulls", "how often a fight starts, the time in between included (for trinkets with a long cooldown)",
+                "", "setting",
+                help = "A trinket you use is counted as ready at the start of each fight when its cooldown is shorter than " ..
+                       "this; a longer one is ready in that share of fights (Second Wind's 15 minutes with a pull every 10: " ..
+                       "2 fights in 3). A raid boss: about 10 minutes; dungeon pulls: about 1 to 2." },
+              { "pullEvery" }, "sec", set.pullEvery or 600))
   add(setting({ "Downtime used", "out of mana, how much of the time left you spend regenerating and casting again (an assumption)",
                 "", "assumption",
                 help = "When your mana runs out before the fight ends, the time left is spent waiting out the 5-second " ..
@@ -593,7 +599,7 @@ end
 
 -- A setting typed on the sheet: its allowed range (and whole numbers only?).
 E.MATH_SETTINGS = {
-  fightLength = { 10, 3600, true }, pomHits = { 1, 5, true }, groupHits = { 1, 5, true }, overheal = { 0, 0.95 },
+  fightLength = { 10, 3600, true }, pullEvery = { 30, 3600, true }, pomHits = { 1, 5, true }, groupHits = { 1, 5, true }, overheal = { 0, 0.95 },
   imperfectPlay = { 0, 1 }, litanyAlternation = { 0, 1 },
 }
 -- The value to store for a setting, or nil if it can't be used.

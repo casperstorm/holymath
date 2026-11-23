@@ -125,6 +125,7 @@ PlaySound = noop
 GameTooltip = newFrame(); GameTooltip.ProcessInfo = function() end
 function GameTooltip:SetText(t) self.lines = { t } end
 GameTooltip.SetAction = function() end
+function GameTooltip:SetHyperlink(link) self.lines = { link } end
 hooksecurefunc = function(obj, name, fn)
   local orig = obj[name]
   if type(orig) ~= "function" then error("no method " .. name) end
@@ -213,12 +214,21 @@ C_Item = { GetItemInfoInstant = function(link)
 end }
 ITEM_CLASSES_ALLOWED = "Classes: %s"
 GetInventoryItemLink = function(_, slot) return slot == 1 and "|Hitem:1001:0:|h" or nil end
+-- the Gear tab: icons, what you have, your side
+ownedItems = {}
+GetItemIcon = function(id) return "icon:" .. id end
+GetItemCount = function(id) return ownedItems[id] and 1 or 0 end
+GetInventoryItemID = function() return nil end
+UnitFactionGroup = function() return "Horde" end
+Minimap = newFrame("Minimap")
+function Minimap:GetWidth() return 140 end
+function Minimap:GetCenter() return 1000, 600 end
 TooltipUtil = { GetDisplayedItem = function(tt) return "x", tt.fakeLink end }
 SlashCmdList = {}
 
 -- load the addon -------------------------------------------------------------
 local ns = {}
-for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
+for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua", "Gear.lua", "Minimap.lua" }) do
   assert(loadfile(f))("HolyMath", ns)
 end
 local core = frames[#frames]                      -- Core's event frame
@@ -228,8 +238,19 @@ assert(ns.enabled, "should enable on a priest")
 local fails = 0
 local function expect(cond, what) if not cond then fails = fails + 1; realprint("FAIL " .. what) else realprint("ok   " .. what) end end
 
+expect(ns.warmed, "your stats are read once after login, out of combat")
+
 SlashCmdList.HOLYMATH("show")
 SlashCmdList.HOLYMATH("check")
+-- /hm minimap hides and shows the minimap button (and says so)
+do
+  local b = ns.Minimap.button
+  printed = {}
+  SlashCmdList.HOLYMATH("minimap")
+  local hid = b and not b.shown and HolyMathDB.minimap.hide == true and table.concat(printed, " "):find("hidden")
+  SlashCmdList.HOLYMATH("minimap")
+  expect(hid and b.shown and not HolyMathDB.minimap.hide, "/hm minimap hides the minimap button, and again shows it")
+end
 SlashCmdList.HOLYMATH("dump")
 expect(type(HolyMathDB.dump) == "table" and #HolyMathDB.dump.spells > 0, "/hm dump saved spells")
 expect(HolyMathDB.dump.model and HolyMathDB.dump.model.ehps and HolyMathDB.dump.model.ehps > 0, "/hm dump has a model result")
@@ -472,6 +493,14 @@ ns.ClearVerdicts()
 GameTooltip.lines = {}; GameTooltip.fpLink = nil; GameTooltip.fakeLink = "|Hitem:1002:0:|h"
 postCalls[0](GameTooltip)
 expect(#GameTooltip.lines == 0, "no item verdict when healing power is missing")
+-- the same in combat (the game won't give stats out then): it says so, not "could not read"
+local realCombat = InCombatLockdown
+InCombatLockdown = function() return true end
+printed = {}
+SlashCmdList.HOLYMATH("show")
+said = table.concat(printed, "\n")
+expect(said:find("can't be read in combat") and not said:find("Could not read"), "/hm in combat: stats can't be read until the fight ends")
+InCombatLockdown = realCombat
 GetSpellBonusHealing = realHeal
 expect(ns.counts.itemHook, "item hook counter recorded")
 
@@ -1249,7 +1278,7 @@ do
   local function login(saved)
     HolyMathDB = { PRIEST = saved }
     local ns5 = {}
-    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
+    for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua", "Gear.lua", "Minimap.lua" }) do
       assert(loadfile(f))("HolyMath", ns5)
     end
     local core5 = frames[#frames]
@@ -1532,7 +1561,7 @@ do
   HolyMathDB = { PRIEST = E.copy(db) }
   HolyMathDB.PRIEST.rotation = imported
   local ns5 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
+  for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua", "Gear.lua", "Minimap.lua" }) do
     assert(loadfile(f))("HolyMath", ns5)
   end
   local core5 = frames[#frames]
@@ -1597,7 +1626,7 @@ do
   for _, t in ipairs({ "PortraitFrameTemplate", "MinimalSliderWithSteppersTemplate", "UICheckButtonTemplate",
                        "WowStyle1DropdownTemplate", "UIPanelButtonTemplate", "UIPanelCloseButton" }) do missingTemplates[t] = true end
   local ns3 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
+  for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua", "Gear.lua", "Minimap.lua" }) do
     assert(loadfile(f))("HolyMath", ns3)
   end
   local core3 = frames[#frames]
@@ -1632,7 +1661,7 @@ do
   local function login(db)
     HolyMathDB = { PRIEST = db }
     local ns4 = {}
-    for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do
+    for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua", "Gear.lua", "Minimap.lua" }) do
       assert(loadfile(f))("HolyMath", ns4)
     end
     local core4 = frames[#frames]
@@ -1648,14 +1677,282 @@ do
   HolyMathDB = saved
 end
 
+-- The Gear tab: the best for you at your level, a row per slot (KeystoneLoot's look)
+do
+  local O, D = ns.Options, ns.GearData
+  UnitFactionGroup = function() return "Horde" end
+  if not O.frame or not O.frame:IsShown() then O.Toggle() end
+  O.ShowTab("gear")
+  local r = O.gearResult
+  expect(r and r.hps > 0 and not O.gearWorking, "Gear tab: worked out on open (" .. tostring(r and r.hps) .. " HPS, " .. tostring(r and r.runs) .. " runs)")
+  expect(O.frame.width == 880, "Gear tab: the wide window")
+  local function rowNamed(n) for _, row in ipairs(O.gearRows) do if row.def.name == n then return row end end end
+  expect(#O.gearRows == 16, "16 rows: rings and trinkets one row each, the weapons three (" .. #O.gearRows .. ")")
+  local two, main, off = rowNamed("Two-hand"), rowNamed("Main hand"), rowNamed("Off hand")
+  local wv = r.weapons
+  expect(two.icons[1].item == wv.twohand.item and main.icons[1].item == wv.onehand.item and off.icons[1].item == wv.onehand.offhand,
+    "the weapons both ways: the best two-hander, main hand and off hand")
+  two.icons[1].scripts.OnEnter(two.icons[1])
+  local wtip = table.concat(GameTooltip.lines, " | ")
+  expect(wtip:find("HPS with it") and wtip:find("a main hand and off hand"), "hover a weapon: what each way heals (" .. wtip .. ")")
+  expect(two.icons[2].item and two.icons[2].item.slot == "twohand" and main.icons[2].item.slot == "mainhand"
+    and off.icons[2].item.slot == "offhand", "next best: two-handers, main hands and off hands apart")
+  expect(O.gearNote.text:find("Level 60, Horde") and not O.gearNote.text:find("HPS"),
+    "under the list: your level and side, no HPS (" .. tostring(O.gearNote.text) .. ")")
+  expect(O.gearPlaystyle and O.gearPlaystyle.closedText == "Renew filler", "a playstyle dropdown on the tab, showing yours")
+  -- change the playstyle right after a list was worked out: the new list comes at once (not after 10 s)
+  local realTime = GetTime
+  GetTime = function() return 1000 end
+  O.gearKey = nil; O.FillGear()
+  local before = O.gearResult
+  HolyMathDB.PRIEST.rotation = "flashFill"; O.Changed(true)
+  expect(O.gearResult ~= before and O.gearResult.playstyle == "Flash Heal filler" and O.gearPlaystyle.closedText == "Flash Heal filler",
+    "another playstyle: its list at once (" .. tostring(O.gearResult.playstyle) .. ")")
+  -- a buff change only (same choices): the list waits up to 10 s, and keeps showing meanwhile
+  local kept, realAfter2 = O.gearResult, C_Timer.After
+  local later = {}
+  C_Timer.After = function(_, fn) later[#later + 1] = fn end
+  ns.MarkDirty(); O.FillGear()
+  expect(O.gearResult == kept and #later == 1, "a buff change only: the list stays for now")
+  later[1]()
+  expect(O.gearResult ~= kept, "... and is worked out again when its 10 s are up")
+  C_Timer.After = realAfter2
+  HolyMathDB.PRIEST.rotation = "renew"; O.Changed(true)
+  GetTime = realTime
+  O.gearKey = nil; O.FillGear()
+  r = O.gearResult
+  local chest = rowNamed("Chest")
+  local best = r.items.chest
+  expect(chest.shown and chest.name.text == "Chest" and chest.icons[1].item == best and not chest.icons[1].glow,
+    "the chest row: just the slot, then the best for you first, no glow (" .. best.name .. ")")
+  local n = 0
+  for i = 2, #chest.icons do if chest.icons[i].item then n = n + 1 end end
+  expect(#chest.icons == 7 and n == 6, "then six next best (" .. n .. ")")
+  local rings = rowNamed("Rings")
+  expect(rings.icons[1].item == r.items.finger1 and rings.icons[2].item == r.items.finger2 and rings.icons[3].item,
+    "rings: the two best, then the next best")
+  -- a tick on what you have
+  ownedItems = { [best.id] = true }
+  O.FillGear()
+  expect(chest.icons[1].tick.shown, "a tick on what you have")
+  chest.icons[1].scripts.OnEnter(chest.icons[1])
+  local tip = table.concat(GameTooltip.lines, " | ")
+  expect(tip:find("item:" .. best.id, 1, true) and tip:find("best for you") and tip:find("You have it")
+    and tip:find("Right%-click: a Wowhead link"), "hover: the game's item tooltip, then what it's worth (" .. tip .. ")")
+  -- a random-suffix item ("of Healing"): the game shows the plain item here, so the tooltip says which version
+  local sfx
+  for _, row in ipairs(O.gearRows) do for _, b in ipairs(row.icons) do if b.item and b.item.suffix ~= "" and not sfx then sfx = b end end end
+  if sfx then
+    -- the suffix goes in the link as a bonus ID (Forever's random suffixes are bonus lists)
+    local str = O.GearItemString(sfx.item)
+    local sid = sfx.item.key:match(":(%d+)$")
+    expect(str == "item:" .. sfx.item.id .. string.rep(":", 12) .. "1:" .. sid, "a suffix item's link carries its bonus ID (" .. str .. ")")
+    expect(O.GearLink(sfx.item):find("[" .. sfx.item.name .. "]", 1, true), "... and its chat link the name with the suffix")
+    sfx.scripts.OnEnter(sfx)
+    local t2 = table.concat(GameTooltip.lines, " | ")
+    expect(t2:find("This is the \"" .. sfx.item.suffix .. "\" version", 1, true) and t2:find("over what you wear")
+      and GameTooltip.hmGearTip, "a random-suffix item: which version, and what it's worth (" .. t2 .. ")")
+    sfx.scripts.OnLeave(sfx)
+    expect(not GameTooltip.hmGearTip, "... and the item tooltips' own line is back after")
+  end
+  local linked
+  IsModifiedClick = function(what) return what == "CHATLINK" end
+  GetItemInfo = function(id) return "Name", "|Hitem:" .. id .. "|h[Name]|h", 4 end
+  ChatEdit_InsertLink = function(l) linked = l end
+  chest.icons[1].scripts.OnClick(chest.icons[1], "LeftButton")
+  expect(linked and linked:find("item:" .. best.id, 1, true), "shift-click links the item in chat")
+  -- not loaded yet, chat closed: a link made the game's way, and chat opens with it
+  local opened
+  GetItemInfo = function() return nil end
+  ChatEdit_InsertLink = function() return false end
+  ChatFrame_OpenChat = function(text) opened = text end
+  chest.icons[1].scripts.OnClick(chest.icons[1], "LeftButton")
+  expect(opened and opened:find("|Hitem:" .. best.id .. ":", 1, true) and opened:find("[" .. best.name .. "]", 1, true),
+    "shift-click, item not loaded, chat closed: chat opens with the link (" .. tostring(opened) .. ")")
+  IsModifiedClick, GetItemInfo, ChatEdit_InsertLink, ChatFrame_OpenChat = nil, nil, nil, nil
+  -- green arrows: every shown item that beats what you wear in its slot, and only those
+  local arrows, wrong = 0, 0
+  for _, row in ipairs(O.gearRows) do
+    for _, b in ipairs(row.icons) do
+      if b.item then
+        local g = r.gains[b.item.key]
+        local should = g and not g.worn and g.d > 0.05
+        if (b.up.shown and true or false) ~= (should and true or false) then wrong = wrong + 1 end
+        if b.up.shown then arrows = arrows + 1 end
+      end
+    end
+  end
+  expect(arrows > 0 and wrong == 0, "green arrows on the items that beat what you wear (" .. arrows .. ", " .. wrong .. " wrong)")
+  -- what you wear: a gold tick, no arrow, "You wear it."
+  local realID, realLink = GetInventoryItemID, GetInventoryItemLink
+  GetInventoryItemID = function(_, slot) if slot == 5 then return best.id end end
+  GetInventoryItemLink = function(_, slot)
+    if slot == 5 then return "|cffa335ee|H" .. O.GearItemString(best) .. "|h[" .. best.name .. "]|h|r" end
+    return realLink(_, slot)
+  end
+  O.gearKey = nil; O.FillGear()
+  local worn = rowNamed("Chest").icons
+  local wb
+  for _, b in ipairs(worn) do if b.item and b.item.id == best.id then wb = b end end
+  wb.scripts.OnEnter(wb)
+  expect(wb.tick.shown and not wb.up.shown and table.concat(GameTooltip.lines, " "):find("You wear it"),
+    "what you wear: ticked, no arrow, and it says so (" .. tostring(wb.tick.shown) .. " " .. tostring(wb.up.shown) .. " " .. table.concat(GameTooltip.lines, " / ") .. ")")
+  GetInventoryItemID, GetInventoryItemLink = realID, realLink
+  O.gearKey = nil; O.FillGear()
+  r = O.gearResult
+  -- a trinket with an effect: the effect in words, and that it's counted
+  local fxb
+  for _, row in ipairs(O.gearRows) do for _, b in ipairs(row.icons) do if b.item and b.item.fx and not fxb then fxb = b end end end
+  expect(fxb, "an item with a use or proc effect is on the tab (" .. tostring(fxb and fxb.item.name) .. ")")
+  if fxb then
+    fxb.scripts.OnEnter(fxb)
+    local t3 = table.concat(GameTooltip.lines, " | ")
+    expect(t3:find("Counted on average over your fight") and (t3:find("Use: ") or t3:find("chance on a heal") or t3:find("Each ")),
+      "its tooltip says what the effect does and that it's counted (" .. t3 .. ")")
+  end
+  -- what you wear is matched with its random suffix: another suffix of the same item isn't "worn"
+  local sfxItem
+  for _, it in ipairs(D.items) do if it.suffix ~= "" then sfxItem = it; break end end
+  local sid = sfxItem.key:match(":(%d+)$")
+  expect(O.LinkKey("|cff1eff00|Hitem:" .. sfxItem.id .. string.rep(":", 12) .. "1:" .. sid .. "|h[x]|h|r") == sfxItem.key
+    and O.LinkKey("|Hitem:" .. sfxItem.id .. string.rep(":", 12) .. "1:999999|h[x]|h") == tostring(sfxItem.id),
+    "a worn item's link gives its key with the suffix (" .. sfxItem.key .. ")")
+  -- the items shown are asked for once each, and an open tooltip is drawn again when its item's data comes in
+  local asked = {}
+  C_Item.RequestLoadItemDataByID = function(id) asked[#asked + 1] = id end
+  O.gearAsked = nil; O.FillGear()
+  expect(#asked > 30, "the shown items are asked for (" .. #asked .. ")")
+  local n0 = #asked
+  O.FillGear()
+  expect(#asked == n0, "... once each")
+  C_Item.RequestLoadItemDataByID = nil
+  chest.icons[1].scripts.OnEnter(chest.icons[1])
+  GameTooltip.lines = {}
+  for _, f in ipairs(frames) do
+    if f.events and f.events.GET_ITEM_INFO_RECEIVED and f.scripts.OnEvent then
+      f.scripts.OnEvent(f, "GET_ITEM_INFO_RECEIVED", chest.icons[1].item.id)
+    end
+  end
+  expect(table.concat(GameTooltip.lines, " "):find("Holy Math"), "an item's data comes in while hovered: its tooltip again, with our lines")
+  chest.icons[1].scripts.OnLeave(chest.icons[1])
+  -- the game draws a Gear tab tooltip again (its item's data arrived): the item tooltips' hook puts our lines back
+  chest.icons[1].scripts.OnEnter(chest.icons[1])
+  GameTooltip.lines = { "item:" .. chest.icons[1].item.id }
+  GameTooltip.fakeLink = "|Hitem:" .. chest.icons[1].item.id .. ":0:|h"
+  postCalls[0](GameTooltip)
+  local redrawn = table.concat(GameTooltip.lines, " | ")
+  expect(redrawn:find("Holy Math: best for you") and not redrawn:find("Holy Math: [%+%-]%d"),
+    "the game draws it again: the Gear lines come back, not the bag tooltips' line (" .. redrawn .. ")")
+  chest.icons[1].scripts.OnLeave(chest.icons[1])
+  expect(not GameTooltip.hmGearTip and not GameTooltip.hmGearItem, "... and the mark is gone when you leave")
+  -- a whole set swapped (one event a slot): worked out once, a moment later
+  do
+    local q, realAfter3 = {}, C_Timer.After
+    C_Timer.After = function(_, fn) q[#q + 1] = fn end
+    local solves = 0
+    local realSolve = ns.GearSolve.Solve
+    ns.GearSolve.Solve = function(...) solves = solves + 1; return realSolve(...) end
+    for _, f in ipairs(frames) do
+      if f.events and f.events.PLAYER_EQUIPMENT_CHANGED and f.events.GET_ITEM_INFO_RECEIVED and f.scripts.OnEvent then
+        for _ = 1, 5 do f.scripts.OnEvent(f, "PLAYER_EQUIPMENT_CHANGED", 5) end
+      end
+    end
+    expect(solves == 0 and #q >= 1, "a set swapped: nothing worked out yet (" .. solves .. " runs, " .. #q .. " waiting)")
+    local first = q[1]
+    q = {}
+    first()
+    for _ = 1, 50 do local w = q; q = {}; for _, fn in ipairs(w) do fn() end; if #q == 0 then break end end
+    expect(solves == 1 and not O.gearWorking, "... then once (" .. solves .. ")")
+    ns.GearSolve.Solve, C_Timer.After = realSolve, realAfter3
+  end
+  -- right-click: a Wowhead link to copy
+  local shown
+  StaticPopupDialogs = {}
+  StaticPopup_Show = function(which, text, _, data) shown = { which = which, text = text, data = data } end
+  chest.icons[1].scripts.OnClick(chest.icons[1], "RightButton")
+  expect(shown and shown.which == "HOLYMATH_WOWHEAD" and shown.data.url == "https://www.wowhead.com/forever/item=" .. best.id
+    and shown.text:find("Ctrl%+C"), "right-click: the item's Wowhead link to copy")
+  StaticPopupDialogs, StaticPopup_Show = nil, nil
+  -- the same state is not worked out twice; the list or your side is
+  local same = O.gearResult
+  O.FillGear()
+  expect(O.gearResult == same, "no new work while nothing changed")
+  HolyMathDB.gear.pvp = true; O.gearKey = nil; O.FillGear()
+  expect(O.gearResult ~= same and O.gearResult.hps >= same.hps - 1e-6, "with PvP gear: worked out again, at least as good")
+  UnitFactionGroup = function() return "Alliance" end
+  O.FillGear()
+  local allianceOnly = true
+  for _, x in pairs(O.gearResult.items) do if not x.A then allianceOnly = false end end
+  expect(O.gearNote.text:find("Alliance") and allianceOnly, "Alliance: its own list, only what the Alliance can get")
+  -- in the game: a few milliseconds a frame (a fake clock, timers run when we say)
+  local clock, queue = 0, {}
+  local realAfter = C_Timer.After
+  debugprofilestop = function() clock = clock + 3; return clock end
+  C_Timer.After = function(_, fn) queue[#queue + 1] = fn end
+  local function frames(n) for _ = 1, n do local q = queue; queue = {}; for _, fn in ipairs(q) do fn() end end end
+  HolyMathDB.gear.pvp = nil; O.gearKey = nil; O.gearResult = nil
+  O.FillGear()
+  expect(O.gearWorking and #queue == 1 and O.gearNote.text:find("Working out"), "in game: it starts, and carries on next frame")
+  frames(3)
+  expect(O.gearWorking, "... still working a few frames on (it pauses every 10 ms)")
+  -- something changes half way: the old work stops, the new one finishes
+  HolyMathDB.gear.pvp = true; O.gearKey = nil; O.FillGear()
+  local steps = 0
+  while O.gearWorking and steps < 2000 do frames(1); steps = steps + 1 end
+  expect(not O.gearWorking and O.gearResult and O.gearKey:find("pvp") and #queue == 0,
+    "... the newer work finishes (" .. steps .. " frames), the older one stopped")
+  -- the window closes half way: the work stops, and starts again when the tab is back
+  HolyMathDB.gear.pvp = nil; O.gearKey = nil; O.FillGear()
+  frames(2)
+  O.frame:Hide()
+  frames(3)
+  expect(not O.gearWorking and #queue == 0 and O.gearKey == nil, "closing the window stops the work")
+  O.frame:Show(); O.ShowTab("gear")
+  local steps2 = 0
+  while O.gearWorking and steps2 < 2000 do frames(1); steps2 = steps2 + 1 end
+  expect(not O.gearWorking and O.gearResult and O.gearKey and O.gearKey:find("^pve|"), "... and it's done again when you come back (" .. tostring(O.gearKey) .. ")")
+  debugprofilestop, C_Timer.After = nil, realAfter
+  HolyMathDB.gear = nil
+  UnitFactionGroup = function() return "Horde" end
+  ownedItems = {}
+  expect(not (ns.errors and ns.errors.gear), "no errors on the Gear tab (" .. tostring(ns.errors and ns.errors.gear and ns.errors.gear.last) .. ")")
+  O.ShowTab("settings")
+  O.frame:Hide()
+end
+
+-- The minimap button: click opens the window, right-click the Gear tab; a setting hides it
+do
+  local O = ns.Options
+  local b = ns.Minimap and ns.Minimap.button
+  expect(b and b.shown and b.icon.texture:find("Renew"), "a minimap button at login, with Holy Math's icon")
+  if O.frame and O.frame:IsShown() then O.frame:Hide() end
+  b.scripts.OnClick(b, "LeftButton")
+  expect(O.frame:IsShown(), "click: the window opens")
+  b.scripts.OnClick(b, "LeftButton")
+  expect(not O.frame:IsShown(), "click again: it closes")
+  b.scripts.OnClick(b, "RightButton")
+  expect(O.frame:IsShown() and O.tab == "gear", "right-click: the window at the Gear tab")
+  O.ShowTab("settings")
+  local c = O.controls.minimap
+  expect(c and c.checked == true, "Settings: Show the minimap button, on")
+  c:SetChecked(false); c.scripts.OnClick(c)
+  expect(not b.shown and HolyMathDB.minimap.hide == true, "unticked: the button hides, and stays hidden (saved)")
+  c:SetChecked(true); c.scripts.OnClick(c)
+  expect(b.shown and not HolyMathDB.minimap.hide, "ticked again: it's back")
+  b.scripts.OnEnter(b)
+  expect(table.concat(GameTooltip.lines, " "):find("Right%-click"), "hover: what clicking does")
+  O.frame:Hide()
+end
+
 -- a class with no model yet (warrior): loads without errors and stays quiet
 do
   UnitClass = function() return "Warrior", "WARRIOR" end
   local ns2 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/Priest.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua" }) do assert(loadfile(f))("HolyMath", ns2) end
+  for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Playstyles.lua", "Gear.lua", "Minimap.lua" }) do assert(loadfile(f))("HolyMath", ns2) end
   local core2 = frames[#frames]
   core2.scripts.OnEvent(core2, "PLAYER_LOGIN")
   expect(not ns2.enabled, "warrior: addon stays off")
+  expect(ns2.GearData == nil or ns2.GearData.items == nil, "warrior: the gear data isn't unpacked")
   printed = {}
   SlashCmdList.HOLYMATH("")
   expect(table.concat(printed, " "):find("made for priests"), "warrior: /hm says it is made for priests")

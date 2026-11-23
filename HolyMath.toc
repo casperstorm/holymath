@@ -10,10 +10,14 @@
 ## X-License: GPL-3.0
 
 Models\PriestData.lua
+Models\GearData.lua
 Models\Priest.lua
+Models\GearSolve.lua
 Models\PriestMath.lua
 Game.lua
 Tooltips.lua
 Core.lua
 Options.lua
 Playstyles.lua
+Gear.lua
+Minimap.lua

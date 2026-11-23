@@ -382,7 +382,7 @@ E.DEFAULTS = {
                   naturalAggression = false },
   race = { human = true, dwarf = false, gnome = false, troll = false },
   settings = {
-    fightLength = 300, pomHits = 4, groupHits = 5, innervate = false, majorManaPotions = true, cheapManaPotions = false,
+    fightLength = 300, pullEvery = 600, pomHits = 4, groupHits = 5, innervate = false, majorManaPotions = true, cheapManaPotions = false,
     manaTidesInGroup = 1, powerInfusionOut = false, includeInspiration = true,
     tankArmor = 6000, tankRawDTPS = 1200, inspirationIntoTank = 0.8,
     overheal = { RENEW = 0.25, PWS = 0.05, GH = 0.25, POH = 0.35, PENANCE = 0.25, BH = 0.25,

@@ -47,6 +47,7 @@ local WIDTH = RIGHT + COL_W + MARGIN
 local MATH_WIDTH = 880
 local HEIGHT = 560
 local PLAYSTYLES_HEIGHT = 720
+local GEAR_HEIGHT = 535
 local TOP, ROW, ROW_H = -66, 30, 28
 
 local function db() return ns.db end
@@ -218,6 +219,7 @@ local function rotationKeys()
   for i, k in ipairs(keys) do if E.ROTATIONS[k].mine then mine = i; break end end
   return keys, mine
 end
+O.RotationKeys = rotationKeys   -- for the Gear tab's playstyle dropdown
 
 
 local function planHelp()
@@ -525,13 +527,16 @@ local function Cell(parent, x, y, w, justify, font)
   return fs
 end
 
-local TABS = { { key = "settings", text = "Settings" }, { key = "playstyles", text = "Playstyles" }, { key = "math", text = "Math" } }
+local TABS = { { key = "settings", text = "Settings" }, { key = "playstyles", text = "Playstyles" }, { key = "gear", text = "Gear" },
+               { key = "math", text = "Math" } }
 
 function O.ShowTab(key)
   O.tab = key
-  if O.frame and O.frame.SetWidth then O.frame:SetWidth((key == "math" or key == "playstyles") and MATH_WIDTH or WIDTH) end
-  -- the Playstyles tab is taller: the fight view goes under up to 8 blocks
-  if O.frame and O.frame.SetHeight then O.frame:SetHeight(key == "playstyles" and PLAYSTYLES_HEIGHT or HEIGHT) end
+  if O.frame and O.frame.SetWidth then O.frame:SetWidth((key == "math" or key == "playstyles" or key == "gear") and MATH_WIDTH or WIDTH) end
+  -- the Playstyles tab is taller: the fight view goes under up to 8 blocks; the Gear tab: two columns of 9 slots
+  if O.frame and O.frame.SetHeight then
+    O.frame:SetHeight(key == "playstyles" and PLAYSTYLES_HEIGHT or key == "gear" and GEAR_HEIGHT or HEIGHT)
+  end
   for i, t in ipairs(TABS) do
     local pane, tab = O.panes[t.key], O.tabs[i]
     if t.key == key then pane:Show() else pane:Hide() end
@@ -1621,7 +1626,7 @@ local function Build()
   local ui = HolyMathDB.ui
   if ui and ui.point then p:ClearAllPoints(); p:SetPoint(ui.point, UIParent, ui.rel or ui.point, ui.x or 0, ui.y or 0) end
 
-  O.panes = { settings = Pane(p), playstyles = Pane(p), math = Pane(p) }
+  O.panes = { settings = Pane(p), playstyles = Pane(p), gear = Pane(p), math = Pane(p) }
   local frame = p
   p = O.panes.settings
 
@@ -1736,6 +1741,13 @@ local function Build()
 
   TooltipSettings(p, RIGHT, TOP - 172)
 
+  -- the minimap button (Minimap.lua), under Spells and overheal
+  Check(p, "minimap", RIGHT, TOP - 172 - 140 - 88, "Show the minimap button",
+    "A small Holy Math button on the edge of the minimap: click opens this window, right-click opens it at " ..
+    "the Gear tab, drag moves it. /hm minimap does the same as this switch.",
+    function() return ns.Minimap and ns.Minimap.Shown() end,
+    function(v) if ns.Minimap then ns.Minimap.SetShown(v) end end)
+
   -- Defaults, bottom left, as in the game's own options --------------------------
   local def = Button(p, "Defaults", 110, 22, function()
     local d = ns.ClassDefaults(ns.model)
@@ -1754,6 +1766,7 @@ local function Build()
 
   BuildMathPane(O.panes.math)
   if O.BuildPlaystyles then O.BuildPlaystyles(O.panes.playstyles) end
+  if O.BuildGear and O.IconButton then O.BuildGear(O.panes.gear) end
   Tabs(frame)
   YourValuesLine(frame)
   ProfileControls(frame)
@@ -1782,6 +1795,8 @@ function O.Refresh(force)
   if not w then
     O.hps:SetText("")
     local why = not S and "No data yet."
+      or S.st.invalid and InCombatLockdown and InCombatLockdown()
+        and "Your stats can't be read in combat. Holy Math fills them in when the fight ends."
       or S.st.invalid and ("|cffff5050Could not read:|r " .. table.concat(S.info.how.missing, ", "))
       or "No model at your level yet: the playstyle's main spell isn't known."
     O.hpsNote:SetText(why)
@@ -1810,6 +1825,10 @@ function O.Refresh(force)
   if O.FillPlaystyles and O.tab == "playstyles" then
     local ok, err = pcall(O.FillPlaystyles, S)
     if not ok and ns.LogError then ns.LogError("playstyles", err) end
+  end
+  if O.FillGear and O.tab == "gear" then
+    local ok, err = pcall(O.FillGear)
+    if not ok and ns.LogError then ns.LogError("gear", err) end
   end
   O.FillYourValues()
 end
