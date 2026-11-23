@@ -4,13 +4,16 @@
 # matter. Run "fetch.py discover" (or look at the workflow's summary) for the names.
 # Empty: every zone Warcraft Logs ranks that isn't frozen.
 
-# High-end dungeons (the maintainer's list, Nov 2026)
-Shaper's Terrace
+# High-end dungeons (the maintainer's list, Nov 2026; Forever's zone 3000 "Dungeons" has each as one encounter)
+The Shaper's Terrace
 Scholomance
 Stratholme
 Blackmaw Hold
-Dire Maul
+Dire Maul - East
+Dire Maul - West
+Dire Maul - North
 Upper Blackrock Spire
 Lower Blackrock Spire
 
-# Raids: add each by name once discover lists them
+# Raids
+Onyxia

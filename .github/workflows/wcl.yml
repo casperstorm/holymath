@@ -26,6 +26,10 @@ on:
         description: 'Only probe which API serves Forever (yes/no)'
         required: false
         default: 'no'
+      graphql:
+        description: 'Only run this GraphQL query on Forever and print the answer (for checking fields)'
+        required: false
+        default: ''
   schedule:
     - cron: '17 5 * * 1'     # Mondays 05:17 UTC
 
@@ -58,8 +62,10 @@ jobs:
         env:
           WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
           WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
+          GRAPHQL: ${{ github.event.inputs.graphql }}
         run: |
           if [ "${{ github.event.inputs.probe }}" = "yes" ]; then python3 -I tools/wcl/fetch.py probe; exit 1; fi
+          if [ -n "$GRAPHQL" ]; then python3 -I tools/wcl/fetch.py query "$GRAPHQL"; exit 1; fi
           python3 -I tools/wcl/fetch.py discover | tee discover.txt
           python3 -I tools/wcl/fetch.py collect --per-encounter "${{ github.event.inputs.per_encounter || '50' }}"
 

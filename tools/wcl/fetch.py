@@ -376,9 +376,11 @@ def collect(a):
         for spec in specs:
             ranks = []
             for page in range(1, 100):
-                got = cached("rank_%s_%d_%s_%d.json" % (week, enc["id"], spec, page),
-                             lambda: gql(RANKINGS, {"enc": enc["id"], "cls": cls, "spec": spec, "page": page}, fatal=False))
+                name = "rank_%s_%d_%s_%d.json" % (week, enc["id"], spec, page)
+                got = cached(name, lambda: gql(RANKINGS, {"enc": enc["id"], "cls": cls, "spec": spec, "page": page}, fatal=False))
                 cr = ((got or {}).get("worldData") or {}).get("encounter", {}).get("characterRankings") or {}
+                if not cr.get("rankings"):
+                    os.remove(os.path.join(site_cache(), name))   # empty: ask again next run
                 ranks += cr.get("rankings") or []
                 if len(ranks) >= a.per_encounter or not cr.get("hasMorePages"):
                     break
