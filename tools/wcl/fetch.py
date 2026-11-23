@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 
 # Warcraft Logs runs one site per game version, each with its own API and sign-in: the
-# www site answers with retail's data. These are tried in turn, each with a token from its
+# www site answers with retail's data, which Holy Math never uses. These are tried in turn, each with a token from its
 # own site, and the one whose zones match the most names in zones.txt is used (WCL_API and
 # WCL_TOKEN_URL force one). The choice is remembered in the cache (site.json), and each
 # site's answers are cached in their own folder, so ids from two sites never mix.
@@ -48,8 +48,10 @@ SITES = ([(os.environ["WCL_API"], os.environ.get("WCL_TOKEN_URL", "https://www.w
     ("https://forever.warcraftlogs.com/api/v2/client", "https://www.warcraftlogs.com/oauth/token"),
     ("https://classic.warcraftlogs.com/api/v2/client", "https://classic.warcraftlogs.com/oauth/token"),
     ("https://fresh.warcraftlogs.com/api/v2/client", "https://fresh.warcraftlogs.com/oauth/token"),
-    ("https://www.warcraftlogs.com/api/v2/client", "https://www.warcraftlogs.com/oauth/token"),
 ])
+# Holy Math is for WoW: Forever. Retail's API (www) is never used, not even as a fallback: its
+# zones can share names with Forever's (Upper Blackrock Spire) and would win by mistake.
+RETAIL = "www.warcraftlogs.com/api"
 SITE = None            # (api, token url) in use
 ZONES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zones.txt")
 
@@ -151,7 +153,9 @@ def site():
     path = os.path.join(CACHE, "site.json")
     if os.path.exists(path) and not os.environ.get("WCL_API"):
         SITE = tuple(json.load(open(path, encoding="utf-8")))
-        return SITE
+        if RETAIL not in SITE[0]:
+            return SITE
+        SITE = None                          # a remembered retail choice: find Forever's again
     wanted = wanted_names()
     best, best_score = None, -1
     for api_url, token_url in SITES:
@@ -170,6 +174,8 @@ def site():
             best, best_score = (api_url, token_url), score
     if not best or (wanted and best_score <= 0):
         die("no site's zones match zones.txt: check the names against the zones listed above")
+    if RETAIL in best[0]:
+        die("refusing retail's API (%s): Holy Math uses WoW: Forever's logs only" % best[0])
     SITE = best
     write_private(path, json.dumps(list(best)))
     print("using %s" % best[0], flush=True)
