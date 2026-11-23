@@ -24,6 +24,10 @@ import re
 import subprocess
 import sys
 
+# The content phase out now in WoW: Forever. Raise it when the next phase opens (items with
+# a higher phase in wowsims' data aren't out yet), then regenerate.
+PHASE = 1
+
 root = sys.argv[1]
 d = json.load(open(os.path.join(root, "assets/database/db.json")))
 npcs = {n["id"]: n for n in d["npcs"]}
@@ -262,7 +266,7 @@ def prof_of(it):
 
 items = []
 for it in d["items"]:
-    if it.get("phase") != 1 or it.get("reqLvl", 0) > 60:
+    if not (1 <= (it.get("phase") or 0) <= PHASE) or it.get("reqLvl", 0) > 60:
         continue
     allow = it.get("classAllowlist")
     if allow and PRIEST not in allow:
@@ -399,7 +403,7 @@ out = []
 w = out.append
 w("--[[ Holy Math - Models/GearData.lua  (GENERATED - do not edit by hand)")
 w("     Made by tools/gen_gear_data.py from wowsims/forever, commit " + commit + ".")
-w("     Every item a priest can wear that is out now in WoW: Forever (phase 1) and has a healing stat,")
+w("     Every item a priest can wear that is out now in WoW: Forever (phase %d) and has a healing stat," % PHASE)
 w("     at any level, less those five other items beat in every stat at the same or a lower level.")
 w("     The game's own item data as wowsims extracted it from the Forever client.")
 w("     wowsims licence (MIT): Copyright (c) 2022 wowsims team. THE SOFTWARE IS PROVIDED \"AS IS\".")

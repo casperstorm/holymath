@@ -3,6 +3,7 @@ package-as: HolyMath
 ignore:
   - .github
   - README.md
+  - AGENTS.md
   - media
   - tests
   - tools
