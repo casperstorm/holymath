@@ -1,0 +1,5 @@
+# Warcraft Logs reports of WoW: Forever runs to learn from, one a line: a link
+# (https://forever.warcraftlogs.com/reports/AbCdEf...) or just the 16-letter code. Only the kills
+# of the encounters in zones.txt count, and analyze.py keeps the best priest parses of them.
+# The workflow also reads every report code in wowsims' evidence notes (wowsims/forever,
+# docs/evidence), and everything read before stays cached.

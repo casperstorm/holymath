@@ -4,7 +4,8 @@
 Reads ~/.cache/holymath/wcl (or WCL_CACHE) and writes tools/wcl/out/estimates.json with no
 player names and no report codes in it:
   overheal      per spell (the model's keys: RENEW, GH, FLASH, ...): its quartiles over
-                priest-fights, and the healing-weighted overall share, for raids and dungeons
+                priest-fights, and the healing-weighted overall share, for raids and dungeons;
+                only the best parses count: per encounter, the top --top priest-fights by HPS
   share         each spell's share of a priest's healing, and its casts a minute (medians)
   fightLength   seconds, quartiles, for raids and dungeons
   gear          the items top priests wear, most worn first, with Holy Math's name for each
@@ -79,6 +80,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--min-healing", type=int, default=10000,
                     help="a spell counts in a fight only with this much healing (done + overhealed)")
+    ap.add_argument("--top", type=int, default=50,
+                    help="the best parses: keep the top this many priest-fights by healing per second, per encounter (0: all)")
     ap.add_argument("--out", default=os.path.join(HERE, "out", "estimates.json"))
     a = ap.parse_args()
 
@@ -92,6 +95,30 @@ def main():
     files = sorted(glob.glob(os.path.join(folder, "priest_*.json")))
     if not files:
         sys.exit("analyze.py: nothing in %s: run tools/wcl/fetch.py first" % CACHE)
+
+    # the best parses: per encounter, the priest-fights with the most healing per second
+    if a.top:
+        by_enc = collections.defaultdict(list)
+        for path in files:
+            m = re.match(r"priest_(.+)_(\d+)_(\d+)\.json$", os.path.basename(path))
+            fpath = m and os.path.join(os.path.dirname(path), "fight_%s_%s.json" % (m.group(1), m.group(2)))
+            if not (fpath and os.path.exists(fpath)):
+                continue
+            fd, pd = json.load(open(fpath, encoding="utf-8")), json.load(open(path, encoding="utf-8"))
+            if not (fd and pd):
+                continue
+            fights = fd["reportData"]["report"].get("fights") or []
+            if not fights:
+                continue
+            f = fights[0]
+            secs = max(1.0, (f["endTime"] - f["startTime"]) / 1000)
+            done = sum(e.get("total", 0) or 0 for e in entries(pd["reportData"]["report"].get("healing")))
+            by_enc[f.get("encounterID")].append((done / secs, path))
+        keep = set()
+        for enc, rows in by_enc.items():
+            rows.sort(reverse=True)
+            keep.update(p for _, p in rows[: a.top])
+        files = [f for f in files if f in keep]
 
     oh = collections.defaultdict(lambda: collections.defaultdict(list))        # kind -> spell -> [share]
     ohw = collections.defaultdict(lambda: collections.defaultdict(lambda: [0.0, 0.0]))  # kind -> spell -> [over, raw]
@@ -169,6 +196,7 @@ def main():
         "priestFights": dict(n_priests),
         "fights": {k: len(v) for k, v in length.items()},
         "minHealing": a.min_healing,
+        "topPerEncounter": a.top,
         "overheal": {kind: {k: dict(quartiles(v), overall=ohw[kind][k][0] / ohw[kind][k][1])
                             for k, v in spells.items() if v} for kind, spells in oh.items()},
         "share": {kind: {k: {"healing": statistics.median(v), "castsPerMinute": statistics.median(cpm[kind][k]) if cpm[kind][k] else None}

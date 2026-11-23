@@ -28,9 +28,11 @@ Which raids and dungeons: tools/wcl/zones.txt (empty = every zone that isn't fro
 It watches the API's points budget (rateLimitData) and waits when it's nearly used up.
 """
 import argparse
+import collections
 import base64
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -301,8 +303,8 @@ PRIEST_TABLES = """query($code: String!, $fight: Int!, $src: Int!) {
   } } }"""
 
 
-def fight_and_priests(code, fight, names=None):
-    """Cache the fight, then each priest in it (only those named, when names are given)."""
+def fight_and_priests(code, fight, names=None, ids=None):
+    """Cache the fight, then each priest in it (only those named, or with those actor ids)."""
     f = cached("fight_%s_%d.json" % (code, fight), lambda: gql(REPORT_FIGHT, {"code": code, "fight": fight}, fatal=False))
     if not f:
         return 0
@@ -312,6 +314,8 @@ def fight_and_priests(code, fight, names=None):
         if (act.get("subType") or "").lower() != "priest":
             continue
         if names and act.get("name") not in names:
+            continue
+        if ids is not None and act["id"] not in ids:
             continue
         cached("priest_%s_%d_%d.json" % (code, fight, act["id"]),
                lambda: gql(PRIEST_TABLES, {"code": code, "fight": fight, "src": act["id"]}, fatal=False))
@@ -365,35 +369,104 @@ def chosen_encounters(data, ids, path):
     return out
 
 
+# a report's outline: its zone, its encounter fights and who was in each
+REPORT_META = """query($code: String!) {
+  reportData { report(code: $code) {
+    code startTime zone { id name }
+    fights(killType: Encounters) { id encounterID name kill size startTime endTime friendlyPlayers }
+    masterData { actors(type: "Player") { id name subType } }
+  } } }"""
+
+REPORTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports.txt")
+CODE = re.compile(r"(?:reports/)?\b([A-Za-z0-9]{16})\b")
+
+
+def seed_codes(a):
+    """Report codes to read: tools/wcl/reports.txt (links or codes, one a line), --seeds files
+    (any text: codes are picked out, e.g. wowsims' evidence notes), and every code found before
+    (codes.txt in the cache)."""
+    codes, seen = [], set()
+
+    def add(text):
+        for m in CODE.finditer(text):
+            c = m.group(1)
+            if c not in seen and any(ch.isdigit() for ch in c) and any(ch.isupper() for ch in c) and any(ch.islower() for ch in c):
+                seen.add(c)
+                codes.append(c)
+    for path in [REPORTS_FILE, os.path.join(site_cache(), "codes.txt")] + (a.seeds or []):
+        if os.path.isdir(path):
+            for root, _, files in os.walk(path):
+                for f in files:
+                    if f.endswith((".md", ".txt", ".json")):
+                        add(open(os.path.join(root, f), encoding="utf-8", errors="replace").read())
+        elif os.path.exists(path):
+            add(open(path, encoding="utf-8", errors="replace").read())
+    write_private(os.path.join(site_cache(), "codes.txt"), "\n".join(codes) + "\n")
+    return codes
+
+
 def collect(a):
+    """Read report outlines (cheap, cached for good), keep the kills of the chosen encounters
+    (zones.txt), and cache every priest in them: healing with overheal, casts, gear.
+    analyze.py then keeps the best parses (top HPS per encounter). Raid encounters' top-ranked
+    priests are added when Warcraft Logs ranks them (it ranks no Forever dungeon)."""
     if not os.path.exists(os.path.join(site_cache(), "discover.json")):
         die("run 'discover' first")
     data = json.load(open(os.path.join(site_cache(), "discover.json"), encoding="utf-8"))
+    chosen = chosen_encounters(data, a.zone, a.zones_file)
+    wanted = {e["id"]: (z, e) for z, e in chosen}
+    if not wanted:
+        die("no encounters chosen (zones.txt)")
+    zone_ids = {z["id"] for z, _ in chosen}
+
+    # raids: Warcraft Logs' own rankings, when it has them
     cls, specs = priest_specs()
-    week = time.strftime("%G-W%V")      # rankings change: fetched again each week (fights don't)
-    n_fights = 0
-    for z, enc in chosen_encounters(data, a.zone, a.zones_file):
+    week = time.strftime("%G-W%V")
+    ranked = 0
+    for z, enc in chosen:
+        if z["id"] == 3000:
+            continue                                   # dungeons: "Invalid raid zone specified"
         for spec in specs:
-            ranks = []
-            for page in range(1, 100):
-                name = "rank_%s_%d_%s_%d.json" % (week, enc["id"], spec, page)
-                got = cached(name, lambda: gql(RANKINGS, {"enc": enc["id"], "cls": cls, "spec": spec, "page": page}, fatal=False))
-                cr = ((got or {}).get("worldData") or {}).get("encounter", {}).get("characterRankings") or {}
-                if not cr.get("rankings"):
-                    os.remove(os.path.join(site_cache(), name))   # empty: ask again next run
-                ranks += cr.get("rankings") or []
-                if len(ranks) >= a.per_encounter or not cr.get("hasMorePages"):
-                    break
-            ranks = ranks[: a.per_encounter]       # the best parses: rankings come best first
-            for r in ranks:
-                rep = r.get("report") or {}
-                code, fight = rep.get("code"), rep.get("fightID")
-                if not (code and fight):
-                    continue
-                fight_and_priests(code, fight, names={r.get("name")})
-                n_fights += 1
-            print("%s / %s / %s: %d ranked priests" % (z["name"], enc["name"], spec, len(ranks)), flush=True)
-    print("%d fights cached in %s" % (n_fights, CACHE))
+            name = "rank_%s_%d_%s_1.json" % (week, enc["id"], spec)
+            got = cached(name, lambda: gql(RANKINGS, {"enc": enc["id"], "cls": cls, "spec": spec, "page": 1}, fatal=False))
+            cr = ((got or {}).get("worldData") or {}).get("encounter", {}).get("characterRankings") or {}
+            if not cr.get("rankings"):
+                os.remove(os.path.join(site_cache(), name))
+            for r in (cr.get("rankings") or [])[: a.per_encounter]:
+                rp = r.get("report") or {}
+                if rp.get("code") and rp.get("fightID"):
+                    ranked += fight_and_priests(rp["code"], rp["fightID"], names={r.get("name")})
+
+    # every report we know of
+    codes = seed_codes(a)
+    print("%d report codes to read (%d ranked raid priests)" % (len(codes), ranked), flush=True)
+    per_enc = collections.Counter()
+    read = priests = 0
+    for code in codes:
+        if a.max_reports and read >= a.max_reports:
+            print("stopping at --max-reports %d" % a.max_reports, flush=True)
+            break
+        meta_name = "report_%s.json" % code
+        fresh = not os.path.exists(os.path.join(site_cache(), meta_name))
+        m = cached(meta_name, lambda: gql(REPORT_META, {"code": code}, fatal=False))
+        read += fresh
+        r = ((m or {}).get("reportData") or {}).get("report") or {}
+        if (r.get("zone") or {}).get("id") not in zone_ids:
+            continue
+        pri = {act["id"] for act in (r.get("masterData") or {}).get("actors") or [] if (act.get("subType") or "").lower() == "priest"}
+        for f in r.get("fights") or []:
+            if f.get("encounterID") not in wanted or not f.get("kill"):
+                continue
+            here = pri & set(f.get("friendlyPlayers") or pri)
+            if not here:
+                continue
+            priests += fight_and_priests(code, f["id"], ids=here)
+            per_enc[f["encounterID"]] += len(here)
+        if read and read % 200 == 0 and fresh:
+            print("read %d reports, %d priest-fights so far" % (read, priests), flush=True)
+    for eid, n in sorted(per_enc.items(), key=lambda x: -x[1]):
+        print("%-28s %d priest-fights" % (wanted[eid][1]["name"], n), flush=True)
+    print("%d reports read this run, %d priest-fights cached in %s" % (read, priests, site_cache()))
 
 
 def report(a):
@@ -439,7 +512,9 @@ def main():
     sub.add_parser("discover").set_defaults(fn=discover)
     sub.add_parser("probe").set_defaults(fn=probe)
     c = sub.add_parser("collect")
-    c.add_argument("--per-encounter", type=int, default=50, help="top ranked priest healers per encounter and spec")
+    c.add_argument("--per-encounter", type=int, default=50, help="raids: top-ranked priest healers per encounter and spec")
+    c.add_argument("--seeds", action="append", help="a file or folder of report codes or links (repeatable), e.g. wowsims' docs/evidence")
+    c.add_argument("--max-reports", type=int, default=0, help="read at most this many new reports this run (0: all)")
     c.add_argument("--zone", type=int, action="append", help="only this zone id (repeatable; overrides zones.txt)")
     c.add_argument("--zones-file", default=ZONES_FILE, help="the raids, dungeons and bosses to collect (default tools/wcl/zones.txt)")
     c.set_defaults(fn=collect)
