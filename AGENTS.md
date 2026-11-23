@@ -215,13 +215,28 @@ Using the wrong pair gets the wrong game's logs:
 
 `fetch.py` therefore only ever uses Forever's sign-in, and a site's zones must include at least two names from `zones.txt`. It keeps each address-and-sign-in pair in its own cache folder, and `analyze.py` reads only the one in use.
 
+**What the API does and doesn't do for Forever** (found 23 Nov 2026):
+- **Forever's zones are left out of the zones list.** Ask for them by ID: 3000 "Dungeons" (34 encounters, each a whole dungeon, e.g. 10289 Scholomance, 13001 The Shaper's Terrace, 10236 Dire Maul - West) and 3001 Onyxia. `discover` asks for IDs 3000 to 3039.
+- **No player rankings for Forever's dungeons** ("Invalid raid zone specified"). Onyxia had no ranking data yet ("Fight data doesn't exist yet").
+- **The report listing doesn't show Forever's reports.** `reports(zoneID: 3000)` comes back empty.
+- **Reading a Forever report by its code works.**
+
+So `collect` works from report codes:
+- the links in `tools/wcl/reports.txt`;
+- the codes in wowsims' evidence notes (`--seeds`; the workflow clones wowsims/forever for them, about 7,600 codes);
+- every code read before.
+
+It reads each report's outline once (zone, kills, who was there). For every priest in a kill of a `zones.txt` encounter, it caches their healing with overheal, casts and gear. `analyze.py` then picks the best parses: the top `--top` (50) priest-fights by healing per second in each encounter.
+
+**API points:** each query costs more than expected; the first run spent the hour's points after about 200 reports. `collect --max-minutes` waits out each spent hour and stops cleanly before its deadline, and the cache carries on next run. The workflow runs daily for up to about 5½ hours while reports wait to be read. Move its cron back to weekly once it has caught up (the log says how many new reports each run read). wowsims gathered those reports to measure weapon procs, so they lean towards melee groups. More priest-heavy reports in `reports.txt` help most.
+
 **Setup (the maintainer, once):**
 1. Signed in on Warcraft Logs, create an API client: name it "Holy Math", use any redirect URL, and don't make it public.
 2. Put its ID and secret in `~/.config/holymath/wcl.env` as `WCL_CLIENT_ID=...` and `WCL_CLIENT_SECRET=...`, then `chmod 600` the file.
 
 Agents never read, print or handle this file or the token (Ground rules). The maintainer runs `fetch.py` locally.
 
-**On GitHub, with no one's machine needed:** the client's ID and secret are also the repository secrets `WCL_CLIENT_ID` and `WCL_CLIENT_SECRET`. Nobody can read them back; only workflows get them. `.github/workflows/wcl.yml` runs every Monday and by hand. It fetches, analyses, and optionally simulates with the measured overheal:
+**On GitHub, with no one's machine needed:** the client's ID and secret are also the repository secrets `WCL_CLIENT_ID` and `WCL_CLIENT_SECRET`. Nobody can read them back; only workflows get them. `.github/workflows/wcl.yml` runs daily (while reports wait) and by hand. It fetches, analyses, and optionally simulates with the measured overheal:
 ```bash
 gh workflow run wcl.yml -R casperstorm/holymath -f per_encounter=50 -f simulate=yes
 gh run list -R casperstorm/holymath -w wcl.yml -L 1
@@ -234,15 +249,16 @@ gh run download <run id> -R casperstorm/holymath -n wcl-estimates   # estimates.
 
 **Fetch** (needs the key; everything goes to `~/.cache/holymath/wcl`, outside the repo, because logs name other players):
 ```bash
-python3 -I tools/wcl/fetch.py discover                       # zones, encounters, priest specs
-python3 -I tools/wcl/fetch.py collect --per-encounter 50     # top-ranked priest healers, per encounter
+python3 -I tools/wcl/fetch.py discover                       # Forever's zones (3000 up), priest specs
+python3 -I tools/wcl/fetch.py collect --seeds <wowsims>/docs/evidence --max-minutes 60
+python3 -I tools/wcl/fetch.py probe                          # which API serves Forever's zone 3000
 python3 -I tools/wcl/fetch.py report <code>                  # one public report, e.g. your own
 python3 -I tools/wcl/fetch.py query '{ rateLimitData { limitPerHour } }'   # check a field
 ```
-- **Which content:** `tools/wcl/zones.txt` lists the raids and high-end dungeons to learn from, one name a line (a whole zone, or a single boss), spelled as `discover` lists them. While it's empty, every zone Warcraft Logs ranks that isn't frozen is used. Keep it to endgame content: levelling dungeons overheal differently.
-- **Which players:** for each encounter, the best-parsing priest healers (top `--per-encounter` by HPS, for each priest healing spec).
-- **Caching:** every answer is cached, so a rerun only fetches what's new. Rankings are fetched again each week. It waits when the hour's API points run low.
-- The queries were written from the public schema without a live test. On the first run, check `discover`'s output and fix field names with `query` if the API objects.
+- **Which content:** `tools/wcl/zones.txt` lists the raids and high-end dungeons to learn from, one name a line, spelled as `discover` lists them (a dungeon is an encounter of zone 3000; a raid is a zone). Keep it to endgame content: levelling dungeons overheal differently.
+- **Which players:** every priest in those kills; `analyze.py` keeps the best parses.
+- **Caching:** every answer is cached, so a rerun only fetches what's new.
+- **Checking fields:** the workflow's `graphql` input runs one query and prints the answer, e.g. `gh workflow run wcl.yml -R casperstorm/holymath -f graphql='{ rateLimitData { limitPerHour } }'`.
 
 **Analyse** (no key needed):
 ```bash
