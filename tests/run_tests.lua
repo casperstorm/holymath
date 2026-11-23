@@ -1378,7 +1378,9 @@ do
   for _, it in ipairs(D.items) do if it.name == "Truefaith Vestments" then robe = it end end
   local worn = { chest = { healing = 73, spirit = 16 } }
   local r2 = solve(60, "H", false, {}, worn, { healing = 73, int = 0, crit = 0, haste = 0, mp5 = 0, spirit = 16, spelldamage = 0 })
-  near("what you wear comes off: the same best (" .. string.format("%.1f", r2.hps) .. ")", r2.hps, r60.hps, 1e-6)
+  -- (to 1e-4: the solver keeps a fight whose casts moved under half a cast, and a proc's
+  -- share isn't linear in the cast rate)
+  near("what you wear comes off: the same best (" .. string.format("%.1f", r2.hps) .. ")", r2.hps, r60.hps, 1e-4)
   ok("... and the gain counts from what you wear", r2.now > r60.now)
   -- a profession's own items count when you have it
   local pool = GS.Pool(D, "H", 60, false, {})
@@ -1395,15 +1397,28 @@ do
   add = GS.Effects(named("Mindtap Talisman"), ctx)
   near("Mindtap Talisman: 1,250 mana (7-min cooldown, a pull every 10 min: every fight) as MP5", add.mp5, 1250 / 120 * 5)
   add = GS.Effects(named("Second Wind"), ctx)
-  near("Second Wind: 630 mana, its 15-min cooldown ready in 2 fights of 3 (a pull every 10 min)", add.mp5, 630 * (600 / 900) / 120 * 5, 1e-6)
+  -- pulls at 0, 10, 20, 30 min: used at 0, ready at 15 (no fight), used at 20: every other fight
+  near("Second Wind: 630 mana, its 15-min cooldown ready every other pull (a pull every 10 min)", add.mp5, 630 * 0.5 / 120 * 5, 1e-6)
   add = GS.Effects(named("Burst of Knowledge"), ctx)
   near("Burst of Knowledge: 150 mana off each cast for 10 s", add.mp5, 150 * 0.6 * 10 / 120 * 5)
   add = GS.Effects(named("Robes of Insight"), ctx)
   near("Robes of Insight: 200 mana off the next spell only", add.mp5, 200 * 1 / 120 * 5)
   add = GS.Effects(named("Darkmoon Card: Blue Dragon"), ctx)
-  near("Blue Dragon: 3% a cast, 150 spirit for 15 s", add.spirit, 150 * (1 - math.exp(-0.03 * 0.6 * 15)))
+  -- up 1 - e^(-r min(t, 15)) at time t, from no buff at the pull, averaged over 120 s
+  local function ramp(r, d, fl) local x = math.exp(-r * d); return 1 - ((1 - x) / r + (fl - d) * x) / fl end
+  near("Blue Dragon: 3% a cast, 150 spirit for 15 s, from no buff at the pull", add.spirit, 150 * ramp(0.03 * 0.6, 15, 120))
   add = GS.Effects(named("Dormant Heart of the Mountain"), ctx)
-  near("Dormant Heart: +40 healing for 15 s after each Greater Heal (4 in the fight)", add.healing, 40 * math.min(1, 4 / 120 * 15))
+  -- Greater Heal every 30 s (a schedule, not at random): up 15 s after each, less the part
+  -- the fight's end cuts off (15 * 15 / 2 s over 4 casts' spacing)
+  near("Dormant Heart: +40 healing for 15 s after each Greater Heal (4 in the fight, evenly spaced)", add.healing,
+       40 * (4 / 120 * 15 - 4 / 120 * 15 * 15 / (2 * 120)))
+  -- a use's schedule over many fights: Headmaster's Charge (+20 int for 15 min, 10-min cooldown)
+  -- is up the whole of every fight; a 5-min cooldown in 1-minute fights every 2 minutes: one
+  -- fight in three (0, 6, 12 min ...)
+  local u, sh = GS.UseSchedule(600, 900, 120, 600)
+  ok("Headmaster's Charge: used every fight, up all of it", math.abs(u - 1) < 1e-9 and math.abs(sh - 1) < 1e-9)
+  u = GS.UseSchedule(300, 15, 60, 120)
+  near("a 5-min cooldown in 1-minute fights every 2 minutes: one fight in three", u, 1 / 3, 0.01)
   local _, heal = GS.Effects(named("Blessed Prayer Beads"), ctx)
   near("Blessed Prayer Beads: a 648 heal on your target on use, after your Flash Heal overheal", heal, 648 / 120 * 0.75)
   ok("Lifestone and Behemoth Bones (heals on yourself only) don't count, so aren't in the list",

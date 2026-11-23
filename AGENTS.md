@@ -25,6 +25,8 @@ Holy Math is a WoW: Forever addon for **healing priests only** (`/hm`). It works
 | `tests/run_tests.lua` | Model tests, including the gear solver and trinket effects |
 | `tests/smoke_wow.lua` | The whole addon against a fake game client |
 | `tools/` | Data generators, plus `trinket_report.lua` |
+| `tools/wcl/` | Real priests' logs from Warcraft Logs: `fetch.py` (downloads, needs the maintainer's API key), `analyze.py` (anonymous estimates) |
+| `tools/sim/` | The big simulation: `run.py` (driver), `worker.lua` (one scenario), `report.html` (the report's template). Output goes to `tools/sim/out/`, which git ignores |
 
 `.pkgmeta` keeps `tools`, `tests`, `media`, `README.md` and this file out of the release zip.
 
@@ -97,6 +99,7 @@ For every trinket and every item with an effect, the report prints:
 3. Look twice at anything at the top of the list. An effect worth more than about 30 HPS on a trinket usually means a misread spell row.
 4. For "uncounted" items, check that the effect really does nothing for healing (damage, absorbs, speed, utility).
 5. Pin anything fixed in `tests/run_tests.lua`, next to the "trinket effects" tests (Serenity Field, Mindtap, Lifestone, Major Recombobulator).
+6. Run the big simulation (section 4). Its effect check plays every effect out event by event over thousands of fights and compares the result with `GS.Effects`. It fails when the two disagree by more than 5% and 0.5 HPS.
 
 ## 3. Other maintenance
 
@@ -112,3 +115,144 @@ For every trinket and every item with an effect, the report prints:
   ```
   The workflow tags the version, builds the zip with the BigWigs packager and uploads it to CurseForge (project 1820821). Check that the run succeeded and that the release has the zip.
 - **CurseForge description:** kept by hand on CurseForge. Images there link to `https://raw.githubusercontent.com/casperstorm/holymath/main/media/<name>.webp`.
+
+## 4. The big simulation
+
+`tools/sim/run.py` runs every scenario at once on all cores and writes a report with charts. A scenario is a level-60 Troll priest with one set of gear, in one kind of fight, at one level of overheal. That makes 2 × 4 × 3 = 24 scenarios:
+
+- **Gear:** "Fresh 60" (level-55 dungeon gear) and "Pre-raid best in slot". Both are picked by the Gear tab's own solver, first for the Holy build's Renew filler, then again for the best build and playstyle the search finds.
+- **Fights:** a 1-minute dungeon pull every 2 minutes, and 2-, 3- and 5-minute bosses with a pull every 10 minutes.
+- **Overheal:** low (the addon's defaults, Renew 25%), typical (Renew 45%) and high (Renew 65%). The values per spell are in `OVERHEAL` in `worker.lua`. Overheal decides the answer more than anything else, and nobody knows a player's real overheal. So instead of trusting one guess, the report shows what holds up across all three.
+
+```bash
+python3 -I tools/sim/run.py            # the full run: about 4 minutes on 16 cores with LuaJIT
+python3 -I tools/sim/run.py --quick    # a quick try (about 1 minute; the effect check is looser)
+python3 -I tools/sim/run.py --restarts 40 --fights 20000   # a bigger search, for a release
+```
+
+It writes `tools/sim/out/results.json` (everything) and `tools/sim/out/index.html` (the report).
+
+**"Holds up best"** comes first in the report. It is the recommendation to trust: for each gear set, across all 12 of its scenarios. Every build any scenario found is scored again in every scenario (a second, cheap pass of `worker.lua` with a score file), so builds can be compared fairly. For each option the report shows:
+- **Average:** its HPS as a share of the best in each scenario, averaged.
+- **Worst:** its lowest share in any scenario.
+- **Best in:** how many scenarios it won.
+
+It covers playstyles, talent builds, gear slot by slot (which item the solver picks in how many scenarios) and trinkets (average, lowest and highest HPS). Prefer an option with a high average *and* a good worst case over one that wins a few scenarios and falls apart in others.
+
+The first full run (Nov 2026) found:
+- **Playstyle:** Flash Heal filler holds up best, at 98% of the best on average and 93% at worst. Renew filler wins at low overheal but drops to 69% at high.
+- **Build:** the Holy 17/32 build is best in every scenario.
+- **Trinkets:** Burst of Knowledge first, then Royal Seal of Eldre'Thalas.
+
+For each scenario it works out:
+
+- **Best talent builds:** hill-climbs from a Holy and a Discipline build, plus random restarts, each build judged at its best playstyle. Of two builds that heal the same, the one with fewer points wins.
+- **Talents chart:** what each talent in the best build is worth, as the HPS the build loses without it.
+- **Playstyles chart:** every playstyle's HPS with that best build, including the Discipline combinations listed in `EXTRA` in `worker.lua`.
+- **Trinkets chart:** every trinket over an empty slot, stats plus effect.
+- **Effect check:** every item effect, Holy Math's formula against an event-by-event simulation. Fights run back to back with cooldowns carrying over between them. Uses go off at the pull, or as soon as they're ready during a fight. Casts are spaced unevenly (±30%) and procs roll on each.
+
+The exit code is 1 when an effect formula is off, so a scheduled job can flag it. `worker.lua` uses the addon's own model files, so the report always matches what players see.
+
+LuaJIT is about 6 times faster than Lua 5.1 and gives identical results (checked). `run.py` uses it when it's installed.
+
+The simulation has already caught real mistakes:
+- Second Wind was ready at two pulls in three in our formula, but only every other pull in the simulation.
+- Procs were counted as if the buff could already be up at the pull.
+
+Both are fixed in `GS.Effects`. Keep the formulas there in step with the simulation, not the other way round.
+
+## 5. A scheduled job
+
+The game data changes rarely; wowsims changes several times a day, mostly in things Holy Math doesn't use. So a daily job should check for changes and only do work when something relevant changed. It should never release on its own.
+
+**What a daily (or twice-weekly) job should do:**
+
+1. **Check for new data.** Fetch wowsims/forever and list commits since the one in `Models/GearData.lua`'s header that touch `assets/database`, `sim/core/spelldata`, `sim/priest` or `sim/common/forever` (section 1). If there are none, stop.
+2. **Regenerate** `Models/GearData.lua` and `Models/PriestData.lua`. If nothing but the header line differs, stop: nothing that matters changed.
+3. **Run the checks:**
+   - both test suites;
+   - `lua5.1 tools/trinket_report.lua`;
+   - `python3 -I tools/sim/run.py`.
+4. **Report.** Open a pull request (or a draft branch) with:
+   - the regenerated files and the wowsims commits they came from;
+   - the item count before and after, and new or changed items with effects (from the trinket report);
+   - test results and the simulation's effect check;
+   - how the best builds, playstyles and trinkets moved (diff `results.json` against the last run).
+   Anything failing goes at the top.
+5. **Stop there.** The maintainer reviews, checks in game if needed, and asks for the release.
+
+**What it could do as well:**
+- **Weekly:** a bigger simulation (`--restarts 40 --fights 20000`). Keep the report as a dated file so changes over time can be seen.
+- **New phase:** watch Forever's patch notes for a new content phase and flag it. Raising `PHASE` stays a human decision.
+- **Real overheal from logs, weekly once raids and endgame dungeons are out:** refresh the Warcraft Logs estimates (section 6) and run the simulation with them. The overheal levels in `worker.lua` and the addon's defaults are guesses until then.
+- **CurseForge:** check the comments and issues for item reports, like the Major Recombobulator and Lifestone ones, and list them in the report.
+
+**What it should not do:**
+- Release, or push to `main`, without the maintainer.
+- Commit simulation output. `tools/sim/out/` is ignored; keep reports elsewhere if you want history.
+- Run the full simulation when nothing changed: same inputs give the same results.
+
+GitHub Actions can run all of this (Lua 5.1 or LuaJIT, plus Python 3) without the maintainer's machine. The full simulation takes about 2 minutes on 16 cores, and a few times that on a 4-core runner.
+
+## 6. Real priests' logs (Warcraft Logs)
+
+[forever.warcraftlogs.com](https://forever.warcraftlogs.com) holds public logs of real Forever fights. Its API gives what our model can only guess:
+- **Overheal per spell:** the number that decides playstyle recommendations more than any other.
+- **Real fight lengths.**
+- **The spells top priests actually cast.**
+- **The gear they wear.**
+
+Scraping its pages doesn't work: they're built in the browser and sit behind a bot check. The API is the way in.
+
+**Setup (the maintainer, once):**
+1. Signed in on Warcraft Logs, create an API client: name it "Holy Math", use any redirect URL, and don't make it public.
+2. Put its ID and secret in `~/.config/holymath/wcl.env` as `WCL_CLIENT_ID=...` and `WCL_CLIENT_SECRET=...`, then `chmod 600` the file.
+
+Agents never read, print or handle this file or the token (Ground rules). The maintainer runs `fetch.py` locally.
+
+**On GitHub, with no one's machine needed:** the client's ID and secret are also the repository secrets `WCL_CLIENT_ID` and `WCL_CLIENT_SECRET`. Nobody can read them back; only workflows get them. `.github/workflows/wcl.yml` runs every Monday and by hand. It fetches, analyses, and optionally simulates with the measured overheal:
+```bash
+gh workflow run wcl.yml -R casperstorm/holymath -f per_encounter=50 -f simulate=yes
+gh run list -R casperstorm/holymath -w wcl.yml -L 1
+gh run download <run id> -R casperstorm/holymath -n wcl-estimates   # estimates.json (+ the simulation report)
+```
+- **Raw logs** stay in the Actions cache. They aren't secret (the reports are public), but they name players, so they're never committed or uploaded.
+- **The token** is deleted before the cache is saved.
+- **The run's summary** shows the analysis, and what `discover` found.
+- **Agents** start the workflow and read its artifact; that's all the simulation needs.
+
+**Fetch** (needs the key; everything goes to `~/.cache/holymath/wcl`, outside the repo, because logs name other players):
+```bash
+python3 -I tools/wcl/fetch.py discover                       # zones, encounters, priest specs
+python3 -I tools/wcl/fetch.py collect --per-encounter 50     # top-ranked priest healers, per encounter
+python3 -I tools/wcl/fetch.py report <code>                  # one public report, e.g. your own
+python3 -I tools/wcl/fetch.py query '{ rateLimitData { limitPerHour } }'   # check a field
+```
+- **Which content:** `tools/wcl/zones.txt` lists the raids and high-end dungeons to learn from, one name a line (a whole zone, or a single boss), spelled as `discover` lists them. While it's empty, every zone Warcraft Logs ranks that isn't frozen is used. Keep it to endgame content: levelling dungeons overheal differently.
+- **Which players:** for each encounter, the best-parsing priest healers (top `--per-encounter` by HPS, for each priest healing spec).
+- **Caching:** every answer is cached, so a rerun only fetches what's new. Rankings are fetched again each week. It waits when the hour's API points run low.
+- The queries were written from the public schema without a live test. On the first run, check `discover`'s output and fix field names with `query` if the API objects.
+
+**Analyse** (no key needed):
+```bash
+python3 -I tools/wcl/analyze.py     # writes tools/wcl/out/estimates.json, no names or report codes
+```
+It writes:
+- overheal per spell (25th percentile, median and 75th percentile over priest-fights, raid and dungeon separately);
+- each spell's share of a priest's healing and its casts a minute;
+- fight lengths;
+- the items top priests wear, with our name for each, or "not in Holy Math's data".
+- `otherHealing`: healing from spells it can't map.
+
+Check `otherHealing`: a big entry there is a spell the model may be missing.
+
+**Use it:**
+- **Simulation:** `python3 -I tools/sim/run.py --overheal-from tools/wcl/out/estimates.json` (add `--content dungeon` for dungeon logs). The simulation's low, typical and high overheal become the logs' 25th percentile, median and 75th percentile. Spells with fewer than 20 fights keep the guesses.
+- **Addon defaults:** propose the median as the default overheal per spell in `E.DEFAULTS` (`Models/Priest.lua`). That changes every player's numbers, so it's the maintainer's call.
+- **Fight lengths:** compare with the simulation's `FIGHTS` and the addon's default fight length (120 s).
+- **Spell mix:** if top priests mostly cast one filler, check that the matching playstyle comes out well in the model. If it doesn't, the model is missing something.
+- **Gear:** items top priests wear that the Gear tab never picks deserve a look, and so does anything "not in Holy Math's data".
+
+Top-ranked logs are a biased sample: good players in good groups overheal differently from everyone else. Say so when quoting the numbers, and prefer the spread over a single figure.
+

@@ -1,0 +1,16 @@
+# The raids and dungeons whose best priest parses Holy Math learns from (tools/wcl/fetch.py
+# collect, and the weekly workflow). One a line: a zone's name (a raid or a dungeon: all its
+# encounters) or a single encounter's name (a boss), as Warcraft Logs spells it; case doesn't
+# matter. Run "fetch.py discover" (or look at the workflow's summary) for the names.
+# Empty: every zone Warcraft Logs ranks that isn't frozen.
+
+# High-end dungeons (the maintainer's list, Nov 2026)
+Shaper's Terrace
+Scholomance
+Stratholme
+Blackmaw Hold
+Dire Maul
+Upper Blackrock Spire
+Lower Blackrock Spire
+
+# Raids: add each by name once discover lists them

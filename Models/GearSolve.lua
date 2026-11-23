@@ -33,39 +33,93 @@ local STATS = { "healing", "int", "spirit", "mp5", "crit", "haste" }
 -- What an item's use and proc effects are worth over the fight (ctx: fl the fight's
 -- length, cps your casts a second, casts = { spell key = casts in the fight }, oh the
 -- overheal on a heal of your own): stats on average, and healing a second.
---   a use: as often as it fits in the fight from the start; one with a cooldown longer
---     than the fight is ready in the share of fights its cooldown allows, with a fight
---     starting every pull seconds (the setting Time between pulls, 10 minutes unless set);
---     stats for the share of the fight it is up, mana as MP5, a heal as healing, mana
---     off casts as MP5
---   a proc on your heals: up for the share its chance and your casts give it (on one
---     spell: that spell's casts; with an internal cooldown: at most once in it)
+--   a use: used at the pull when it's ready, and again as soon as it's ready during the
+--     fight, with a fight starting every pull seconds (the setting Time between pulls,
+--     10 minutes unless set) and its cooldown running on between fights; worked out
+--     over many fights in a row (useSchedule): uses a fight, and the share of fight time
+--     its buff is up (a buff longer than the gap between fights carries into the next);
+--     stats for that share, mana as MP5, a heal as healing, mana off casts as MP5
+--   a proc on your heals: up for the share its chance and your casts give it (casts at
+--     random; on every cast of one spell: that spell's casts, evenly spaced; with an
+--     internal cooldown: at most once in it), from no buff at the pull unless it lasts
+--     past the gap between fights
+-- tools/sim/worker.lua checks these against an event-by-event simulation.
 GS.PULL_EVERY = 600
+
+local useCache = {}
+local function useSchedule(cd, d, fl, pull)
+  pull = math.max(pull, fl)
+  local key = cd .. ":" .. d .. ":" .. fl .. ":" .. pull
+  local c = useCache[key]
+  if c then return c[1], c[2] end
+  local N = 120                               -- fights in a row: long enough for any pattern
+  local ready, uses, up, buffEnd = 0, 0, 0, -1
+  for i = 0, N - 1 do
+    local s, e = i * pull, i * pull + fl
+    local covered = s
+    if buffEnd > s then covered = math.min(e, buffEnd); up = up + covered - s end
+    local t = math.max(s, ready)
+    while t < e do
+      uses = uses + 1
+      local a, b = math.max(t, covered), math.min(e, t + d)
+      if b > a then up = up + b - a; covered = b end
+      if t + d > buffEnd then buffEnd = t + d end
+      if cd <= 0 then break end
+      ready = t + cd
+      t = ready
+    end
+  end
+  c = { uses / N, math.min(1, up / (N * fl)) }
+  useCache[key] = c
+  return c[1], c[2]
+end
+GS.UseSchedule = useSchedule
+
+-- a proc that refreshes, at rate r a second, lasting d: the share of the fight it's up,
+-- starting from no buff at the pull (1 - e^(-r min(t, d)) at time t, averaged)
+-- a proc on every cast of one spell (Dormant Heart on Greater Heal): a playstyle casts it
+-- on a schedule, every 1/r seconds, from a random point in the first gap; up d after each
+-- cast (refreshed), cut off at the fight's end
+local function everyCastShare(r, d, fl)
+  if r <= 0 or d <= 0 then return 0 end
+  local gap = 1 / r
+  if d < gap then return math.max(0, math.min(1, r * d - r * d * d / (2 * fl))) end
+  return math.max(0, math.min(1, 1 - gap / (2 * fl)))
+end
+
+local function procShare(r, d, fl, carried)
+  if r <= 0 or d <= 0 then return 0 end
+  if carried then return 1 - math.exp(-r * d) end
+  if fl <= d then return 1 - (1 - math.exp(-r * fl)) / (r * fl) end
+  local x = math.exp(-r * d)
+  return 1 - ((1 - x) / r + (fl - d) * x) / fl
+end
 
 function GS.Effects(it, ctx)
   local add, heal = {}, 0
   if not (it.fx and ctx) then return add, heal end
   local fl = math.max(1, ctx.fl)
+  local pull = math.max(fl, ctx.pull or GS.PULL_EVERY)
   for _, f in ipairs(it.fx) do
     local share
     if f.use then
-      local cd, uses = f.cd or 0, 1
-      if cd > 0 and cd < fl then uses = 1 + math.floor((fl - 1e-6) / cd)
-      elseif cd >= fl then uses = math.min(1, math.max(fl, ctx.pull or GS.PULL_EVERY) / cd) end
-      share = math.min(1, uses * (f.d or 0) / fl)
+      local uses
+      uses, share = useSchedule(f.cd or 0, f.d or 0, fl, pull)
       if f.mana then add.mp5 = (add.mp5 or 0) + f.mana * uses / fl * 5 end
       if f.heal then heal = heal + f.heal * uses / fl * (1 - (ctx.oh or 0)) end
       if f.cost then
-        local casts = f.n or ((ctx.cps or 0) * (f.d or 0))
-        add.mp5 = (add.mp5 or 0) + f.cost * casts * uses / fl * 5
+        -- mana off the next spell (n), or off every spell while it's up
+        local casts = f.n and (f.n * uses) or ((ctx.cps or 0) * share * fl)
+        add.mp5 = (add.mp5 or 0) + f.cost * casts / fl * 5
       end
     else
       local rate = f.on and ((ctx.casts and ctx.casts[f.on] or 0) / fl * (f.p or 1)) or ((f.p or 0) * (ctx.cps or 0))
       rate = rate + (f.ppm or 0) / 60
+      local carried = (f.d or 0) >= pull - fl
       if rate <= 0 then share = 0
-      elseif f.on and (f.p or 0) >= 1 then share = math.min(1, rate * (f.d or 0))
       elseif (f.icd or 0) > 0 then share = math.min(1, (f.d or 0) / (f.icd + 1 / rate))
-      else share = 1 - math.exp(-rate * (f.d or 0)) end
+      elseif f.on and (f.p or 1) >= 1 and not carried then share = everyCastShare(rate, f.d or 0, fl)
+      else share = procShare(rate, f.d or 0, fl, carried) end
     end
     for _, k in ipairs({ "healing", "int", "spirit", "mp5", "crit" }) do
       if f[k] then add[k] = (add[k] or 0) + f[k] * share end

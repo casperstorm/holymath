@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Holy Math Simulation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; each chart is a list of rows, one bar per fight length, on one scale per chart */
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --fg: #1c2230; --muted: #5d6677; --rule: #dde1e8;
+  --accent: #a8770f;           /* holy-light gold */
+  --f1: #4c7fd1; --f2: #2f9e7a; --f3: #c98a1b; --f4: #c2456b;   /* fight lengths */
+  --bad: #c2453a; --good: #2f8a5f;
+  --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --body: "Inter", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141821; --panel: #1b202b; --fg: #e5e8ee; --muted: #98a0b0; --rule: #2c3240;
+  --accent: #e2b34a; --f1: #6f9ee8; --f2: #4cc39b; --f3: #e6a93c; --f4: #e2668e;
+  --bad: #e66a5e; --good: #57c28a; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #141821; --panel: #1b202b; --fg: #e5e8ee; --muted: #98a0b0; --rule: #2c3240;
+  --accent: #e2b34a; --f1: #6f9ee8; --f2: #4cc39b; --f3: #e6a93c; --f4: #e2668e;
+  --bad: #e66a5e; --good: #57c28a; color-scheme: dark }
+* { box-sizing: border-box }
+[hidden] { display: none !important }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--body);
+  padding-block: 28px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)) }
+main { max-width: 1040px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px }
+h1, h2 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0 }
+h1 { font-size: 1.9rem; letter-spacing: -0.01em }
+h1 span { color: var(--accent) }
+h2 { font-size: 1.2rem }
+p { margin: 0; max-width: 68ch }
+.meta { color: var(--muted); font-size: 0.85rem; display: flex; flex-wrap: wrap; gap: 4px 16px }
+.meta code, td code { font-family: var(--mono); font-size: 0.8rem; overflow-wrap: anywhere }
+header { display: grid; gap: 10px }
+.controls { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; background: var(--panel) }
+.seg button { font: 500 0.85rem var(--body); color: var(--muted); background: none; border: 0; padding: 7px 14px; cursor: pointer }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--bg) }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.82rem; color: var(--muted) }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px }
+section { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 20px; display: grid; gap: 14px; min-width: 0 }
+.lead { color: var(--muted); font-size: 0.9rem }
+.problems { border-color: var(--bad) }
+.problems li { color: var(--bad) }
+/* charts */
+.chart { display: grid; gap: 2px; min-width: 0 }
+.axis, .row { display: grid; grid-template-columns: minmax(120px, 220px) 1fr; gap: 12px; align-items: center }
+.axis .scale { position: relative; height: 18px; font: 0.72rem var(--mono); color: var(--muted) }
+.axis .scale span { position: absolute; transform: translateX(-50%); white-space: nowrap }
+.axis .scale span:first-child { transform: none }
+.row { padding: 5px 0; border-top: 1px solid var(--rule) }
+.row .label { font-size: 0.86rem; min-width: 0; overflow-wrap: anywhere }
+.row .label small { display: block; color: var(--muted); font-size: 0.74rem }
+.bars { display: grid; gap: 2px; position: relative; min-width: 0 }
+.bar { display: grid; grid-template-columns: 1fr; position: relative; height: 11px }
+.bar b { display: block; height: 100%; border-radius: 0 3px 3px 0; min-width: 1px }
+.bar em.in { padding-left: 0; padding-right: 6px; color: var(--bg); transform: translateX(-100%) }
+.bar em { position: absolute; top: -2px; font: normal 0.7rem/1 var(--mono); color: var(--muted); white-space: nowrap; padding-left: 6px; font-variant-numeric: tabular-nums }
+.bar.none em { left: 0; padding-left: 0; font-style: italic }
+.grid-lines { position: absolute; inset: 0; pointer-events: none }
+.grid-lines span { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--rule) }
+/* builds */
+.builds { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px }
+.build { border: 1px solid var(--rule); border-radius: 8px; padding: 12px; display: grid; gap: 6px; min-width: 0 }
+.build h3 { margin: 0; font: 600 0.9rem var(--display); display: flex; align-items: center; gap: 8px }
+.build h3 i { width: 10px; height: 10px; border-radius: 2px; display: inline-block }
+.build .hps { font: 600 1.4rem var(--display); font-variant-numeric: tabular-nums }
+.build .hps small { font: 0.8rem var(--body); color: var(--muted) }
+.build ul { margin: 0; padding: 0; list-style: none; font-size: 0.8rem; color: var(--muted); display: grid; gap: 1px }
+.build li { display: flex; justify-content: space-between; gap: 8px }
+.build li span { font-family: var(--mono); font-variant-numeric: tabular-nums }
+.build li.filler { opacity: 0.6 }
+.robust { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; min-width: 0 }
+.robust > div { min-width: 0; display: grid; gap: 6px; align-content: start }
+h3 { margin: 0; font: 600 0.95rem var(--display) }
+.share { display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--rule); vertical-align: middle; margin-left: 6px; overflow: hidden }
+.share b { display: block; height: 100%; background: var(--accent) }
+td.top { color: var(--accent); font-weight: 600 }
+td small, th small { color: var(--muted); font-weight: 400 }
+.scen-controls { padding-top: 8px; border-top: 1px solid var(--rule) }
+.chip { font: 500 0.72rem var(--body); border: 1px solid var(--rule); border-radius: 99px; padding: 1px 7px; color: var(--muted); white-space: nowrap }
+/* table */
+.table-wrap { overflow-x: auto }
+table { border-collapse: collapse; width: 100%; font-size: 0.82rem; font-variant-numeric: tabular-nums }
+th, td { text-align: right; padding: 6px 8px; border-top: 1px solid var(--rule); white-space: nowrap }
+th:first-child, td:first-child { text-align: left; white-space: normal }
+th { font-weight: 600; color: var(--muted); font-size: 0.76rem }
+td.off { color: var(--bad); font-weight: 600 }
+a { color: var(--accent) }
+@media (max-width: 560px) { .axis, .row { grid-template-columns: 1fr; gap: 4px } .axis .label { display: none } }
+@media (prefers-reduced-motion: no-preference) { .bar b { transition: width .25s ease } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Holy Math <span>Simulation</span></h1>
+    <p class="lead">A level-60 Troll priest with the model's default buffs and consumables, run through Holy Math's fight model in four kinds of fight, each at three levels of overheal. Nobody knows a player's real overheal, so the first section shows what holds up across all of them. These are mathematical results, not a guide to a kill.</p>
+    <div class="meta" id="meta"></div>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Gear" id="gear"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </header>
+  <section id="problems" class="problems" hidden></section>
+  <section>
+    <h2>Holds up best</h2>
+    <p class="lead" id="robust-lead"></p>
+    <div class="robust">
+      <div><h3>Playstyles</h3><div class="table-wrap"><table id="r-play"></table></div></div>
+      <div><h3>Talent builds</h3><div class="table-wrap"><table id="r-builds"></table></div></div>
+    </div>
+    <div class="robust">
+      <div><h3>Gear, slot by slot</h3><div class="table-wrap"><table id="r-gear"></table></div></div>
+      <div><h3>Trinkets</h3><div class="table-wrap"><table id="r-trinkets"></table></div></div>
+    </div>
+  </section>
+  <div class="controls scen-controls">
+    <span class="lead">Each scenario, at</span>
+    <div class="seg" role="group" aria-label="Overheal" id="oh"></div>
+    <span class="lead" id="oh-values"></span>
+  </div>
+  <section>
+    <h2>Best talent builds</h2>
+    <p class="lead">What a search finds (hill-climbs from a Holy and a Discipline build plus random restarts), with the playstyle it heals most with. Faded talents are filler points the tree's rows need.</p>
+    <div class="builds" id="builds"></div>
+  </section>
+  <section>
+    <h2>Talents</h2>
+    <p class="lead">What each talent in the best build is worth: the healing per second the build loses without it (the rows it held up get filler points, and the playstyle is picked again). Empty: not in that fight's best build.</p>
+    <div class="chart" id="talents"></div>
+  </section>
+  <section>
+    <h2>Playstyles</h2>
+    <p class="lead">Every playstyle's healing per second with that fight's best build. "Extra" playstyles are Discipline combinations the search adds; the rest are built in.</p>
+    <div class="chart" id="playstyles"></div>
+  </section>
+  <section>
+    <h2>Trinkets</h2>
+    <p class="lead">Each trinket over an empty trinket slot: its stats plus its use or proc effect, averaged over the fight. The 25 best by their best fight.</p>
+    <div class="chart" id="trinkets"></div>
+  </section>
+  <section>
+    <h2>Effect check</h2>
+    <p class="lead">Every item effect two ways: Holy Math's averaged formula (what the addon uses) and an event-by-event simulation of many fights in a row, in healing per second. Marked: more than 5% and 0.5 HPS apart.</p>
+    <div class="table-wrap"><table id="effects"></table></div>
+  </section>
+</main>
+<script>
+const DATA = /*DATA*/null;
+const COLORS = ["var(--f1)", "var(--f2)", "var(--f3)", "var(--f4)"];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = (v, d = 1) => (v == null ? "" : v.toFixed(d));
+let gear = "preraid", oh = "typical";
+try { gear = localStorage.getItem("hm-sim-gear") || gear; oh = localStorage.getItem("hm-sim-oh") || oh; } catch (e) {}
+
+function scenarios() { return DATA.fights.map((f) => DATA.scenarios.find((s) => s.gear === gear && s.fight === f.fight && s.overheal === oh)); }
+const pct = (x) => (x * 100).toFixed(1) + "%";
+const shareBar = (x) => `<span class="share"><b style="width:${Math.max(0, Math.min(100, (x - 0.8) / 0.2 * 100))}%"></b></span>`;
+
+function renderRobust() {
+  const R = DATA.robust[gear];
+  $("robust-lead").textContent = `Across all ${R.scenarios} scenarios for this gear (${DATA.fights.length} kinds of fight × ${DATA.overheals.length} levels of overheal). ` +
+    `"Average" is the share of the best result in each scenario, averaged; "worst" is the lowest share; "best in" counts the scenarios where it came first. The bar runs from 80% to 100%.`;
+  $("r-play").innerHTML = "<tr><th>Playstyle</th><th>Average</th><th>Worst</th><th>Best in</th></tr>" +
+    R.playstyles.slice(0, 8).map((p, i) => `<tr><td class="${i === 0 ? "top" : ""}">${esc(p.name)}${p.extra ? " <small>extra</small>" : ""}</td>` +
+      `<td>${pct(p.avg)}${shareBar(p.avg)}</td><td>${pct(p.worst)}</td><td>${p.wins} of ${R.scenarios}</td></tr>`).join("");
+  $("r-builds").innerHTML = "<tr><th>Build</th><th>Average</th><th>Worst</th><th>Best in</th></tr>" +
+    R.builds.map((b, i) => {
+      const key = b.talents.filter((t) => !t.filler && ["penance", "renewedHope", "divineAegis", "prayerOfMending", "spiritualHealing", "soulWarding"].includes(t.key)).map((t) => t.name).join(", ");
+      const ps = Object.entries(b.playstyles || {}).sort((x, y) => y[1] - x[1]).map((x) => x[0]).slice(0, 2).join(", ");
+      return `<tr><td class="${i === 0 ? "top" : ""}">${esc(b.split)}<br><small>${esc(key || "")}${ps ? " · " + esc(ps) : ""}</small></td>` +
+        `<td>${pct(b.avg)}${shareBar(b.avg)}</td><td>${pct(b.worst)}</td><td>${b.wins} of ${R.scenarios}</td></tr>`;
+    }).join("");
+  const order = ["head", "neck", "shoulder", "back", "chest", "wrist", "hands", "waist", "legs", "feet", "finger", "trinket", "weapon", "offhand", "wand"];
+  const names = { weapon: "Weapon", offhand: "Off hand", finger: "Rings", trinket: "Trinkets" };
+  $("r-gear").innerHTML = "<tr><th>Slot</th><th>Picked in most scenarios</th></tr>" + order.filter((k) => R.gear[k]).map((k) => {
+    const per = k === "finger" || k === "trinket" ? 2 : 1;
+    const items = R.gear[k].slice(0, k === "finger" || k === "trinket" ? 4 : 2);
+    return `<tr><td>${names[k] || k[0].toUpperCase() + k.slice(1)}</td><td style="text-align:left;white-space:normal">` + items.map((it, i) =>
+      `<a href="https://www.wowhead.com/forever/item=${it.id}" target="_blank" rel="noopener">${esc(it.name)}</a> <small>${it.count}/${R.scenarios}</small>`).join("<br>") + "</td></tr>";
+  }).join("");
+  $("r-trinkets").innerHTML = "<tr><th>Trinket</th><th>Average</th><th>Lowest</th><th>Highest</th></tr>" +
+    R.trinkets.slice(0, 10).map((t, i) => `<tr><td class="${i === 0 ? "top" : ""}"><a href="https://www.wowhead.com/forever/item=${t.id}" target="_blank" rel="noopener">${esc(t.name)}</a>` +
+      `${t.prof ? ` <small>${esc(t.prof)}</small>` : ""}${t.uncounted ? " <small>effect not counted</small>" : ""}</td>` +
+      `<td>${fmt(t.avg)}</td><td>${fmt(t.worst)}</td><td>${fmt(t.best)}</td></tr>`).join("") +
+    `<tr><td colspan="4" style="text-align:left"><small>HPS over an empty trinket slot.</small></td></tr>`;
+}
+
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+// ticks at a round step: a quarter, a fifth, a third or half of the axis
+function ticksOf(max) {
+  const round = (x) => Math.abs(x * 10 - Math.round(x * 10)) < 1e-9 && (x >= 1 || max < 4);
+  const step = [max / 4, max / 5, max / 3, max / 2].find(round) || max / 4;
+  const t = [];
+  for (let x = 0; x <= max + 1e-9; x += step) t.push(x);
+  return t;
+}
+
+// one chart: rows of { label, sub, values: [per fight or null] }
+function chart(el, rows, unit) {
+  const max = niceMax(Math.max(1, ...rows.flatMap((r) => r.values.filter((v) => v != null))));
+  const ticks = ticksOf(max);
+  const grid = '<div class="grid-lines">' + ticks.map((t) => `<span style="left:${(t / max) * 100}%"></span>`).join("") + "</div>";
+  let h = `<div class="axis"><div class="label"></div><div class="scale">` +
+    ticks.map((t, i) => `<span style="left:${(t / max) * 100}%;${i === ticks.length - 1 ? "transform:translateX(-100%)" : ""}">${fmt(t, t < 10 ? 1 : 0)}${i === ticks.length - 1 ? " " + unit : ""}</span>`).join("") +
+    `</div></div>`;
+  for (const r of rows) {
+    h += `<div class="row"><div class="label">${esc(r.label)}${r.sub ? `<small>${r.sub}</small>` : ""}</div><div class="bars">${grid}`;
+    r.values.forEach((v, i) => {
+      if (v == null) { h += `<div class="bar none"><em>${r.missing || "–"}</em></div>`; return; }
+      const w = Math.max(0, (v / max) * 100);
+      h += `<div class="bar" title="${esc(DATA.fights[i].label)}: ${fmt(v)} ${unit}"><b style="width:${w}%;background:${COLORS[i]}"></b>` +
+        (w > 85 ? `<em class="in" style="left:${w}%">${fmt(v)}</em></div>` : `<em style="left:${w}%">${fmt(v)}</em></div>`);
+    });
+    h += "</div></div>";
+  }
+  el.innerHTML = h;
+}
+
+function render() {
+  const sc = scenarios();
+  document.querySelectorAll("#gear button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.gear === gear)));
+  document.querySelectorAll("#oh button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.oh === oh)));
+  renderRobust();
+  const ov = sc[0].overhealValues;
+  $("oh-values").textContent = `Renew ${Math.round(ov.RENEW * 100)}%, Greater Heal ${Math.round(ov.GH * 100)}%, Flash Heal ${Math.round(ov.FLASH * 100)}%, Prayer of Healing ${Math.round(ov.POH * 100)}% wasted`;
+  const s0 = sc.find(Boolean);
+  $("meta").innerHTML = [`Made ${esc(DATA.made)}`, `Data <code>${esc(DATA.source)}</code>`,
+    `Gear: ${esc(s0.gearName)} (${["healing", "int", "spirit", "mp5"].map((k) => `${Math.round(s0.stats[k])} ${k}`).join(", ")})`,
+    `${DATA.settings.restarts} restarts, ${DATA.settings.fights} simulated fights`,
+    DATA.overhealSource ? `Overheal measured from ${esc(DATA.overhealSource.content)} logs (${esc(JSON.stringify(DATA.overhealSource.priestFights || {}))} priest-fights)` : "Overheal levels are estimates, not measured"].map((x) => `<span>${x}</span>`).join("");
+
+  // builds
+  $("builds").innerHTML = sc.map((s, i) => {
+    const b = s.builds[0];
+    const tal = b.talents.map((t) => `<li class="${t.filler ? "filler" : ""}">${esc(t.name)}<span>${t.points}</span></li>`).join("");
+    return `<div class="build"><h3><i style="background:${COLORS[i]}"></i>${esc(DATA.fights[i].label)}</h3>
+      <div class="hps">${fmt(b.hps)} <small>HPS</small></div>
+      <div><span class="chip">${esc(b.split)}</span> <span class="chip">${esc(b.playstyle)}</span></div>
+      <ul>${tal}</ul></div>`;
+  }).join("");
+
+  // talents: every talent in any fight's best build
+  const tNames = new Map();
+  sc.forEach((s) => s.talents.forEach((t) => { if (!tNames.has(t.key)) tNames.set(t.key, t); }));
+  const tRows = [...tNames.values()].map((t) => ({
+    label: t.name, values: sc.map((s) => { const x = s.talents.find((y) => y.key === t.key); return x && x.hps != null ? Math.max(0, x.hps) : null; }),
+    sub: sc.map((s) => { const x = s.talents.find((y) => y.key === t.key); return x ? x.points : 0; }).filter((p, i, a) => a.indexOf(p) === i && p > 0).map((p) => p + " pt").join(" / "),
+    missing: "not in build",
+  }));
+  tRows.sort((a, b) => Math.max(...b.values.map((v) => v || 0)) - Math.max(...a.values.map((v) => v || 0)));
+  chart($("talents"), tRows, "HPS");
+
+  // playstyles
+  const pNames = [];
+  sc.forEach((s) => s.playstyles.forEach((p) => { if (!pNames.some((q) => q.name === p.name)) pNames.push(p); }));
+  const pRows = pNames.map((p) => ({ label: p.name, sub: p.extra ? "extra" : "", values: sc.map((s) => { const x = s.playstyles.find((y) => y.name === p.name); return x ? x.hps : null; }) }));
+  pRows.sort((a, b) => Math.max(...b.values.map((v) => v || 0)) - Math.max(...a.values.map((v) => v || 0)));
+  chart($("playstyles"), pRows, "HPS");
+
+  // trinkets
+  const tr = new Map();
+  sc.forEach((s) => s.trinkets.forEach((t) => { if (!tr.has(t.id + t.name)) tr.set(t.id + t.name, t); }));
+  const trRows = [...tr.values()].map((t) => {
+    const marks = [t.side === "AH" ? "" : t.side === "A" ? "Alliance" : "Horde", t.pvp ? "PvP" : "", t.prof || "", t.uncounted ? "effect not counted" : ""].filter(Boolean);
+    return { label: t.name, sub: [`<a href="https://www.wowhead.com/forever/item=${t.id}" target="_blank" rel="noopener">level ${t.lvl}</a>`, ...marks.map(esc)].join(" · "),
+      values: sc.map((s) => { const x = s.trinkets.find((y) => y.id === t.id && y.name === t.name); return x ? x.hps : null; }) };
+  });
+  trRows.sort((a, b) => Math.max(...b.values.map((v) => v || 0)) - Math.max(...a.values.map((v) => v || 0)));
+  chart($("trinkets"), trRows.slice(0, 25), "HPS");
+
+  // effects table
+  const items = new Map();
+  sc.forEach((s) => s.effects.forEach((e) => { if (!items.has(e.id)) items.set(e.id, e.name); }));
+  let h = "<tr><th>Item</th>" + DATA.fights.map((f, i) => `<th colspan="2"><span style="color:${COLORS[i]}">■</span> ${esc(f.label)}</th>`).join("") + "</tr>";
+  h += "<tr><th></th>" + DATA.fights.map(() => "<th>formula</th><th>simulated</th>").join("") + "</tr>";
+  for (const [id, name] of items) {
+    h += `<tr><td><a href="https://www.wowhead.com/forever/item=${id}" target="_blank" rel="noopener">${esc(name)}</a></td>`;
+    sc.forEach((s) => {
+      const e = s.effects.find((x) => x.id === id);
+      if (!e) { h += "<td></td><td></td>"; return; }
+      const off = Math.abs(e.diff) > 0.5 && Math.abs(e.diff) > DATA.settings.tolerance * Math.max(Math.abs(e.simulated), 1e-9);
+      h += `<td class="${off ? "off" : ""}">${fmt(e.formula, 2)}</td><td>${fmt(e.simulated, 2)}</td>`;
+    });
+    h += "</tr>";
+  }
+  $("effects").innerHTML = h;
+}
+
+function start() {
+  if (!DATA) { document.querySelector("main").innerHTML = "<p>No results: run <code>python3 -I tools/sim/run.py</code> from the HolyMath folder.</p>"; return; }
+  const labels = { dungeon: "Fresh 60", preraid: "Pre-raid BiS" };
+  if (!DATA.gears.includes(gear)) gear = DATA.gears[DATA.gears.length - 1];
+  $("gear").innerHTML = DATA.gears.map((g) => `<button type="button" data-gear="${g}">${labels[g] || g}</button>`).join("");
+  $("gear").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button"); if (!b) return;
+    gear = b.dataset.gear;
+    try { localStorage.setItem("hm-sim-gear", gear); } catch (e) {}
+    render();
+  });
+  if (!DATA.overheals.some((o) => o.key === oh)) oh = DATA.overheals[0].key;
+  $("oh").innerHTML = DATA.overheals.map((o) => `<button type="button" data-oh="${o.key}">${esc(o.label)}</button>`).join("");
+  $("oh").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button"); if (!b) return;
+    oh = b.dataset.oh;
+    try { localStorage.setItem("hm-sim-oh", oh); } catch (e) {}
+    render();
+  });
+  $("legend").innerHTML = DATA.fights.map((f, i) => `<span><i style="background:${COLORS[i]}"></i>${esc(f.label)}</span>`).join("");
+  if (DATA.effectProblems.length) {
+    $("problems").hidden = false;
+    $("problems").innerHTML = `<h2>Effect formulas to fix</h2><ul>${DATA.effectProblems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>`;
+  }
+  render();
+}
+start();
+</script>
+</body>
+</html>

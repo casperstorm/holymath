@@ -1,0 +1,101 @@
+name: Warcraft Logs estimates
+
+# Pulls top priest healers' public logs from forever.warcraftlogs.com (tools/wcl/fetch.py) and
+# turns them into anonymous estimates (tools/wcl/analyze.py): overheal per spell, fight lengths,
+# spell mix, gear. The estimates come out as the "wcl-estimates" artifact and in the run's
+# summary; the raw logs (they name other players) stay in the Actions cache, which only this
+# repository's workflows can reach. The API client's ID and secret are the repository secrets
+# WCL_CLIENT_ID and WCL_CLIENT_SECRET; nothing here prints or stores them, and the token is
+# deleted before the cache is saved.
+#
+# Run it by hand:  gh workflow run wcl.yml -R casperstorm/holymath -f per_encounter=50
+# Get the result:  gh run download <run id> -R casperstorm/holymath -n wcl-estimates
+
+on:
+  workflow_dispatch:
+    inputs:
+      per_encounter:
+        description: 'Top-ranked priest healers to fetch per encounter and spec'
+        required: false
+        default: '50'
+      simulate:
+        description: 'Also run the simulation with the measured overheal (yes/no)'
+        required: false
+        default: 'no'
+  schedule:
+    - cron: '17 5 * * 1'     # Mondays 05:17 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wcl
+  cancel-in-progress: false
+
+jobs:
+  estimates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      WCL_CACHE: ${{ github.workspace }}/../wcl-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore the log cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.WCL_CACHE }}
+          key: wcl-${{ github.run_id }}
+          restore-keys: wcl-
+
+      - name: Fetch logs
+        env:
+          WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
+          WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
+        run: |
+          python3 -I tools/wcl/fetch.py discover | tee discover.txt
+          python3 -I tools/wcl/fetch.py collect --per-encounter "${{ github.event.inputs.per_encounter || '50' }}"
+
+      - name: Forget the token
+        if: always()
+        run: rm -f "$WCL_CACHE/token.json"
+
+      - name: Save the log cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.WCL_CACHE }}
+          key: wcl-${{ github.run_id }}
+
+      - name: Analyse
+        run: |
+          python3 -I tools/wcl/analyze.py | tee analyze.txt
+          {
+            echo '## Warcraft Logs estimates'
+            echo '```'
+            cat analyze.txt
+            echo '```'
+            echo '### Zones and priest specs'
+            echo '```'
+            cat discover.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Simulate with the measured overheal
+        if: github.event.inputs.simulate == 'yes'
+        run: |
+          sudo apt-get install -y -qq luajit > /dev/null
+          python3 -I tools/sim/run.py --overheal-from tools/wcl/out/estimates.json | tee sim.txt || true
+          { echo '## Simulation'; echo '```'; cat sim.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the estimates
+        uses: actions/upload-artifact@v4
+        with:
+          name: wcl-estimates
+          path: |
+            tools/wcl/out/estimates.json
+            tools/sim/out/index.html
+            tools/sim/out/results.json
+          if-no-files-found: warn
+          retention-days: 30
