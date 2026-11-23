@@ -18,6 +18,5 @@ Game.lua
 Tooltips.lua
 Core.lua
 Options.lua
-Playstyles.lua
 Gear.lua
 Minimap.lua

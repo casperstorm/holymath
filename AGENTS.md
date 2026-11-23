@@ -21,7 +21,7 @@ Holy Math is a WoW: Forever addon for **healing priests only** (`/hm`). It works
 | `Models/PriestMath.lua` | The Math tab's sheet |
 | `Game.lua` | Everything read from the client: stats, item stats, spell tooltips |
 | `Tooltips.lua` | Item and spell tooltip lines |
-| `Gear.lua`, `Options.lua`, `Playstyles.lua`, `Minimap.lua`, `Core.lua` | The UI, slash commands and events |
+| `Gear.lua`, `Options.lua`, `Minimap.lua`, `Core.lua` | The UI, slash commands and events. The playstyle is "Best for you" (`E.BEST`): `Core.lua` counts with the best mix of the spells you know (`E.BuildPlaystyle` in `Models/Priest.lua`), searched again only when talents, level, known spells or settings change; or a built-in picked on the Settings tab. Playstyles can't be edited |
 | `tests/run_tests.lua` | Model tests, including the gear solver and trinket effects |
 | `tests/smoke_wow.lua` | The whole addon against a fake game client |
 | `tools/` | Data generators, plus `trinket_report.lua` |

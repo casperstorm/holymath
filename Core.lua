@@ -7,10 +7,10 @@ local G = ns.Game
 -- E = the model for the player's class, chosen at login (ns.model).
 local E = setmetatable({}, { __index = function(_, k) return ns.model and ns.model[k] end })
 
--- Saved settings live per class: HolyMathDB.PRIEST = { rotation, settings },
+-- Saved settings live per class: HolyMathDB.PRIEST = { settings, ... },
 -- so another healer class can be added without touching the priest's settings.
 local function ClassDefaults(model)
-  local d = { rotation = model.DEFAULT_ROTATION, settings = model.copy(model.DEFAULTS.settings) }
+  local d = { rotation = model.BEST, settings = model.copy(model.DEFAULTS.settings) }
   d.settings.shadowSpiritBuff = false
   -- A typical Classic raid boss lasts about 2 minutes (the sheet assumed 5).
   d.settings.fightLength = 120
@@ -22,16 +22,11 @@ end
 ns.ClassDefaults = ClassDefaults
 
 -- What the tooltips show (Settings tab of the window): the item line at all,
--- the change in healing per second, the change in %, the playstyles it is worked
--- out for (1 to 3; "yours" = the one you play, whichever it is) and the spell line.
-local TOOLTIP_DEFAULTS = { items = true, itemNumber = true, itemPercent = true, spells = true,
-                           itemStyles = { "yours" } }
-ns.MAX_TOOLTIP_STYLES = 3
+-- the change in healing per second, the change in %, and the spell line.
+local TOOLTIP_DEFAULTS = { items = true, itemNumber = true, itemPercent = true, spells = true }
 function ns.TooltipDefaults()
   local d = {}
-  for k, v in pairs(TOOLTIP_DEFAULTS) do
-    if type(v) == "table" then d[k] = {}; for i, x in ipairs(v) do d[k][i] = x end else d[k] = v end
-  end
+  for k, v in pairs(TOOLTIP_DEFAULTS) do d[k] = v end
   return d
 end
 
@@ -66,6 +61,35 @@ function ns.OverrideCount()
   end
   return n
 end
+
+-- A stable text for a table (keys in order), to tell when it changed.
+local function fingerprint(v)
+  if type(v) ~= "table" then return tostring(v) end
+  local keys = {}
+  for k in pairs(v) do keys[#keys + 1] = k end
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  local out = {}
+  for _, k in ipairs(keys) do out[#out + 1] = tostring(k) .. "=" .. fingerprint(v[k]) end
+  return "{" .. table.concat(out, ",") .. "}"
+end
+
+-- The playstyle Holy Math counts your healing with: the best mix of every spell you
+-- can cast (Models/Priest.lua E.BuildPlaystyle), found again only when what decides
+-- it changes (talents, level, the spells you know, the settings), not with every
+-- stat that moves.
+local bestCache = {}
+local function bestPlaystyle(st, input)
+  local key = fingerprint(input.talents) .. "|" .. tostring(st.level) .. "|" .. fingerprint(input.settings)
+  if bestCache.key ~= key then
+    local use = {}
+    for _, k in ipairs(E.BUILD_SPELLS) do use[k] = true end
+    local ok, r = pcall(E.BuildPlaystyle, use, st, input)
+    if not ok and ns.LogError then ns.LogError("best", r) end
+    bestCache = { key = key, def = ok and r and r.def or nil }
+  end
+  return bestCache.def
+end
+ns.BestPlaystyleCache = function() return bestCache end   -- tests
 
 local function Rebuild()
   local db = ns.db
@@ -112,11 +136,6 @@ local function Rebuild()
       if C_Timer and C_Timer.After then C_Timer.After(3, function() ns.MarkDirty() end) end
     end
   end
-  -- a playstyle that no longer exists (or is only kept for the sheet tests) -> the default
-  local chosen = E.ROTATIONS[db.rotation]
-  if not chosen or chosen.sheetOnly or (chosen.requires and (t[chosen.requires] or 0) <= 0) then
-    db.rotation = E.DEFAULT_ROTATION
-  end
   -- Your own values from the Math tab: only now, after the check against the
   -- game, so that check always uses the game's own numbers. gameSt keeps those.
   local gameSt = st
@@ -125,9 +144,20 @@ local function Rebuild()
     t = E.Talents(input.talents, nil, db.overrides)
     st = E.ApplyStatOverrides(st, db.overrides)
   end
-  local rot = db.rotation
+  -- the playstyle Holy Math counts with: one of the built-ins you chose on the Settings
+  -- tab, else the best for you (Renew filler while your stats can't be read)
+  local best = (not st.invalid) and bestPlaystyle(st, input) or nil
+  if best then E.ROTATIONS[E.BEST] = E.RotationFromPlaystyle(best) end
+  local chosen = db.rotation and E.BUILTIN_ROTATIONS[db.rotation]
+  local rot
+  if chosen and not chosen.sheetOnly and not (chosen.requires and (t[chosen.requires] or 0) <= 0) then
+    rot = db.rotation
+  else
+    rot = best and E.BEST or E.DEFAULT_ROTATION
+  end
   local weights = (not st.invalid) and E.Weights(rot, st, input) or nil
-  state = { input = input, st = st, gameSt = gameSt, t = t, info = info, rotation = rot, weights = weights, time = time() }
+  state = { input = input, st = st, gameSt = gameSt, t = t, info = info, rotation = rot, best = best, weights = weights,
+            time = time() }
   -- "Your spells": plans compared, best mix, spell table (each on its own, so one
   -- failing doesn't take the others down)
   if weights then
@@ -158,9 +188,9 @@ function ns.State(force)
 end
 
 ---------------------------------------------------------------------------
--- Profiles: named sets of your settings (the fight, playstyle, overheal per
--- spell, the Math tab's other settings), to swap between and compare.
--- db.profiles[name] = { settings = {...}, rotation = key }; db.profile = the
+-- Profiles: named sets of your settings (the fight, overheal per spell, the Math
+-- tab's other settings), to swap between and compare.
+-- db.profiles[name] = { settings = {...} }; db.profile = the
 -- loaded one, which every change is saved into (P.Sync). None loaded: your
 -- settings are just your settings, as before profiles. Not in a profile: the values you typed over the
 -- game's on the Math tab (db.overrides, about your character, not the fight) and
@@ -177,7 +207,7 @@ local function deepEqual(a, b)
   return true
 end
 
-local function current() return { settings = E.copy(ns.db.settings), rotation = ns.db.rotation } end
+local function current() return { settings = E.copy(ns.db.settings) } end
 local hpsCache = { state = nil }
 local function forget() hpsCache = { state = nil } end
 
@@ -199,16 +229,6 @@ end
 function P.Exists(name) return name ~= nil and (ns.db.profiles or {})[name] ~= nil end
 function P.Loaded() return P.Exists(ns.db.profile) and ns.db.profile or nil end
 
--- A playstyle you can't use now (it needs a talent you no longer have) becomes the
--- default one when the state is rebuilt; the profile keeps its own. (The last
--- state is used as it is: Sync runs on every change and mustn't rebuild.)
-local function usable(key)
-  local r = key and E.ROTATIONS[key]
-  if not r or r.sheetOnly then return false end
-  if not r.requires then return true end
-  return not (state and state.t) or (state.t[r.requires] or 0) > 0
-end
-
 -- Auto-save: while a profile is loaded, every change to your settings is written
 -- into it (ns.MarkDirty calls this on every change).
 function P.Sync()
@@ -216,9 +236,6 @@ function P.Sync()
   if not name then return end
   local p = ns.db.profiles[name]
   p.settings = E.copy(ns.db.settings)
-  if ns.db.rotation ~= p.rotation and not (ns.db.rotation == E.DEFAULT_ROTATION and not usable(p.rotation)) then
-    p.rotation = ns.db.rotation
-  end
 end
 
 -- At login: profiles saved by an older version get the settings added since
@@ -230,7 +247,6 @@ function P.FillDefaults()
       p.settings = type(p.settings) == "table" and p.settings or {}
       E.MigrateSettings(p.settings)
       merge(p.settings, d.settings)
-      if not (p.rotation and E.ROTATIONS[p.rotation]) then p.rotation = d.rotation end
     end
   end
 end
@@ -254,8 +270,7 @@ function P.Load(name)
   p.settings = type(p.settings) == "table" and p.settings or {}
   E.MigrateSettings(p.settings)
   merge(p.settings, d.settings)
-  if not (p.rotation and E.ROTATIONS[p.rotation]) then p.rotation = d.rotation end
-  ns.db.settings, ns.db.rotation = E.copy(p.settings), p.rotation
+  ns.db.settings = E.copy(p.settings)
   ns.db.profile = name
   ns.MarkDirty()
   return true
@@ -292,11 +307,14 @@ function P.HPS(name)
   if hpsCache[name] == nil then
     local set = E.copy(S.input.settings)          -- has your known ranks, rules and typed values
     for k, v in pairs(p.settings or {}) do set[k] = E.copy(v) end
-    local rot = E.ROTATIONS[p.rotation] and p.rotation or E.DEFAULT_ROTATION
-    local r = E.ROTATIONS[rot]
-    if r.sheetOnly or (r.requires and (S.t[r.requires] or 0) <= 0) then rot = E.DEFAULT_ROTATION end
-    local ok, res = pcall(E.Rotation, rot, S.st, S.t, set)
-    hpsCache[name] = (ok and res and res.ehps) or false
+    -- with the best playstyle for those settings, as loading it would give
+    local use = {}
+    for _, k in ipairs(E.BUILD_SPELLS) do use[k] = true end
+    local input = {}
+    for k, v in pairs(S.input) do input[k] = v end
+    input.settings = set
+    local ok, res = pcall(E.BuildPlaystyle, use, S.st, input)
+    hpsCache[name] = (ok and res and res.result and res.result.ehps) or false
   end
   return hpsCache[name] or nil
 end
@@ -332,10 +350,6 @@ function P.Diff(name)
   if not p then return {} end
   local cur, out = ns.db.settings, {}
   local function line(label, a, b, unit) out[#out + 1] = string.format("%s: %s (now %s)", label, show(a, unit), show(b, unit)) end
-  if p.rotation ~= ns.db.rotation then
-    local a, b = E.ROTATIONS[p.rotation], E.ROTATIONS[ns.db.rotation]
-    line("Playstyle", a and a.name or tostring(p.rotation), b and b.name or tostring(ns.db.rotation))
-  end
   local keys = {}
   for k in pairs(p.settings or {}) do keys[#keys + 1] = k end
   table.sort(keys, function(a, b) return (LABELS[a] and LABELS[a][1] or a) < (LABELS[b] and LABELS[b][1] or b) end)
@@ -357,192 +371,6 @@ function P.Diff(name)
     end
   end
   return out
-end
-
----------------------------------------------------------------------------
--- Playstyles you build or edit (the Playstyles tab). Saved per class, not per
--- profile, so every profile can use them; a profile remembers which one it uses.
---   db.playstyles = { custom = { [id] = def }, edits = { [built-in key] = def },
---                     next = n }   (def: Models/Priest.lua "Playstyles as blocks")
--- An edit keeps, in def.from, the built-in's export line when it was first edited,
--- so the tab can say when an update changed that built-in since.
----------------------------------------------------------------------------
-local PS = {}
-ns.Playstyles = PS
-
-local function store()
-  local d = ns.db.playstyles
-  if type(d) ~= "table" then d = {}; ns.db.playstyles = d end
-  if type(d.custom) ~= "table" then d.custom = {} end
-  if type(d.edits) ~= "table" then d.edits = {} end
-  d.next = tonumber(d.next) or 1
-  return d
-end
-
--- Put the saved ones into the model's list (and forget the profiles' HPS: a
--- playstyle they use may have changed).
-function PS.Apply()
-  local d = store()
-  E.SetPlaystyles(d.custom, d.edits)
-  forget()
-end
-
--- "builtin" | "edited" | "mine" | nil
-function PS.Kind(key)
-  local d = store()
-  if E.BUILTIN_ROTATIONS[key] then return d.edits[key] and "edited" or "builtin" end
-  if d.custom[key] then return "mine" end
-end
-
--- The playstyle as blocks, a copy to edit (nil for one that doesn't exist).
-function PS.Def(key)
-  local d = store()
-  local def = d.edits[key] or d.custom[key]
-  if def then return E.copy(def) end
-  local b = E.BUILTIN_ROTATIONS[key]
-  if b and not b.sheetOnly then return E.PlaystyleFromRotation(b) end
-end
-
--- Saves blocks into a playstyle: a built-in becomes "edited", yours is replaced.
--- false, why when they can't be used.
-function PS.Save(key, def)
-  local d = store()
-  local kind = PS.Kind(key)
-  if not kind then return false, "No such playstyle." end
-  def = E.copy(def)
-  if kind ~= "mine" then def.name = E.BUILTIN_ROTATIONS[key].name end
-  local problem = E.PlaystyleProblem(def)
-  if problem then return false, problem end
-  if kind == "mine" then
-    d.custom[key] = def
-  else
-    def.from = d.edits[key] and d.edits[key].from or E.PlaystyleExport(E.PlaystyleFromRotation(E.BUILTIN_ROTATIONS[key]))
-    -- the same blocks as shipped: not an edit at all
-    if E.PlaystyleExport(def) == def.from then d.edits[key] = nil else d.edits[key] = def end
-  end
-  PS.Apply()
-  ns.MarkDirty()
-  return true
-end
-
--- An edited built-in back as shipped.
-function PS.Reset(key)
-  local d = store()
-  if not d.edits[key] then return false end
-  d.edits[key] = nil
-  PS.Apply()
-  ns.MarkDirty()
-  return true
-end
-
--- An edited built-in whose shipped version has changed since (a Holy Math update).
-function PS.DefaultChanged(key)
-  local ed = store().edits[key]
-  local b = E.BUILTIN_ROTATIONS[key]
-  return ed and b and ed.from and ed.from ~= E.PlaystyleExport(E.PlaystyleFromRotation(b)) or false
-end
-
--- Every playstyle's key and name: built-ins first, then yours, each by name.
-function PS.List()
-  local built, mine = {}, {}
-  for k, r in pairs(E.ROTATIONS) do
-    if not r.sheetOnly then
-      if r.mine then mine[#mine + 1] = k else built[#built + 1] = k end
-    end
-  end
-  local function byName(a, b) return E.ROTATIONS[a].name:lower() < E.ROTATIONS[b].name:lower() end
-  table.sort(built, byName); table.sort(mine, byName)
-  return built, mine
-end
-
-function PS.FindByName(name)
-  if type(name) ~= "string" then return nil end
-  if E.ROTATIONS[name] and not E.ROTATIONS[name].sheetOnly then return name end
-  for k, r in pairs(E.ROTATIONS) do
-    if not r.sheetOnly and r.name:lower() == name:lower() then return k end
-  end
-end
-
--- Why a name can't be used for one of yours (except: its own key), or nil.
-function PS.NameProblem(name, except)
-  local clean = E.CleanPlaystyleName(name)
-  if not clean then return "A name needs 1 to " .. E.MAX_PLAYSTYLE_NAME .. " letters (no | , or ;)." end
-  local k = PS.FindByName(clean)
-  if k and k ~= except then return "There is already a playstyle called \"" .. E.ROTATIONS[k].name .. "\"." end
-end
-
--- "Name", or "Name (2)" when taken.
-local function freeName(name)
-  name = E.CleanPlaystyleName(name) or "Playstyle"
-  if not PS.FindByName(name) then return name end
-  for i = 2, 99 do
-    local base = name:sub(1, E.MAX_PLAYSTYLE_NAME - 5)
-    local n = base .. " (" .. i .. ")"
-    if not PS.FindByName(n) then return n end
-  end
-  return nil
-end
-
--- A new playstyle of yours from blocks (a copy, an import, or the starting two
--- blocks); it becomes the one you use. Its key, or nil and why.
-function PS.New(name, def)
-  local d = store()
-  def = E.copy(def or { steps = { E.NewStep("POM"), { spell = "RENEW", how = "fill" } } })
-  def.from = nil
-  def.name = freeName(name or def.name)
-  if not def.name then return nil, "No free name." end
-  local problem = E.PlaystyleProblem(def)
-  if problem then return nil, problem end
-  local id
-  repeat id = "my" .. d.next; d.next = d.next + 1 until not d.custom[id] and not E.BUILTIN_ROTATIONS[id]
-  d.custom[id] = def
-  PS.Apply()
-  ns.db.rotation = id
-  ns.MarkDirty()
-  return id
-end
-
-function PS.Copy(key, name)
-  local def = PS.Def(key)
-  if not def then return nil, "No such playstyle." end
-  return PS.New(name or (E.ROTATIONS[key].name .. " (copy)"), def)
-end
-
-function PS.Rename(key, name)
-  local d = store()
-  if not d.custom[key] then return false, "Only your own playstyles can be renamed." end
-  local problem = PS.NameProblem(name, key)
-  if problem then return false, problem end
-  d.custom[key].name = E.CleanPlaystyleName(name)
-  PS.Apply()
-  ns.MarkDirty()
-  return true
-end
-
--- Deletes one of yours; whatever used it (you now, your profiles) goes back to the default.
-function PS.Delete(key)
-  local d = store()
-  if not d.custom[key] then return false end
-  d.custom[key] = nil
-  if ns.db.rotation == key then ns.db.rotation = E.DEFAULT_ROTATION end
-  for _, p in pairs(ns.db.profiles or {}) do
-    if type(p) == "table" and p.rotation == key then p.rotation = E.DEFAULT_ROTATION end
-  end
-  PS.Apply()
-  ns.MarkDirty()
-  return true
-end
-
-function PS.Export(key)
-  local def = PS.Def(key)
-  if def then def.name = E.ROTATIONS[key].name; return E.PlaystyleExport(def) end
-end
-
--- A pasted line becomes a new playstyle of yours: its key, or nil and why.
-function PS.Import(text)
-  local def, why = E.PlaystyleImport(text)
-  if not def then return nil, why end
-  return PS.New(def.name, def)
 end
 
 ---------------------------------------------------------------------------
@@ -813,9 +641,7 @@ local function Set(args)
   local db = ns.db
   local what, a, b = args:match("^(%S+)%s*(%S*)%s*(%S*)")
   what = what and what:lower()
-  if what == "rot" then a = args:match("^%S+%s+(.-)%s*$") or "" end   -- a playstyle's name can have spaces
   if what == "fight" and tonumber(a) then db.settings.fightLength = tonumber(a)
-  elseif what == "rot" and PS.FindByName(a) then db.rotation = PS.FindByName(a)
   elseif what == "oh" and E.OVERHEAL_ALIASES[a:lower()] and tonumber(b) then
     db.settings.overheal[E.OVERHEAL_ALIASES[a:lower()]] = tonumber(b) / (tonumber(b) > 1 and 100 or 1)
   elseif what == "pomhits" and tonumber(a) then db.settings.pomHits = tonumber(a)
@@ -826,64 +652,15 @@ local function Set(args)
     db.settings.potions = (a == "on") and { { key = "majorMana", n = E.POTION_ALL } } or {}
   elseif what == "inspiration" then db.settings.includeInspiration = (a == "on")
   else
-    local rots, ohs = {}, {}
-    for k in pairs(E.ROTATIONS) do rots[#rots + 1] = k end
+    local ohs = {}
     for k in pairs(E.OVERHEAL_ALIASES) do ohs[#ohs + 1] = k end
-    table.sort(rots); table.sort(ohs)
-    say("set fight <seconds> | rot %s | oh <%s> <percent> | pomhits <n> | group <1-5> | tides <n> | pots on|off | inspiration on|off",
-      table.concat(rots, "|"), table.concat(ohs, "|"))
+    table.sort(ohs)
+    say("set fight <seconds> | oh <%s> <percent> | pomhits <n> | group <1-5> | tides <n> | pots on|off | inspiration on|off",
+      table.concat(ohs, "|"))
     return
   end
   ns.MarkDirty()
   Summary()
-end
-
--- /hm playstyle: list them; /hm playstyle <name>: use one; export / import a line.
-local function PlaystyleCmd(rest)
-  local sub, arg = rest:match("^(%S*)%s*(.-)%s*$")
-  sub = (sub or ""):lower()
-  local function refresh()
-    if ns.Options and ns.Options.frame and ns.Options.frame:IsShown() then ns.Options.Changed(true) end
-  end
-  if sub == "" then
-    local S = ns.State()
-    local hps = {}
-    for _, p in ipairs(S and S.plans or {}) do hps[p.key] = p.ehps end
-    local built, mine = PS.List()
-    local function names(keys)
-      local out = {}
-      for _, k in ipairs(keys) do
-        local r = E.ROTATIONS[k]
-        out[#out + 1] = r.name .. (r.edited and " (edited)" or "") .. (hps[k] and string.format(" %.0f HPS", hps[k]) or "")
-          .. (k == ns.db.rotation and " - in use" or "")
-      end
-      return table.concat(out, ", ")
-    end
-    say("playstyles: %s.", names(built))
-    if #mine > 0 then print("  Yours: " .. names(mine) .. ".") end
-    print("  /hm playstyle <name> uses one; /hm playstyle export <name> | import <line>. Build them on the Playstyles tab (/hm).")
-  elseif sub == "export" then
-    local key = arg ~= "" and PS.FindByName(arg) or (arg == "" and ns.db.rotation)
-    if not key then return say("no playstyle called %q.", arg) end
-    if ns.Options and ns.Options.ShowExport then ns.Options.ShowExport(key)
-    else say("%s", PS.Export(key) or "") end
-  elseif sub == "import" then
-    local key, why = PS.Import(arg)
-    if not key then return say("can't import that: %s", why) end
-    say("imported \"%s\"; you're using it now.", E.ROTATIONS[key].name)
-    refresh()
-  else
-    local key = PS.FindByName(rest)
-    if not key then return say("no playstyle called %q. /hm playstyle lists them.", rest) end
-    local r = E.ROTATIONS[key]
-    if r.requires and not (ns.State() and (ns.State().t[r.requires] or 0) > 0) then
-      return say("%s needs a talent you don't have.", r.name)
-    end
-    ns.db.rotation = key
-    ns.MarkDirty()
-    refresh()
-    Summary()
-  end
 end
 
 SLASH_HOLYMATH1 = "/hm"
@@ -923,7 +700,6 @@ SlashCmdList.HOLYMATH = function(msg)
       end
       say("profiles: %s. /hm profile <name> loads one.", table.concat(parts, ", "))
     end
-  elseif cmd == "playstyle" or cmd == "playstyles" then PlaystyleCmd(rest)
   elseif cmd == "reset" then
     -- your own values from the Math tab (also the way out if one ever breaks the window)
     local n = 0
@@ -932,7 +708,7 @@ SlashCmdList.HOLYMATH = function(msg)
     ns.MarkDirty()
     if ns.Options and ns.Options.frame and ns.Options.frame:IsShown() then ns.Options.Changed(true) end
     say("%d value(s) you typed on the Math tab are back to the game's.", n)
-  else say("/hm (options window) | /hm show (summary in chat) | /hm check | /hm dump | /hm set ... | /hm profile [name] | /hm playstyle [name] | /hm minimap | /hm reset (your Math tab values)") end
+  else say("/hm (options window) | /hm show (summary in chat) | /hm check | /hm dump | /hm set ... | /hm profile [name] | /hm minimap | /hm reset (your Math tab values)") end
 end
 
 ---------------------------------------------------------------------------
@@ -957,13 +733,18 @@ f:SetScript("OnEvent", function(self, event, unit)
     if type(HolyMathDB[class].overrides) ~= "table" then HolyMathDB[class].overrides = {} end
     if type(HolyMathDB[class].profiles) ~= "table" then HolyMathDB[class].profiles = {} end
     ns.db = HolyMathDB[class]
-    PS.Apply()                       -- your playstyles and edits, before anything looks one up
     P.FillDefaults()
     ns.db = HolyMathDB[class]
     -- one-time: the old default fight length (300 s) becomes the new one (120 s)
     if not ns.db.fight120 then
       if ns.db.settings.fightLength == 300 then ns.db.settings.fightLength = 120 end
       ns.db.fight120 = true
+    end
+    -- one-time: the playstyle is the best for you unless you pick a built-in (the old
+    -- default, Renew filler, and playstyles of your own from the old editor become it)
+    if not ns.db.bestDefault then
+      ns.db.rotation = ns.model.BEST
+      ns.db.bestDefault = true
     end
     -- A Forever build once threw while hooking tooltips (StatCap's notes); keep
     -- the rest of the addon working if it does.

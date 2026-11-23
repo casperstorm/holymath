@@ -4,12 +4,13 @@
        window      PortraitFrameTemplate (title bar, portrait, close button)
        numbers     MinimalSliderWithSteppersTemplate (the slider from the game's options panel)
        on/off      UICheckButtonTemplate
-       playstyle   WowStyle1DropdownTemplate (the game's dropdown). Chosen by the user
-                   knowing it once tainted the Group Finder's menu (ADDON_ACTION_BLOCKED
-                   on Search(), 20 Nov 2026); our look-alike is the fallback.
+       dropdowns   WowStyle1DropdownTemplate (the game's dropdown: profiles). Chosen by
+                   the user knowing it once tainted the Group Finder's menu
+                   (ADDON_ACTION_BLOCKED on Search(), 20 Nov 2026).
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
-     Tabs: Settings (the fight, tooltips, the result), Playstyles (Playstyles.lua: the
-     playstyle you use as spell blocks), Math (Your spells first).
+     Tabs: Settings (the fight, tooltips, the result), Gear (Gear.lua), Math (Your
+     spells first). No playstyle to choose: Holy Math counts the best one for you
+     (Core.lua); the Settings tab says which.
      Profiles: a dropdown at the top right, on both tabs (ProfileControls).
        typing      InputBoxTemplate (the Math tab's cells)
      Each was checked against addons that already use it on this client (BugSack,
@@ -46,7 +47,7 @@ local WIDTH = RIGHT + COL_W + MARGIN
 -- some of its tabs): its formulas need the room.
 local MATH_WIDTH = 880
 local HEIGHT = 560
-local PLAYSTYLES_HEIGHT = 720
+local SETTINGS_HEIGHT = 480       -- the Settings tab: its controls, the table, the line under it, Defaults
 local GEAR_HEIGHT = 535
 local TOP, ROW, ROW_H = -66, 30, 28
 
@@ -201,280 +202,103 @@ local function Check(parent, id, x, y, label, help, get, set)
   end
 end
 
--- The playstyles you can use: the built-ins by name, then yours by name (mine:
--- the index where yours start, or nil).
-local function rotationKeys()
-  local keys = {}
-  local S = ns.State and ns.State()
-  local t = S and S.t
-  for k, r in pairs(E.ROTATIONS) do
-    if not r.sheetOnly and (not r.requires or (t and (t[r.requires] or 0) > 0)) then keys[#keys + 1] = k end
+-- A playstyle in words: "Prayer of Mending on cooldown on the tank", "Keep Renew up
+-- on the tank", "Renew (rank 6) the rest of the time".
+function O.PlaystyleLine(d)
+  local name = E.StepSpellName(d.spell)
+  if type(d.rank) == "number" then name = name .. " (rank " .. d.rank .. ")" end
+  local tank = d.tank and " on the tank" or ""
+  if d.how == "fill" then return name .. tank .. " the rest of the time" end
+  if d.how == "up" then return "Keep " .. name .. " up" .. tank end
+  if d.how == "cd" then return name .. " on cooldown" .. tank end
+  if d.how == "pm" then
+    return name .. tank .. " " .. (d.n == 1 and "once a minute" or d.n == 2 and "twice a minute" or (d.n .. " times a minute"))
   end
-  table.sort(keys, function(a, b)
-    local ma, mb = E.ROTATIONS[a].mine and 1 or 0, E.ROTATIONS[b].mine and 1 or 0
-    if ma ~= mb then return ma < mb end
-    return E.ROTATIONS[a].name:lower() < E.ROTATIONS[b].name:lower()
-  end)
-  local mine
-  for i, k in ipairs(keys) do if E.ROTATIONS[k].mine then mine = i; break end end
-  return keys, mine
+  return name .. " " .. E.HowText(d) .. tank
 end
-O.RotationKeys = rotationKeys   -- for the Gear tab's playstyle dropdown
 
-
-local function planHelp()
-  local lines = { "Which spells you mostly cast. Every built-in playstyle uses Prayer of Mending and Penance " ..
-    "on cooldown when you have them (and Flash Heal twice a minute with Holy Binding), then:", "" }
-  for _, k in ipairs(rotationKeys()) do
-    local r = E.ROTATIONS[k]
-    lines[#lines + 1] = "|cffffffff" .. r.name .. ":|r " .. (r.help or "")
-  end
+-- Counts you as: the playstyle Holy Math counts your healing with, in words on hover.
+local function countsHelp()
+  local S = ns.State and ns.State()
+  local r = S and E.ROTATIONS[S.rotation]
+  local def = S and (S.rotation == E.BEST and S.best or (r and E.PlaystyleFromRotation(r)))
+  local lines = { "The playstyle Holy Math counts your healing with. \"Best for you\" (the default) is the best way " ..
+    "to use the spells you know, with your gear, talents and the settings here; or pick a built-in. Now:", "" }
+  for _, d in ipairs(def and def.steps or {}) do lines[#lines + 1] = "|cffffffff" .. O.PlaystyleLine(d) .. "|r" end
   lines[#lines + 1] = ""
-  lines[#lines + 1] = "Ranks are chosen for you: the ones that heal most with your stats. Build your own, " ..
-    "or change these, on the Playstyles tab."
-  local S = ns.State()
-  local best = S and S.plans and S.plans[1]
-  if best then
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = best.key == db().rotation and "|cff40ff40You're on your best playstyle right now.|r"
-      or ("|cffffffffBest for you right now: " .. best.name .. "|r")
-  end
+  lines[#lines + 1] = "It's how the numbers are worked out, not how you have to play. Ranks are the ones that heal most."
   return table.concat(lines, "\n")
 end
-
--- label  [ Renew filler            v ]
--- Our own dropdown, drawn with the game's dropdown art (the same atlases
--- WhatsTraining and Polestar use on Forever), with our own pop-up list. Used
--- only when the game's dropdown template is missing (see PlaystyleDropdown).
-local function hasAtlas(name)
-  return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil
-end
-
-local function atlasTexture(frame, layer, atlas, useSize)
-  local t = frame:CreateTexture(nil, layer)
-  if not t then return nil end
-  if hasAtlas(atlas) then
-    t:SetAtlas(atlas, useSize)
-    return t, true
-  end
-  return t, false
-end
-
--- The game's own geometry (Blizzard_Menu's WowStyle1, as WhatsTraining and
--- OpenMap draw it on Forever): the field's art 7 out round the field, the
--- list's art 10 out at the sides and 3 at top and bottom, its items 20 high,
--- inset 8 at the sides and top and 15 at the bottom.
-local FIELD_H, ITEM_H = 22, 20
-local LIST_IN = { 8, 8, 8, 15 }   -- left, top, right, bottom
-
-local function PlaystyleLookalike(parent, x, y)
-  RowLabel(parent, "Playstyle", x, y, nil, planHelp)
-  local W = SLIDER_W + VALUE_W - 4
-
-  -- the closed field
-  local box = CreateFrame("Button", nil, parent, "BackdropTemplate")
-  -- the art reaches 7 out, so the field sits 7 in: its art then starts with the
-  -- sliders' left arrows and ends where their values end. The right edge is
-  -- anchored to the fight-length value one row up (same centre line, ROW lower),
-  -- so it follows the game's own slider layout.
-  local FIELD_W = SLIDER_W + 21
-  box:SetHeight(FIELD_H)
-  box:SetPoint("LEFT", parent, "TOPLEFT", x + LABEL_W + 7, y - ROW_H / 2)
-  local above = O.controls.fight
-  local value = above and above.RightText
-  if not (value and value.GetJustifyH and value:GetJustifyH() == "RIGHT"
-          and pcall(box.SetPoint, box, "RIGHT", value, "RIGHT", -7, -ROW)) then
-    box:SetWidth(FIELD_W - 14)
-  end
-  local bg, ok = atlasTexture(box, "BACKGROUND", "common-dropdown-c-button")
-  if bg and ok then
-    -- SetAtlas brings the art's own nine-slice; it is drawn 7 out round the field
-    bg:SetPoint("TOPLEFT", box, "TOPLEFT", -7, 7)
-    bg:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 7, -7)
-    local lit = atlasTexture(box, "HIGHLIGHT", "common-dropdown-c-button-hover-1")
-    if lit then lit:SetAllPoints(bg); lit:SetBlendMode("ADD") end
-  elseif box.SetBackdrop then
-    if bg then bg:Hide() end
-    box:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-      tile = true, tileSize = 16, edgeSize = 14, insets = { left = 3, right = 3, top = 3, bottom = 3 } })
-    box:SetBackdropColor(0.05, 0.05, 0.05, 0.9)
-  end
-  local arrow, arrowOk = atlasTexture(box, "ARTWORK", "common-dropdown-a-button", true)
-  if arrow then
-    if not arrowOk then arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up"); arrow:SetSize(20, 20) end
-    arrow:SetPoint("RIGHT", box, "RIGHT", 2, 0)
-    box.arrow = arrow
-  end
-  local text = box:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-  text:SetPoint("LEFT", box, "LEFT", 6, 0)
-  text:SetPoint("RIGHT", box, "RIGHT", -26, 0)
-  text:SetJustifyH("LEFT")
-  if text.SetWordWrap then text:SetWordWrap(false) end
-  text:SetText("")
-  box.label = text
-  Tip(box, "Playstyle", planHelp)
-
-  -- the pop-up list
-  local list = CreateFrame("Frame", nil, box, "BackdropTemplate")
-  list:SetPoint("TOPLEFT", box, "BOTTOMLEFT", 0, -6)
-  list:SetFrameStrata("FULLSCREEN_DIALOG")
-  list:SetClampedToScreen(true)
-  list:EnableMouse(true)
-  list:Hide()
-  local back, backOk = atlasTexture(list, "BACKGROUND", "common-dropdown-bg")
-  if back and backOk then
-    back:SetPoint("TOPLEFT", -10, 3)
-    back:SetPoint("BOTTOMRIGHT", 10, -3)
-    back:SetAlpha(0.925)
-  elseif list.SetBackdrop then
-    if back then back:Hide() end
-    list:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-      tile = true, tileSize = 16, edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 } })
-    list:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
-  end
-  list.items = {}
-
-  local function close() list:Hide() end
-  -- a click anywhere else closes it (as WhatsTraining and Polestar do on Forever)
-  list:SetScript("OnShow", function(self) pcall(self.RegisterEvent, self, "GLOBAL_MOUSE_DOWN") end)
-  list:SetScript("OnHide", function(self) pcall(self.UnregisterEvent, self, "GLOBAL_MOUSE_DOWN") end)
-  list:SetScript("OnEvent", function(self)
-    local over = (self.IsMouseOver and self:IsMouseOver()) or (box.IsMouseOver and box:IsMouseOver())
-    if not over then self:Hide() end
-  end)
-
-  local function width(fs, fallback)
-    return fs.GetUnboundedStringWidth and fs:GetUnboundedStringWidth() or fallback
-  end
-
-  local function build()
-    local keys = rotationKeys()
-    local S = ns.State()
-    local bestKey = S and S.plans and S.plans[1] and S.plans[1].key
-    for _, it in ipairs(list.items) do it:Hide() end
-    local nameW = 0
-    for i, k in ipairs(keys) do
-      local it = list.items[i]
-      if not it then
-        it = CreateFrame("Button", nil, list)
-        it:SetHeight(ITEM_H)
-        -- the game's list highlight
-        local hl = it:CreateTexture(nil, "HIGHLIGHT")
-        if hl then hl:SetAllPoints(it); hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight"); hl:SetBlendMode("ADD") end
-        local radio, radioOk = atlasTexture(it, "ARTWORK", "common-dropdown-tickradial", true)
-        local chk, chkOk = atlasTexture(it, "OVERLAY", "common-dropdown-icon-radialtick-yellow", true)
-        it.radio, it.check = radio, chk
-        if radio then
-          if radioOk then radio:SetPoint("LEFT", it, "LEFT", -3, 0) else radio:Hide() end
-        end
-        if chk and chkOk then chk:SetPoint("TOPLEFT", radio or it, "TOPLEFT")
-        elseif chk then   -- no dropdown art on this client: the classic check mark
-          chk:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
-          chk:SetSize(16, 16)
-          chk:SetPoint("LEFT", it, "LEFT", 0, 0)
-        end
-        it.text = it:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        it.text:SetPoint("LEFT", it, "LEFT", 20, 0)
-        it.text:SetJustifyH("LEFT")
-        it:SetScript("OnClick", function(self)
-          db().rotation = self.key
-          if PlaySound then pcall(PlaySound, 856) end
-          close()
-          O.Changed(true)
-        end)
-        it:SetScript("OnEnter", function(self)
-          local r = E.ROTATIONS[self.key]
-          ShowTip(self, r.name, (r.help or "") .. (self.best and "\n\n|cff40ff40Heals the most for you right now.|r" or ""))
-        end)
-        it:SetScript("OnLeave", HideTip)
-        list.items[i] = it
-        O.controls["rot:" .. i] = it
-      end
-      it.key = k
-      it:ClearAllPoints()
-      it:SetPoint("TOPLEFT", list, "TOPLEFT", LIST_IN[1], -LIST_IN[2] - (i - 1) * ITEM_H)
-      it:SetPoint("TOPRIGHT", list, "TOPRIGHT", -LIST_IN[3], -LIST_IN[2] - (i - 1) * ITEM_H)
-      it.best = (k == bestKey)
-      it.text:SetText(E.ROTATIONS[k].name)
-      if it.check then if k == db().rotation then it.check:Show() else it.check:Hide() end end
-      it.selected = (k == db().rotation)
-      nameW = math.max(nameW, width(it.text, 170))
-      it:Show()
-    end
-    -- at least as wide as the field, like the game's own lists
-    list:SetSize(math.max(box.GetWidth and box:GetWidth() or FIELD_W - 14, LIST_IN[1] + 20 + nameW + 8 + LIST_IN[3]),
-      LIST_IN[2] + #keys * ITEM_H + LIST_IN[4])
-  end
-
-  box:SetScript("OnClick", function()
-    if list:IsShown() then close() else build(); list:Show() end
-    if PlaySound then pcall(PlaySound, 856) end
-  end)
-
-  O.controls.rot, O.controls.rotList = box, list
-  O.rows[#O.rows + 1] = function()
-    local r = E.ROTATIONS[db().rotation]
-    text:SetText(r and r.name or "")
-    if list:IsShown() then build() end
-  end
-end
-
--- A playstyle in a menu: its name, "(edited)", and what it heals per second for
--- you now (the window's comparison of every playstyle, S.plans: no extra work).
-function O.PlaystyleMenuText(key)
-  local r = E.ROTATIONS[key]
+-- Counts you as  [ Best for you: Renew filler  v ]   the game's dropdown: the best
+-- for you (the default), or one of the built-ins. Never edited; without the
+-- game's dropdown, a button that steps through them.
+local function playstyleKeys()
   local S = ns.State and ns.State()
-  local hps
-  for _, p in ipairs(S and S.plans or {}) do if p.key == key then hps = p.ehps end end
-  return r.name .. (r.edited and "  |cff9d9d9d(edited)|r" or "") ..
-    (hps and string.format("  |cff9d9d9d%d HPS|r", math.floor(hps + 0.5)) or "")
+  local t = S and S.t
+  local keys = {}
+  for k, r in pairs(E.BUILTIN_ROTATIONS) do
+    if not r.sheetOnly and (not r.requires or (t and (t[r.requires] or 0) > 0)) then keys[#keys + 1] = k end
+  end
+  table.sort(keys, function(a, b) return E.BUILTIN_ROTATIONS[a].name:lower() < E.BUILTIN_ROTATIONS[b].name:lower() end)
+  table.insert(keys, 1, E.BEST)
+  return keys
 end
-
--- label  [ Renew filler            v ]   the game's own dropdown (WowStyle1, the
--- menu system). The user chose it on 20 Nov 2026 knowing that it once tainted the
--- Group Finder (ADDON_ACTION_BLOCKED Search()). Its menu is only described when
--- it opens. Without the template: our look-alike above.
-local function PlaystyleDropdown(parent, x, y)
+function O.PlaystyleName(key)
+  if key == E.BEST then
+    local r = E.ROTATIONS[E.BEST]
+    return "Best for you" .. (r and (": " .. r.name) or "")
+  end
+  local r = E.BUILTIN_ROTATIONS[key]
+  return r and r.name or ""
+end
+local function CountsAs(parent, x, y, w)
+  local label = Label(parent, "Counts you as", "GameFontNormal", x, y - 6)
+  local lhit = CreateFrame("Frame", nil, parent)
+  lhit:SetPoint("TOPLEFT", x, y)
+  lhit:SetSize(100, 22)
+  lhit:EnableMouse(true)
+  Tip(lhit, "Counts you as", countsHelp)
+  local function current()
+    local k = db().rotation
+    return (k == E.BEST or E.BUILTIN_ROTATIONS[k]) and k or E.BEST
+  end
+  local function pick(k) db().rotation = k; O.Changed(true) end
   local dd = try("DropdownButton", parent, "WowStyle1DropdownTemplate")
-  if not (dd and dd.SetupMenu) then return PlaystyleLookalike(parent, x, y) end
-  RowLabel(parent, "Playstyle", x, y, nil, planHelp)
-  dd:SetPoint("LEFT", parent, "TOPLEFT", x + LABEL_W, y - ROW_H / 2)
-  -- ends where the slider values above and below it end
-  local value = O.controls.fight and O.controls.fight.RightText
-  if not (value and value.GetJustifyH and value:GetJustifyH() == "RIGHT"
-          and pcall(dd.SetPoint, dd, "RIGHT", value, "RIGHT", 0, -ROW)) then
-    dd:SetWidth(SLIDER_W + 21)
-  end
-  local function isSelected(key) return db().rotation == key end
-  local function setSelected(key)
-    db().rotation = key
-    O.Changed(true)
-  end
-  dd:SetupMenu(function(_, root)
-    local keys, mine = rotationKeys()
-    for i, k in ipairs(keys) do
-      local r = E.ROTATIONS[k]
-      if i == mine and root.CreateTitle then root:CreateTitle("Yours") end
-      local radio = root:CreateRadio(O.PlaystyleMenuText(k), isSelected, setSelected, k)
-      if radio and radio.SetTooltip then
-        radio:SetTooltip(function(tooltip)
-          tooltip:SetText(r.name, 1, 1, 1)
-          if r.help then tooltip:AddLine(r.help, nil, nil, nil, true) end
-        end)
+  if dd and dd.SetupMenu then
+    dd:SetPoint("TOPLEFT", parent, "TOPLEFT", x + 102, y)
+    dd:SetWidth(w)
+    dd:SetupMenu(function(_, root)
+      for i, k in ipairs(playstyleKeys()) do
+        local radio = root:CreateRadio(O.PlaystyleName(k), function(v) return current() == v end, pick, k)
+        if radio and radio.SetTooltip then
+          radio:SetTooltip(function(tooltip)
+            tooltip:SetText(O.PlaystyleName(k), 1, 1, 1)
+            local r = E.ROTATIONS[k]
+            tooltip:AddLine(k == E.BEST and "The best way to use the spells you know, with your gear, talents and " ..
+              "these settings. Worked out again when they change." or (r and r.help or ""), nil, nil, nil, true)
+          end)
+        end
+        if i == 1 and root.CreateDivider then root:CreateDivider() end
       end
+    end)
+    if dd.SetSelectionTranslator then dd:SetSelectionTranslator(function() return O.PlaystyleName(current()) end) end
+    O.rows[#O.rows + 1] = function() if dd.GenerateMenu then pcall(dd.GenerateMenu, dd) end end
+  else
+    dd = Button(parent, "", w, 20, function()
+      local keys, at = playstyleKeys(), 1
+      for i, k in ipairs(keys) do if k == current() then at = i end end
+      pick(keys[at % #keys + 1])
+    end)
+    dd:SetPoint("TOPLEFT", parent, "TOPLEFT", x + 102, y)
+    O.rows[#O.rows + 1] = function()
+      local t = O.PlaystyleName(current())
+      if dd.label then dd.label:SetText(t) else dd:SetText(t) end
     end
-    if root.CreateDivider then root:CreateDivider() end
-    if root.CreateButton then root:CreateButton("Build or change playstyles...", function() O.ShowTab("playstyles") end) end
-  end)
-  if dd.SetSelectionTranslator then
-    dd:SetSelectionTranslator(function() local r = E.ROTATIONS[db().rotation]; return r and r.name or "" end)
   end
-  Tip(dd, "Playstyle", planHelp)
+  Tip(dd, "Counts you as", countsHelp)
   O.controls.rot = dd
-  -- the closed field shows the selected name; refresh it when the setting changes elsewhere
-  O.rows[#O.rows + 1] = function() if dd.GenerateMenu then pcall(dd.GenerateMenu, dd) end end
+  return label
 end
-
 
 local function Window()
   local p = try("Frame", UIParent, "PortraitFrameTemplate", "HolyMathOptions")
@@ -527,16 +351,17 @@ local function Cell(parent, x, y, w, justify, font)
   return fs
 end
 
-local TABS = { { key = "settings", text = "Settings" }, { key = "playstyles", text = "Playstyles" }, { key = "gear", text = "Gear" },
+local TABS = { { key = "settings", text = "Settings" }, { key = "gear", text = "Gear" },
                { key = "math", text = "Math" } }
 
 function O.ShowTab(key)
   O.tab = key
-  if O.frame and O.frame.SetWidth then O.frame:SetWidth((key == "math" or key == "playstyles" or key == "gear") and MATH_WIDTH or WIDTH) end
-  -- the Playstyles tab is taller: the fight view goes under up to 8 blocks; the Gear tab: two columns of 9 slots
+  if O.frame and O.frame.SetWidth then O.frame:SetWidth(MATH_WIDTH) end   -- every tab as wide (Settings as Gear and Math)
+  -- the Gear tab: two columns of 9 slots
   if O.frame and O.frame.SetHeight then
-    O.frame:SetHeight(key == "playstyles" and PLAYSTYLES_HEIGHT or key == "gear" and GEAR_HEIGHT or HEIGHT)
+    O.frame:SetHeight(key == "gear" and GEAR_HEIGHT or key == "settings" and SETTINGS_HEIGHT or HEIGHT)
   end
+  for _, f in pairs(O.panels or {}) do f:Hide() end
   for i, t in ipairs(TABS) do
     local pane, tab = O.panes[t.key], O.tabs[i]
     if t.key == key then pane:Show() else pane:Hide() end
@@ -822,6 +647,13 @@ local function BuildMathPane(pane)
   end
   local under = Flat(pane, "BORDER", 1, 0.82, 0, 0.35)
   if under then under:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT, MATH_TOP); under:SetSize(O.mathListW, 1) end
+  -- the table (its column titles too) in the game's dark inset, as the Settings and Gear tabs'
+  local inset = try("Frame", pane, "InsetFrameTemplate")
+  if inset then
+    inset:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT - 4, MATH_TOP + 22)
+    inset:SetSize(W + 8, 22 + HEIGHT + MATH_TOP - MATH_BOTTOM + 6)
+    O.mathInset = inset
+  end
   local sf = try("ScrollFrame", pane, "UIPanelScrollFrameTemplate") or CreateFrame("ScrollFrame", nil, pane)
   sf:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT, MATH_TOP)
   sf:SetSize(O.mathListW, HEIGHT + MATH_TOP - MATH_BOTTOM)
@@ -1430,107 +1262,6 @@ local function PotionSettings(p, x, y)
   end
 end
 
--- Which playstyles item tooltips are worked out for: 1 to 3, ticked in the game's own
--- dropdown (checkboxes, the menu stays open). "yours" is the one you play, whichever
--- that is. The closed field lists them:
---   Playstyles  [ Renew filler, Flash Heal filler  v ]
--- Without the game's dropdown there is no control (the setting still works).
-local function TooltipStyles(p, x, y)
-  local dd = try("DropdownButton", p, "WowStyle1DropdownTemplate")
-  if not (dd and dd.SetupMenu) then return end
-  local MAX = ns.MAX_TOOLTIP_STYLES or 3
-  local label = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  label:SetPoint("LEFT", p, "TOPLEFT", x + 4, y - 13)
-  label:SetText("Playstyles")
-  dd:SetPoint("LEFT", p, "TOPLEFT", x + 84, y - 13)
-  dd:SetWidth(COL_W - 84)
-  local function list()
-    local tips = db().tooltips
-    if type(tips.itemStyles) ~= "table" or #tips.itemStyles == 0 then tips.itemStyles = { "yours" } end
-    return tips.itemStyles
-  end
-  local function index(k) for i, v in ipairs(list()) do if v == k then return i end end end
-  local function nameOf(k)
-    if k == "yours" then k = db().rotation end
-    local r = k and E.ROTATIONS[k]
-    return r and r.name or ""
-  end
-  -- one you can play now (a playstyle of yours you deleted, or one whose talent you
-  -- dropped, is still in the list but isn't shown and doesn't count)
-  local function playable(k)
-    if k == "yours" then return true end
-    local r = E.ROTATIONS[k]
-    if not r or r.sheetOnly then return false end
-    if not r.requires then return true end
-    local S = ns.State and ns.State()
-    return (S and S.t and S.t[r.requires] or 0) > 0
-  end
-  local function count()
-    local n = 0
-    for _, v in ipairs(list()) do if playable(v) then n = n + 1 end end
-    return n
-  end
-  local function isSelected(k) return index(k) ~= nil end
-  local function canToggle(k)
-    if index(k) then return count() > 1 end   -- at least one
-    return count() < MAX                      -- at most three
-  end
-  local function setSelected(k)
-    if not canToggle(k) then return end
-    local l, i = list(), index(k)
-    if i then table.remove(l, i) else l[#l + 1] = k end
-    if ns.ClearVerdicts then ns.ClearVerdicts() end
-    O.Changed()
-  end
-  local function add(root, text, k, help)
-    local box = root.CreateCheckbox and root:CreateCheckbox(text, isSelected, setSelected, k)
-    if not box then return end
-    if box.SetEnabled then box:SetEnabled(function() return canToggle(k) end) end
-    if box.SetTooltip and help then
-      box:SetTooltip(function(tooltip) tooltip:SetText(nameOf(k), 1, 1, 1); tooltip:AddLine(help, nil, nil, nil, true) end)
-    end
-  end
-  dd:SetupMenu(function(_, root)
-    -- playstyles that are gone for good leave the list
-    if next(E.ROTATIONS) then
-      local l = list()
-      for i = #l, 1, -1 do
-        if l[i] ~= "yours" and not E.ROTATIONS[l[i]] then table.remove(l, i) end
-      end
-      if #l == 0 then l[1] = "yours" end
-    end
-    add(root, "The one you play (" .. nameOf("yours") .. ")", "yours",
-      "Whichever playstyle you choose on the Settings or Playstyles tab, so it follows when you change it.")
-    if root.CreateDivider then root:CreateDivider() end
-    local keys, mine = rotationKeys()
-    for i, k in ipairs(keys) do
-      if i == mine and root.CreateTitle then root:CreateTitle("Yours") end
-      add(root, O.PlaystyleMenuText(k), k, E.ROTATIONS[k].help)
-    end
-  end)
-  if dd.SetSelectionTranslator then
-    -- one ticked entry at a time (the game joins them with commas); without one: all
-    dd:SetSelectionTranslator(function(sel)
-      local k = type(sel) == "table" and sel.data
-      if k then return nameOf(k) end
-      local names = {}
-      for _, v in ipairs(list()) do names[#names + 1] = nameOf(v) end
-      return table.concat(names, ", ")
-    end)
-  end
-  local hit = CreateFrame("Frame", nil, p)
-  hit:SetPoint("LEFT", p, "TOPLEFT", x, y - 13)
-  hit:SetSize(80, 24)
-  hit:EnableMouse(true)
-  local help = "The playstyles item tooltips work the item out for, one line each: up to " .. MAX ..
-    ", at least one. \"The one you play\" follows your playstyle when you change it.\n\n" ..
-    "Holy Math\n  Renew filler           +16.2 HPS (+1.8%)\n  Flash Heal filler      +12.0 HPS (+1.9%)"
-  Tip(dd, "Playstyles on item tooltips", help)
-  Tip(hit, "Playstyles on item tooltips", help)
-  O.controls.tipStyles = dd
-  O.rows[#O.rows + 1] = function() if dd.GenerateMenu then pcall(dd.GenerateMenu, dd) end end
-end
-
 -- Tooltips, on the Settings tab: the item line and what it shows, and the spell line.
 local function TooltipSettings(p, x, y)
   local tips = function() return db().tooltips end
@@ -1544,8 +1275,7 @@ local function TooltipSettings(p, x, y)
     "worked out by running the whole model with it equipped.", "items")
   opt("tipItemNumber", y - 48, "Show the number (+16.2 HPS)", "The change in healing per second.", "itemNumber")
   opt("tipItemPct", y - 72, "Show it in % (+1.8%)", "The change as a share of your healing per second.", "itemPercent")
-  TooltipStyles(p, x, y - 96)
-  opt("tipSpells", y - 126, "Show Holy Math on spell tooltips",
+  opt("tipSpells", y - 96, "Show Holy Math on spell tooltips",
     "A line on the tooltips of the healing spells you know: what that rank heals per mana and per second " ..
     "after the overheal you expect, and which of your ranks is the most efficient (heals the most per mana). " ..
     "The same numbers as Your spells on the Math tab.\n\nThe game's own spell tooltip can leave out " ..
@@ -1633,7 +1363,7 @@ function O.DeleteProfile(name)
 end
 
 local PROFILE_HELP = "Keep several sets of settings under names and switch between them here: the fight, " ..
-  "playstyle, Prayer of Mending bounces, Mana Tide, potions, Inspiration, and the overheal you set per spell " ..
+  "Prayer of Mending bounces, Mana Tide, potions, Inspiration, and the overheal you set per spell " ..
   "on the Math tab. The loaded profile saves itself: whatever you change goes into it.\n\nThe list shows what each profile heals per second with your gear now, so you can " ..
   "compare them without switching; hover one to see how it differs from your settings.\n\n" ..
   "Values you typed over the game's on the Math tab (your stats, talents) are not part of a profile. " ..
@@ -1710,6 +1440,40 @@ end
 O.UI = { try = try, Button = Button, Tip = Tip, ShowTip = ShowTip, HideTip = HideTip, Label = Label, Header = Header,
          Check = Check, Flat = Flat, complain = complain, editBoxOf = editBoxOf, LEFT = LEFT, TOP = TOP }
 
+-- A panel beside the window (potions; tooltips and the minimap button): the game's
+-- basic frame with a title and close button, opened by a button on the Settings tab,
+-- one at a time; it closes with the window or another tab.
+O.panels = {}
+function O.Panel(owner, key, title, w, h)
+  local f = try("Frame", owner, "BasicFrameTemplateWithInset")
+  if not (f and f.SetSize) then
+    f = CreateFrame("Frame", nil, owner, "BackdropTemplate")
+    if f.SetBackdrop then
+      f:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border", tile = true, tileSize = 32, edgeSize = 32,
+        insets = { left = 11, right = 12, top = 12, bottom = 11 } })
+    end
+    local close = try("Button", f, "UIPanelCloseButton")
+    if close then close:SetPoint("TOPRIGHT", -2, -2); close:SetScript("OnClick", function() f:Hide() end) end
+  end
+  f:SetSize(w, h)
+  f:SetPoint("TOPLEFT", owner, "TOPRIGHT", 2, -24)
+  if f.SetFrameStrata then f:SetFrameStrata("DIALOG") end
+  if f.TitleText and f.TitleText.SetText then f.TitleText:SetText(title)
+  else Label(f, title, "GameFontNormal", 14, -8) end
+  if f.EnableMouse then f:EnableMouse(true) end
+  f:Hide()
+  O.panels[key] = f
+  O.controls["panel:" .. key] = f
+  return f
+end
+function O.ShowPanel(key)
+  for k, f in pairs(O.panels) do
+    if k == key and not f:IsShown() then f:Show() else f:Hide() end
+  end
+  O.Refresh()
+end
+
 local function Build()
   if O.frame then return end
   local p = Window()
@@ -1728,123 +1492,234 @@ local function Build()
   local ui = HolyMathDB.ui
   if ui and ui.point then p:ClearAllPoints(); p:SetPoint(ui.point, UIParent, ui.rel or ui.point, ui.x or 0, ui.y or 0) end
 
-  O.panes = { settings = Pane(p), playstyles = Pane(p), gear = Pane(p), math = Pane(p) }
+  O.panes = { settings = Pane(p), gear = Pane(p), math = Pane(p) }
   local frame = p
   p = O.panes.settings
 
-  -- Left column: the fight -------------------------------------------------
+  -- The Settings tab, built like the Gear and Math tabs: controls on top, a grey line,
+  -- one inset holding a table in two columns, the Math tab's gold section bands,
+  -- striped rows and boxed values.
+  --   Counts you as [ Best for you: Greater Heal filler v ]   [Your spells and overheal] [Tooltips and minimap...]
+  --   270 HPS  after overheal - 343 before, in a 180 s fight
+  --   +--------------------------------------------+---------------------------------------------+
+  --   | Worth in healing power                     | Your fight                                  |
+  --   | MP5       | mana back every 5 s  |   2.32   | Fight length              < [  180 s ] >     |
+  --   | ...                                        | ...                                         |
+  --   | Where your healing comes from              | [x] Count Inspiration                       |
+  --   | Greater Heal                     |   53%    | Potions  Major Mana Potion (all)  [Change...]|
+  --   +--------------------------------------------+---------------------------------------------+
+  --   Worth: what one of a stat heals, counted in healing power ...
+  local W = MATH_WIDTH - 2 * MARGIN
   local y = TOP
-  Header(p, "Fight", LEFT, y)
-  y = y - 24
-  Slider(p, "fight", LEFT, y, "Fight length",
+  CountsAs(p, LEFT, y, 270)
+  local tipb = Button(p, "Tooltips and minimap...", 168, 22, function() O.ShowPanel("tooltips") end)
+  tipb:SetPoint("TOPLEFT", p, "TOPLEFT", LEFT + W - 168, y)
+  Tip(tipb, "Tooltips and minimap", "What Holy Math adds to item and spell tooltips, and its minimap button.")
+  O.controls.TooltipOptions = tipb
+  local ohb = Button(p, "Your spells and overheal", 176, 22, function() O.ShowMath("spells") end)
+  ohb:SetPoint("RIGHT", tipb, "LEFT", -6, 0)
+  Tip(ohb, "Your spells", "Opens the Math tab at Your spells: every healing spell you know, all its ranks, " ..
+    "the most efficient one, and the overheal you expect for it.")
+  O.controls.YourSpells = ohb
+
+  -- the result in a line, as the Gear tab's "Level 52, Horde."
+  O.hps = p:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  O.hps:SetPoint("TOPLEFT", LEFT, y - 32)
+  O.hps:SetJustifyH("LEFT")
+  O.hps:SetText("")
+  O.hpsNote = p:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  O.hpsNote:SetPoint("BOTTOMLEFT", O.hps, "BOTTOMRIGHT", 6, 1)
+  O.hpsNote:SetJustifyH("LEFT")
+  local rhit = CreateFrame("Frame", nil, p)
+  rhit:SetPoint("TOPLEFT", LEFT, y - 30)
+  rhit:SetSize(W, 18)
+  rhit:EnableMouse(true)
+  Tip(rhit, "HPS (healing per second)",
+    "What you heal per second over your fight, with your current stats, talents and spells, after the " ..
+    "overheal you expect, in the playstyle Holy Math counts you as. Updates by itself when your gear, buffs, " ..
+    "talents or these settings change; item tooltips use the same settings.")
+
+  -- the table: one inset, two columns, rows as the Math tab draws them
+  local TT, TH = y - 54, 280
+  local inset = try("Frame", p, "InsetFrameTemplate")
+  if inset then inset:SetPoint("TOPLEFT", p, "TOPLEFT", LEFT - 4, TT + 4); inset:SetSize(W + 8, TH + 8) end
+  local CW = math.floor((W - 12) / 2)
+  local CX = { LEFT + 2, LEFT + 2 + CW + 8 }
+  local RH, SH = 22, 22
+  local function band(col, by, title)
+    local t = Flat(p, "BACKGROUND", 0.55, 0.42, 0.1, 0.30)
+    if t then t:SetPoint("TOPLEFT", p, "TOPLEFT", CX[col], by); t:SetSize(CW, SH) end
+    local l = Flat(p, "BORDER", 1, 0.82, 0, 0.25)
+    if l then l:SetPoint("TOPLEFT", p, "TOPLEFT", CX[col], by - SH + 1); l:SetSize(CW, 1) end
+    Label(p, title, "GameFontNormal", CX[col] + 6, by - 4)
+    return by - SH
+  end
+  -- a row's grid: every other one striped, a line under it, lines between its columns
+  local function grid(col, ry, h, n, cols)
+    if n % 2 == 0 then
+      local st = Flat(p, "BACKGROUND", 1, 1, 1, 0.04)
+      if st then st:SetPoint("TOPLEFT", p, "TOPLEFT", CX[col], ry); st:SetSize(CW, h) end
+    end
+    local hl = Flat(p, "BORDER", 1, 1, 1, 0.09)
+    if hl then hl:SetPoint("TOPLEFT", p, "TOPLEFT", CX[col], ry - h + 1); hl:SetSize(CW, 1) end
+    for _, cx in ipairs(cols or {}) do
+      local v = Flat(p, "BORDER", 1, 1, 1, 0.07)
+      if v then v:SetPoint("TOPLEFT", p, "TOPLEFT", CX[col] + cx, ry); v:SetSize(1, h) end
+    end
+  end
+
+  -- left: what each stat is worth, then where your healing comes from
+  local NAME_W, VAL_W = 90, 60
+  local ry = band(1, TT, "Worth in healing power")
+  O.weightCells = {}
+  for r = 1, 5 do
+    grid(1, ry, RH, r, { NAME_W, CW - VAL_W })
+    local c = { group = r <= 3 and 1 or 2,
+                name = Cell(p, CX[1] + 6, ry - 4, NAME_W - 10, "LEFT", "GameFontHighlightSmall"),
+                note = Cell(p, CX[1] + NAME_W + 6, ry - 4, CW - NAME_W - VAL_W - 12, "LEFT", "GameFontDisableSmall"),
+                value = Cell(p, CX[1] + CW - VAL_W + 6, ry - 4, VAL_W - 12, "RIGHT", "GameFontHighlightSmall") }
+    -- one line each (a note too long is cut, never wrapped into the next row)
+    for _, fs in ipairs({ c.name, c.note, c.value }) do if fs.SetWordWrap then fs:SetWordWrap(false) end end
+    O.weightCells[r] = c
+    ry = ry - RH
+  end
+  local whit = CreateFrame("Frame", nil, p)
+  whit:SetPoint("TOPLEFT", CX[1], TT)
+  whit:SetSize(CW, SH + 5 * RH)
+  whit:EnableMouse(true)
+  Tip(whit, "Worth in healing power",
+    "What one of each stat is worth to you right now, counted in healing power: MP5 1.39 means " ..
+    "1 MP5 heals as much as 1.39 healing power.\n\nGear gives intellect, MP5 and spirit by the point, " ..
+    "but crit and haste by the 1%, so those two are per 1%: an item with +1% crit at 6.84 is " ..
+    "worth about +7 healing power. The best of each kind is green. Item tooltips weigh a whole item for you.\n\n" ..
+    "The values change with your gear, talents and fight.")
+  ry = band(1, ry - 8, "Where your healing comes from")
+  O.split = { rows = {} }
+  for r = 1, 5 do
+    grid(1, ry, RH, r, { CW - VAL_W })
+    O.split.rows[r] = { name = Cell(p, CX[1] + 6, ry - 4, CW - VAL_W - 12, "LEFT", "GameFontHighlightSmall"),
+                        value = Cell(p, CX[1] + CW - VAL_W + 6, ry - 4, VAL_W - 12, "RIGHT", "GameFontHighlightSmall") }
+    for _, fs in pairs(O.split.rows[r]) do if fs.SetWordWrap then fs:SetWordWrap(false) end end
+    ry = ry - RH
+  end
+  local shit = CreateFrame("Frame", nil, p)
+  shit:SetPoint("TOPLEFT", CX[1], ry + 5 * RH + SH)
+  shit:SetSize(CW, SH + 5 * RH)
+  shit:EnableMouse(true)
+  Tip(shit, "Where your healing comes from", "Each spell's share of what you heal over the fight, after " ..
+    "overheal, in the playstyle Holy Math counts you as. Inspiration is the damage the tank's extra armor saves.")
+
+  -- right: your fight; each value in a box with the game's arrows either side
+  local FH = 26
+  ry = band(2, TT, "Your fight")
+  local n = 0
+  local function stepper(id, label, help, get, set, lo, hi, step, fmt)
+    n = n + 1
+    grid(2, ry, FH, n)
+    local x0 = CX[2]
+    local name = Cell(p, x0 + 6, ry - 7, CW - 170, "LEFT", "GameFontHighlightSmall")
+    name:SetText(label)
+    local hit = CreateFrame("Frame", nil, p)
+    hit:SetPoint("TOPLEFT", x0, ry)
+    hit:SetSize(CW - 160, FH)
+    hit:EnableMouse(true)
+    Tip(hit, label, help)
+    local function put(v) set(math.max(lo, math.min(hi, v))); O.Changed() end
+    local function arrow(dir, ax)
+      local b = CreateFrame("Button", nil, p)
+      b:SetSize(24, 24)
+      b:SetPoint("TOPLEFT", p, "TOPLEFT", ax, ry - 1)
+      local art = dir < 0 and "Prev" or "Next"
+      if b.SetNormalTexture then
+        b:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-" .. art .. "Page-Up")
+        b:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-" .. art .. "Page-Down")
+        b:SetDisabledTexture("Interface\\Buttons\\UI-SpellbookIcon-" .. art .. "Page-Disabled")
+        b:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+      end
+      b:SetScript("OnClick", function()
+        put(get() + dir * step)
+        if PlaySound then pcall(PlaySound, 856) end
+      end)
+      Tip(b, label, help)
+      O.controls[id .. (dir < 0 and "-" or "+")] = b
+      return b
+    end
+    local bx = x0 + CW - 150
+    local minus = arrow(-1, bx)
+    -- the value in a box, as the Math tab's
+    local box = { bg = Flat(p, "BORDER", 0, 0, 0, 0.45) }
+    for _, side in ipairs({ "top", "bottom", "left", "right" }) do box[side] = Flat(p, "ARTWORK", 0.5, 0.44, 0.3, 0.9) end
+    local vx, vw, vy, vh = bx + 26, 90, ry - 4, 18
+    local function at(t, tx, ty, tw, th) if t then t:SetPoint("TOPLEFT", p, "TOPLEFT", tx, ty); t:SetSize(tw, th) end end
+    at(box.bg, vx, vy, vw, vh); at(box.top, vx, vy, vw, 1); at(box.bottom, vx, vy - vh + 1, vw, 1)
+    at(box.left, vx, vy, 1, vh); at(box.right, vx + vw - 1, vy, 1, vh)
+    local value = Cell(p, vx + 4, vy - 3, vw - 10, "RIGHT", "GameFontHighlightSmall")
+    local plus = arrow(1, vx + vw + 2)
+    local ctl = { value = value, minus = minus, plus = plus }
+    function ctl:SetValue(v) put(v) end
+    function ctl.onChange(_, v) put(v) end
+    O.controls[id] = ctl
+    O.rows[#O.rows + 1] = function()
+      local v = get()
+      value:SetText(fmt(v))
+      if minus.SetEnabled then minus:SetEnabled(v > lo) end
+      if plus.SetEnabled then plus:SetEnabled(v < hi) end
+    end
+    ry = ry - FH
+  end
+  stepper("fight", "Fight length",
     "How long the fights you heal usually last (a typical raid boss: about 2 minutes; dungeon pulls: under 1). In long fights you run out of mana, so mana " ..
     "(MP5, spirit, intellect) is worth more; in short fights healing power counts most.",
     function() return db().settings.fightLength end, function(v) db().settings.fightLength = v end,
     30, 900, 30, function(v) return v .. " s" end)
-  y = y - ROW
-  PlaystyleDropdown(p, LEFT, y)
-  y = y - ROW
-  Slider(p, "pom", LEFT, y, "Prayer of Mending\nbounces",
+  stepper("pom", "Prayer of Mending bounces",
     "How many people Prayer of Mending heals before it runs out (it can jump up to 5 times).",
     function() return db().settings.pomHits end, function(v) db().settings.pomHits = v end,
     1, 5, 1, tostring)
-  y = y - ROW
-  Slider(p, "group", LEFT, y, "People reached by\ngroup heals",
+  stepper("group", "People reached by group heals",
     "How many people your Prayer of Healing and Holy Nova reach per cast. 5 is a full party (Prayer of Healing " ..
     "heals your party; Holy Nova, whoever is close to you). Set fewer for a smaller or spread-out group.\n\n" ..
     "Overheal (Math tab) is then for those of them already at full health.",
     function() return db().settings.groupHits or 5 end, function(v) db().settings.groupHits = v end,
     1, 5, 1, tostring)
-  y = y - ROW
-  Slider(p, "tides", LEFT, y, "Mana Tide totems",
+  stepper("tides", "Mana Tide totems",
     "Shaman Mana Tide Totems that reach you in a fight. Each restores about 1,160 mana, " ..
     "once every 5 minutes. Set 0 if your group has no shaman.",
     function() return db().settings.manaTidesInGroup end, function(v) db().settings.manaTidesInGroup = v end,
     0, 3, 1, tostring)
-  y = y - ROW - 2
-  Check(p, "insp", LEFT, y, "Count Inspiration (tank armor after crits)",
+  n = n + 1
+  grid(2, ry, FH, n)
+  Check(p, "insp", CX[2] + 6, ry, "Count Inspiration (tank armor after crits)",
     function()
       return "Inspiration (a Holy talent) raises the tank's armor for a while after your heals crit. " ..
         "When this is on, the damage that prevents is counted as healing." ..
         (O.hasInspiration == false and "\n\n|cffff5050You don't have the talent, so this does nothing.|r" or "")
     end,
     function() return db().settings.includeInspiration end, function(v) db().settings.includeInspiration = v end)
-
-  -- the potions and runes you drink, and how many of each
-  y = y - 40
-  PotionSettings(p, LEFT, y)
-
-  -- Your spells and their overheal live on the Math tab, with every other number
-  -- the model uses (right column, under the tooltips)
-  y = TOP - 172 - 168
-  Header(p, "Spells and overheal", RIGHT, y)
-  Label(p, "Your spells, their ranks and the overheal you expect per spell are at the top of the Math tab.",
-    "GameFontHighlightSmall", RIGHT, y - 20, COL_W)
-  local ohb = Button(p, "Your spells", 130, 22, function() O.ShowMath("spells") end)
-  ohb:SetPoint("TOPLEFT", p, "TOPLEFT", RIGHT - 2, y - 52)
-  Tip(ohb, "Your spells", "Opens the Math tab at Your spells: every healing spell you know, all its ranks, " ..
-    "the most efficient one, and the overheal you expect for it.")
-  O.controls.YourSpells = ohb
-
-  -- Right column: the result -------------------------------------------------
-  y = TOP
-  Header(p, "Result", RIGHT, y)
-  -- big "93 HPS", and what it was before overheal
-  O.hps = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-  O.hps:SetPoint("TOPLEFT", RIGHT, y - 22)
-  O.hps:SetJustifyH("LEFT")
-  O.hps:SetText("")
-  O.hpsNote = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  O.hpsNote:SetPoint("BOTTOMLEFT", O.hps, "BOTTOMRIGHT", 8, 1)   -- follows the number, however wide
-  O.hpsNote:SetJustifyH("LEFT")
-  O.hpsNote:SetText("")
-  local rhit = CreateFrame("Frame", nil, p)
-  rhit:SetPoint("TOPLEFT", RIGHT, y - 20)
-  rhit:SetSize(COL_W, 22)
-  rhit:EnableMouse(true)
-  Tip(rhit, "HPS (healing per second)",
-    "What you heal per second over the fight set on the left, with your current stats, talents " ..
-    "and spells, after the overheal you expect. Updates by itself when your gear, buffs, talents " ..
-    "or these settings change; item tooltips use the same settings.")
-
-  -- stat values, in healing power: two groups, because gear gives intellect, MP5
-  -- and spirit by the point but crit and haste by the 1%; each group best first
-  --   Worth in healing power
-  --   Per point             Per 1%
-  --   MP5          1.39     Crit        6.84
-  --   Intellect    1.04     Haste       0.35
-  --   Spirit       0.31
-  O.result = Label(p, "", "GameFontNormalSmall", RIGHT, y - 50, COL_W)
-  O.result:SetText("Worth in healing power")
-  local whit = CreateFrame("Frame", nil, p)
-  whit:SetPoint("TOPLEFT", RIGHT, y - 48)
-  whit:SetSize(COL_W, 74)
-  whit:EnableMouse(true)
-  Tip(whit, "Stat values",
-    "What one of each stat is worth to you right now, counted in healing power: MP5 1.39 means " ..
-    "1 MP5 heals as much as 1.39 healing power.\n\nGear gives intellect, MP5 and spirit by the point, " ..
-    "but crit and haste by the 1%, so those two are listed per 1%: an item with +1% crit at 6.84 is " ..
-    "worth about +7 healing power. Item tooltips weigh a whole item for you.\n\n" ..
-    "The values change with your gear, talents, fight length and playstyle.")
-  local half = math.floor(COL_W / 2)
-  O.weightHeads = {}
-  for g, title in ipairs({ "Per point", "Per 1%" }) do
-    O.weightHeads[g] = Cell(p, RIGHT + (g - 1) * half, y - 66, half - 16, "LEFT")
-    O.weightHeads[g]:SetText("|cff9d9d9d" .. title .. "|r")
-  end
-  O.weightCells = {}
-  for g = 1, 2 do
-    for r = 1, 3 do
-      local x, ry = RIGHT + (g - 1) * half, y - 80 - (r - 1) * 14
-      O.weightCells[#O.weightCells + 1] = { group = g, name = Cell(p, x, ry, 90, "LEFT"),
-                                            value = Cell(p, x + 90, ry, half - 16 - 90, "RIGHT") }
-    end
+  ry = ry - FH
+  -- the potions: which, and a panel beside the window to change them
+  n = n + 1
+  grid(2, ry, FH + 2, n)
+  local potb = Button(p, "Change...", 90, 22, function() O.ShowPanel("potions") end)
+  potb:SetPoint("TOPLEFT", p, "TOPLEFT", CX[2] + CW - 94, ry - 2)
+  Tip(potb, "Potions", POTION_HELP)
+  O.controls.Potions = potb
+  Label(p, "Potions", "GameFontHighlightSmall", CX[2] + 6, ry - 8)
+  O.potionSummary = Cell(p, CX[2] + 60, ry - 8, CW - 160, "LEFT", "GameFontDisableSmall")
+  O.rows[#O.rows + 1] = function()
+    local list = db().settings.potions
+    O.potionSummary:SetText((ns.Profiles and ns.Profiles.PotionText) and ns.Profiles.PotionText(list) or "")
   end
 
-  TooltipSettings(p, RIGHT, TOP - 172)
+  -- under the table, as the Gear tab's: what the worth means
+  O.result = Label(p, "", "GameFontDisableSmall", LEFT, TT - TH - 10, W)
 
-  -- the minimap button (Minimap.lua), under Spells and overheal
-  Check(p, "minimap", RIGHT, TOP - 172 - 168 - 88, "Show the minimap button",
+  -- the panels beside the window: potions, and tooltips with the minimap button
+  local potions = O.Panel(frame, "potions", "Potions", COL_W + 28, 300)
+  PotionSettings(potions, 14, -30)
+  local tips = O.Panel(frame, "tooltips", "Tooltips and minimap", COL_W + 28, 220)
+  TooltipSettings(tips, 14, -30)
+  Check(tips, "minimap", 14, -164, "Show the minimap button",
     "A small Holy Math button on the edge of the minimap: click opens this window, right-click opens it at " ..
     "the Gear tab, drag moves it. /hm minimap does the same as this switch.",
     function() return ns.Minimap and ns.Minimap.Shown() end,
@@ -1867,14 +1742,51 @@ local function Build()
   O.version = ver
 
   BuildMathPane(O.panes.math)
-  if O.BuildPlaystyles then O.BuildPlaystyles(O.panes.playstyles) end
-  if O.BuildGear and O.IconButton then O.BuildGear(O.panes.gear) end
+  if O.BuildGear then O.BuildGear(O.panes.gear) end
   Tabs(frame)
   YourValuesLine(frame)
   ProfileControls(frame)
   frame:Hide()
   O.frame = frame
   O.ShowTab("settings")
+end
+
+-- Where your healing comes from: each spell's share of the fight's healing after
+-- overheal (Inner Focus's Prayer of Healing with Prayer of Healing; Inspiration on its
+-- own), biggest first, the rest as Other.
+function O.FillSplit(base, S)
+  local sp = O.split
+  if not sp then return end
+  for _, r in ipairs(sp.rows) do r.name:SetText(""); r.value:SetText("") end
+  if not (base and base.eff and base.eff > 0) then return end
+  local by, order = {}, {}
+  local function add(key, v)
+    if not v or v <= 0 then return end
+    if not by[key] then by[key] = 0; order[#order + 1] = key end
+    by[key] = by[key] + v
+  end
+  for _, st in ipairs(base.steps or {}) do add(st.key, st.eff) end
+  if base.innerFocus then add("POH", base.innerFocus.eff) end
+  local fl = S and S.input and S.input.settings.fightLength or 0
+  add("INSPIRATION", (base.inspiration or 0) * fl)
+  table.sort(order, function(a, b) return by[a] > by[b] end)
+  local total = 0
+  for _, k in ipairs(order) do total = total + by[k] end
+  if total <= 0 then return end
+  local n, rest = #sp.rows, 0
+  for i, k in ipairs(order) do
+    local pct = 100 * by[k] / total
+    if i < n or (i == n and #order == n) then
+      sp.rows[i].name:SetText(k == "INSPIRATION" and "Inspiration (tank armor)" or E.StepSpellName(k))
+      sp.rows[i].value:SetText(string.format("%d%%", pct + 0.5))
+    else
+      rest = rest + pct
+    end
+  end
+  if rest > 0 then
+    sp.rows[n].name:SetText("|cff9d9d9dOther|r")
+    sp.rows[n].value:SetText(string.format("%d%%", rest + 0.5))
+  end
 end
 
 -- Fill in every control and the live result. force: rebuild from the game now.
@@ -1893,41 +1805,45 @@ function O.Refresh(force)
       insp.Text:SetFontObject(O.hasInspiration and GameFontHighlightSmall or GameFontDisableSmall)
     end
   end
-  for _, c in ipairs(O.weightCells) do c.name:SetText(""); c.value:SetText("") end
+  for _, c in ipairs(O.weightCells) do c.name:SetText(""); c.value:SetText(""); c.note:SetText("") end
+  O.FillSplit(w and w.base, S)
   if not w then
     O.hps:SetText("")
     local why = not S and "No data yet."
       or S.st.invalid and InCombatLockdown and InCombatLockdown()
         and "Your stats can't be read in combat. Holy Math fills them in when the fight ends."
       or S.st.invalid and ("|cffff5050Could not read:|r " .. table.concat(S.info.how.missing, ", "))
-      or "No model at your level yet: the playstyle's main spell isn't known."
+      or "No model at your level yet: no healing spell to fill the fight is known."
     O.hpsNote:SetText(why)
     O.result:SetText("")
   else
     O.hps:SetText(string.format("%d HPS", w.base.ehps + 0.5))
-    O.hpsNote:SetText(string.format("|cff9d9d9dafter overheal  -  %d before|r", w.base.hps + 0.5))
-    O.result:SetText("Worth in healing power")
+    O.hpsNote:SetText(string.format("after overheal  -  %d before, in a %d s fight", w.base.hps + 0.5,
+      S.input.settings.fightLength or 0))
     local h = w.healing ~= 0 and w.healing or 1
+    local NOTE = { MP5 = "mana back every 5 seconds", Intellect = "a bigger mana pool, and crit",
+      -- (short enough for one line in the note column)
+      Spirit = "mana regen, and Spiritual Guidance", Crit = "per 1% on gear", Haste = "per 1% on gear" }
     local groups = {
       { { "MP5", w.mp5 / h }, { "Intellect", w.int / h }, { "Spirit", w.spirit / h } },
       { { "Crit", w.crit / h }, { "Haste", w.haste / h } },
     }
     for _, list in ipairs(groups) do table.sort(list, function(a, b) return a[2] > b[2] end) end
+    O.result:SetText(string.format("Worth in healing power: 1 %s heals as much as %.2f healing power. Crit and haste " ..
+      "per 1%%, as gear gives them. Hover a line for what it means.", groups[1][1][1], groups[1][1][2]))
     local used = { 0, 0 }
     for _, c in ipairs(O.weightCells) do
       used[c.group] = used[c.group] + 1
       local st = groups[c.group][used[c.group]]
       if st then
         c.name:SetText(st[1])
-        c.value:SetText(string.format("%.2f", st[2]))
+        c.note:SetText(NOTE[st[1]] or "")
+        local best = used[c.group] == 1
+        c.value:SetText(string.format(best and "|cff40ff40%.2f|r" or "%.2f", st[2]))
       end
     end
   end
   if O.mathRows then O.FillMath(S) end
-  if O.FillPlaystyles and O.tab == "playstyles" then
-    local ok, err = pcall(O.FillPlaystyles, S)
-    if not ok and ns.LogError then ns.LogError("playstyles", err) end
-  end
   if O.FillGear and O.tab == "gear" then
     local ok, err = pcall(O.FillGear)
     if not ok and ns.LogError then ns.LogError("gear", err) end

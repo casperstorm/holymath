@@ -2108,4 +2108,138 @@ function E.BestMix(st, t, set)
   return out
 end
 
+---------------------------------------------------------------------------
+-- The playstyle Holy Math counts your healing with (Core.lua): the way of using the
+-- spells you can cast that heals most in your fight. It is how the numbers are
+-- worked out, not advice on playing. Every mix is tried: Prayer of Mending and
+-- Penance on cooldown; PW:Shield on the tank or not; Renew kept up on the tank or not
+-- (when it isn't the filler); Flash Heal (Holy Binding) and Greater Heal on the tank
+-- 0, 2 or 4 times a minute; each filler. A direct heal goes on the tank, Renew and
+-- the group heals on anyone. Every mix runs with fixed ranks (a run that picks its
+-- own ranks is 50 times dearer), then the best few pick their own ranks.
+---------------------------------------------------------------------------
+E.BEST = "best"            -- the key the best playstyle for you runs under (Core.lua)
+E.BUILD_SPELLS = { "POM", "PENANCE", "PWS", "RENEW", "LESSER", "HEAL", "FLASH", "GH", "POH", "NOVA" }
+local BUILD_FILL = { "RENEW", "POH", "GH", "FLASH", "HEAL", "NOVA", "LESSER" }
+local BUILD_KEY = "__build"
+
+-- Can you cast it (learned at your level, and its talent where it needs one)?
+function E.BuildKnows(key, st, t, set)
+  local needs = E.STEP_NEEDS[key]
+  if needs and not t[needs] then return false end
+  return E.MaxRank(dataKey(key), st.level, set.known, set) ~= nil
+end
+
+-- Every mix to try, as playstyles (blocks). use: { [spell] = true } (Flash Heal also
+-- allows Flash Heal with Holy Binding).
+function E.BuildCandidates(use, st, t, set)
+  local function ok(key) return use[key == "BH" and "FLASH" or key] and E.BuildKnows(key, st, t, set) end
+  local out = {}
+  for _, fill in ipairs(BUILD_FILL) do
+    if ok(fill) then
+      local always, opts = {}, {}
+      if ok("POM") then always[#always + 1] = { spell = "POM", how = "cd", tank = true } end
+      if ok("PENANCE") then always[#always + 1] = { spell = "PENANCE", how = "cd", tank = true } end
+      if ok("PWS") then opts[#opts + 1] = { false, { spell = "PWS", how = "cd", tank = true } } end
+      if fill ~= "RENEW" and ok("RENEW") then opts[#opts + 1] = { false, { spell = "RENEW", how = "up", tank = true } } end
+      if fill ~= "FLASH" and ok("BH") then
+        opts[#opts + 1] = { false, { spell = "BH", how = "pm", n = 2, tank = true }, { spell = "BH", how = "pm", n = 4, tank = true } }
+      end
+      if fill ~= "GH" and ok("GH") then
+        opts[#opts + 1] = { false, { spell = "GH", how = "pm", n = 2, tank = true }, { spell = "GH", how = "pm", n = 4, tank = true } }
+      end
+      local function walk(i, picked)
+        if i > #opts then
+          local steps = {}
+          for _, d in ipairs(always) do steps[#steps + 1] = E.copy(d) end
+          for j = 1, #opts do if picked[j] then steps[#steps + 1] = E.copy(picked[j]) end end
+          local shield = false
+          for _, d in ipairs(steps) do if d.spell == "PWS" then shield = true end end
+          steps[#steps + 1] = { spell = fill, how = "fill", tank = (not GROUP_HEALS[fill]) or nil }
+          out[#out + 1] = { steps = steps, rh = (shield and (t.renewedHopeCrit or 0) > 0) or nil }
+          return
+        end
+        for _, c in ipairs(opts[i]) do picked[i] = c; walk(i + 1, picked) end
+        picked[i] = nil
+      end
+      walk(1, {})
+    end
+  end
+  return out
+end
+
+-- "Greater Heal filler + Flash Heal + Shield": the filler, then what it weaves in
+-- (Prayer of Mending and Penance go without saying), as many as fit the name.
+-- "Greater Heal filler + Shield": the filler, then what it weaves in (Prayer of
+-- Mending and Penance go without saying), as many as fit the name.
+local BUILD_WORD = { PWS = "Shield", RENEW = "Renew", BH = "Flash Heal", GH = "Greater Heal" }
+function E.BuildName(def)
+  local steps = def.steps
+  local name = E.StepSpellName(steps[#steps].spell) .. " filler"
+  for i = 1, #steps - 1 do
+    local w = BUILD_WORD[steps[i].spell]
+    if w and #name + 3 + #w <= E.MAX_PLAYSTYLE_NAME then name = name .. " + " .. w end
+  end
+  return name
+end
+
+-- One playstyle through the fight model: ranks (step index -> rank) fixed, or nil
+-- for it to pick its own.
+local function buildRun(def, st, t, set, ranks)
+  local rot = E.RotationFromPlaystyle(def)
+  rot.sheetOnly = true                       -- never listed while it is there
+  local s2 = set
+  if ranks then
+    s2 = {}
+    for k, v in pairs(set) do s2[k] = v end
+    s2.rankChoice = ranks
+  end
+  E.ROTATIONS[BUILD_KEY] = rot
+  local ok, res = pcall(E.Rotation, BUILD_KEY, st, t, s2)
+  E.ROTATIONS[BUILD_KEY] = nil
+  return ok and res or nil
+end
+
+-- use: { [spell] = true }; yield: called between model runs (the window spreads
+-- the work over frames). Returns { def (named, with the spells it was built from),
+-- result, runs } or nil, why.
+function E.BuildPlaystyle(use, st, input, yield)
+  yield = yield or function() end
+  local set = input.settings
+  local t = E.Talents(input.talents, set.rules, set.overrides)
+  local cands = E.BuildCandidates(use, st, t, set)
+  if #cands == 0 then return nil, "tick a spell you can cast without a cooldown (Renew or a heal) to fill the fight" end
+  local runs, tried = 0, {}
+  for _, def in ipairs(cands) do
+    local ranks = {}
+    for i, d in ipairs(def.steps) do ranks[i] = E.MaxRank(dataKey(d.spell), st.level, set.known, set) or 1 end
+    local res = buildRun(def, st, t, set, ranks)
+    runs = runs + 1
+    if res then tried[#tried + 1] = { def = def, res = res } end
+    if runs % 20 == 0 then yield() end
+  end
+  if #tried == 0 then return nil, "no playstyle could be worked out" end
+  table.sort(tried, function(a, b) return a.res.ehps > b.res.ehps end)
+  local best = tried[1]
+  for i = 1, math.min(5, #tried) do
+    local res = buildRun(tried[i].def, st, t, set, nil)
+    runs = runs + 1
+    yield()
+    if res and res.ehps > best.res.ehps then best = { def = tried[i].def, res = res } end
+  end
+  local def = E.copy(best.def)
+  def.name = E.BuildName(def)
+  -- the spells it was built from (those you can cast), and those ticked but not in it
+  local spells, unused, inIt = {}, {}, {}
+  for _, d in ipairs(def.steps) do inIt[d.spell == "BH" and "FLASH" or d.spell] = true end
+  for _, k in ipairs(E.BUILD_SPELLS) do
+    if use[k] and E.BuildKnows(k, st, t, set) then
+      spells[#spells + 1] = k
+      if not inIt[k] then unused[#unused + 1] = k end
+    end
+  end
+  def.spells = spells
+  return { def = def, result = best.res, runs = runs, unused = unused }
+end
+
 return E

@@ -46,30 +46,11 @@ end
 local verdictCache, baseCache = {}, {}
 function ns.ClearVerdicts() verdictCache, baseCache = {}, {} end
 
--- Can you play this playstyle now (it exists, and you have the talent it needs)?
-local function usable(key, S)
-  local r = key and E.ROTATIONS and E.ROTATIONS[key]
-  if not r or r.sheetOnly then return false end
-  return not r.requires or ((S.t and S.t[r.requires]) or 0) > 0
-end
-
--- The playstyles item tooltips are worked out for (Settings tab): 1 to 3, in the
--- order you ticked them, "yours" being the one you play. Gone or unusable ones are
--- left out; none left: yours.
+-- The playstyle item tooltips are worked out for: the one Holy Math counts you as
+-- (Core.lua's best playstyle for you).
 function ns.TooltipStyles(S)
   S = S or ns.State()
-  local tip = ns.db and ns.db.tooltips or {}
-  local list = type(tip.itemStyles) == "table" and tip.itemStyles or { "yours" }
-  local out, seen = {}, {}
-  for _, k in ipairs(list) do
-    if k == "yours" then k = S and S.rotation end
-    if type(k) == "string" and not seen[k] and S and usable(k, S) and #out < (ns.MAX_TOOLTIP_STYLES or 3) then
-      seen[k] = true
-      out[#out + 1] = k
-    end
-  end
-  if #out == 0 and S and S.rotation then out[1] = S.rotation end
-  return out
+  return { S and S.rotation }
 end
 
 -- A playstyle's result with your stats now (yours is already worked out).

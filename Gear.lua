@@ -1,12 +1,12 @@
 --[[ Holy Math - Gear.lua
      The Gear tab: the best gear for you at your level, worked out in game by
      Models/GearSolve.lua: your live character (level, talents, race, buffs,
-     playstyle, every setting) with your gear swapped for the items in
+     the best playstyle for you, every setting) with your gear swapped for the items in
      Models/GearData.lua (out now in WoW: Forever, your faction). At level 60 it is
      the best in slot. Laid out like KeystoneLoot's loot window, with a row per
      slot instead of per dungeon:
 
-       List [ Without PvP gear  v ]  Playstyle [ Renew filler  v ]               [ Filter  v ]
+       List [ Without PvP gear  v ]                                             [ Filter  v ]
                                       Sets: Vestments of the Virtuous 4 (8 MP5, 5% a cast: 200 mana)
        +--------------------------------------------------------------------------+
        | [slot] Head       [best]  [2nd][3rd][4th][5th] | [slot] Legs   ...        |
@@ -78,6 +78,65 @@ function O.GearSide()
 end
 
 local function GS() return ns.GearSolve end
+
+-- A spell icon with the action buttons' border and highlight.
+local function IconButton(parent, size)
+  local b = CreateFrame("Button", nil, parent)
+  b:SetSize(size, size)
+  b.icon = b:CreateTexture(nil, "ARTWORK")
+  b.icon:SetAllPoints(b)
+  local border = b:CreateTexture(nil, "OVERLAY")
+  border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+  border:SetPoint("CENTER", b, "CENTER", 0, 0)
+  border:SetSize(size * 66 / 36, size * 66 / 36)
+  local hl = b:CreateTexture(nil, "HIGHLIGHT")
+  hl:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+  hl:SetBlendMode("ADD")
+  hl:SetAllPoints(b)
+  b:RegisterForDrag("LeftButton")
+  if b.RegisterForClicks then b:RegisterForClicks("LeftButtonUp", "RightButtonUp") end
+  return b
+end
+
+
+-- The game's dropdown, or a plain button that steps through the choices.
+-- choices() -> { { text, value, disabled } ... }; get() -> value; set(value).
+-- ready() says whether there is anything to show yet: the game's dropdown builds
+-- its menu as soon as it is set up, before a row has a block in it.
+local function Choice(parent, width, ready, choices, get, set, label, help)
+  local raw = { choices = choices, get = get, label = label }
+  choices = function() if ready() then return raw.choices() end return {} end
+  get = function() if ready() then return raw.get() end end
+  label = function() if ready() then return raw.label() end return "" end
+  local dd = U.try("DropdownButton", parent, "WowStyle1DropdownTemplate")
+  if dd and dd.SetupMenu then
+    dd:SetWidth(width)
+    dd:SetupMenu(function(_, root)
+      for _, c in ipairs(choices()) do
+        local r = root:CreateRadio(c[1], function(v) return get() == v end, function(v) set(v) end, c[2])
+        if r and c[3] and r.SetEnabled then r:SetEnabled(false) end
+      end
+    end)
+    if dd.SetSelectionTranslator then dd:SetSelectionTranslator(function() return label() end) end
+    dd.refresh = function() if dd.GenerateMenu then pcall(dd.GenerateMenu, dd) end end
+  else
+    dd = U.Button(parent, "", width, 22, function(self, button)
+      local list, cur = choices(), get()
+      local at = 1
+      for i, c in ipairs(list) do if c[2] == cur then at = i end end
+      for _ = 1, #list do
+        at = (button == "RightButton") and (at - 2) % #list + 1 or at % #list + 1
+        if not list[at][3] then break end
+      end
+      set(list[at][2])
+    end)
+    if dd.RegisterForClicks then dd:RegisterForClicks("LeftButtonUp", "RightButtonUp") end
+    dd.refresh = function() if dd.label then dd.label:SetText(label()) else dd:SetText(label()) end end
+  end
+  if help then U.Tip(dd, help[1], help[2]) end
+  return dd
+end
+
 
 -- The Filter menu (top right of the tab): where items come from, the zones they drop in,
 -- random suffixes, only what you have. Saved in HolyMathDB.gear:
@@ -446,7 +505,7 @@ end
 -- An item box: its picture with the action buttons' border, a tick when you have it,
 -- or an empty box.
 local function ItemIcon(parent, size)
-  local b = O.IconButton(parent, size)
+  local b = IconButton(parent, size)
   b.tick = b:CreateTexture(nil, "OVERLAY", nil, 7)
   b.tick:SetTexture(TICK)
   b.tick:SetSize(math.floor(size / 2), math.floor(size / 2))
@@ -621,7 +680,7 @@ function O.BuildGear(pane)
   local y = U.TOP
   -- one line: List [dropdown]  and what the list is for, on the dropdown's middle
   local listLabel = U.Label(pane, "List", "GameFontNormal", U.LEFT, y - 6)
-  O.gearList = O.Choice(pane, 180, function() return true end,
+  O.gearList = Choice(pane, 180, function() return true end,
     function() return { { "Without PvP gear", "pve" }, { "With PvP gear", "pvp" } } end,
     function() return settings().pvp and "pvp" or "pve" end,
     function(v) settings().pvp = (v == "pvp") or nil; O.gearKey = nil; O.FillGear() end,
@@ -632,29 +691,6 @@ function O.BuildGear(pane)
   O.controls.gearList = O.gearList
   listLabel:ClearAllPoints()
   listLabel:SetPoint("RIGHT", O.gearList, "LEFT", -8, 0)
-
-  -- the playstyle, right here: change it and the list follows (the same setting as the Settings tab's)
-  local psLabel = U.Label(pane, "Playstyle", "GameFontNormal", U.LEFT + 240, y - 6)
-  O.gearPlaystyle = O.Choice(pane, 260, function() return ns.db ~= nil end,
-    function()
-      local list = {}
-      for _, k in ipairs(O.RotationKeys and O.RotationKeys() or {}) do
-        list[#list + 1] = { O.PlaystyleMenuText and O.PlaystyleMenuText(k) or k, k }
-      end
-      return list
-    end,
-    function() return ns.db and ns.db.rotation end,
-    function(v) if ns.db then ns.db.rotation = v; O.Changed(true) end end,
-    function()
-      local r = ns.db and ns.model and ns.model.ROTATIONS[ns.db.rotation]
-      return r and r.name or ""
-    end,
-    { "Playstyle", "Which spells you mostly cast: the gear that's best depends on it. The same setting as on the " ..
-      "Settings tab; the Playstyles tab builds your own." })
-  O.gearPlaystyle:SetPoint("TOPLEFT", pane, "TOPLEFT", U.LEFT + 312, y)
-  psLabel:ClearAllPoints()
-  psLabel:SetPoint("RIGHT", O.gearPlaystyle, "LEFT", -8, 0)
-  O.controls.gearPlaystyle = O.gearPlaystyle
 
   O.GearFilterMenu(pane, U.LEFT + W, y)
 
@@ -829,7 +865,6 @@ function O.FillGear()
   if not O.gearRows then return end
   local D = data()
   if O.gearList and O.gearList.refresh then O.gearList.refresh() end
-  if O.gearPlaystyle and O.gearPlaystyle.refresh then O.gearPlaystyle.refresh() end
   if O.gearFilterLabel then O.gearFilterLabel() end
   local S = ns.State and ns.State()
   if not (S and S.weights) then

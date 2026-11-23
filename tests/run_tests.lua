@@ -1416,6 +1416,43 @@ do
   local has = false
   for _, it in ipairs(poolT) do if it == robe then has = true end end
   ok("Truefaith Vestments only with Tailoring", robe and has and #poolT > #pool)
+  -- The playstyle Holy Math counts with: the best mix of every spell you can cast
+  do
+    local inp = character(60, "H")
+    inp.gear = { healing = 600, int = 250, crit = 2, haste = 0, mp5 = 30, spirit = 300, spelldamage = 0 }
+    local st = E.Derive(inp)
+    local t = E.Talents(inp.talents, inp.settings.rules)
+    local use = {}
+    for _, k in ipairs(E.BUILD_SPELLS) do use[k] = true end
+    local best = E.BuildPlaystyle(use, st, inp)
+    ok("the best playstyle: found, named, valid (" .. (best and best.def.name or "none") .. ")",
+      best and best.def.name:find("filler") and E.PlaystyleProblem(best.def) == nil)
+    local worse = {}
+    for key, r in pairs(E.BUILTIN_ROTATIONS) do
+      if not r.sheetOnly and not r.requires then
+        local res = E.Rotation(key, st, t, inp.settings)
+        if res and res.ehps > best.result.ehps + 1e-6 then worse[#worse + 1] = string.format("%s %.0f", key, res.ehps) end
+      end
+    end
+    ok(string.format("... heals at least as much as every built-in (%.0f HPS; beaten by: %s)", best.result.ehps,
+      table.concat(worse, ", ")), #worse == 0)
+    E.ROTATIONS[E.BEST] = E.RotationFromPlaystyle(best.def)
+    local again = E.Rotation(E.BEST, st, t, inp.settings)
+    E.ROTATIONS[E.BEST] = nil
+    near("... run as the playstyle it heals what the search said", again.ehps, best.result.ehps, 1e-6)
+    ok("the search leaves nothing behind", E.ROTATIONS.__build == nil)
+    -- Discipline: Penance and the shield, with Renewed Hope's Weakened Soul
+    local dinp = character(60, "H")
+    dinp.gear = inp.gear
+    dinp.talents = { twinDisciplines = 5, improvedPWS = 3, mentalAgility = 5, innerFocus = 1, meditation = 3, mentalStrength = 5,
+      soulWarding = 1, divineAegis = 3, renewedHope = 1, penance = 1, holySpecialization = 5, divineFury = 5, improvedRenew = 3,
+      inspiration = 0, improvedHealing = 0, holyBinding = 0, bindingHeal = 0, litanyOfLight = 0, spiritualGuidance = 0,
+      spiritualHealing = 0, prayerOfMending = 0 }
+    local disc = E.BuildPlaystyle(use, E.Derive(dinp), dinp)
+    local hasPen = false
+    for _, d in ipairs(disc.def.steps) do if d.spell == "PENANCE" then hasPen = true end end
+    ok("Discipline: Penance is in its best playstyle (" .. disc.def.name .. ")", hasPen)
+  end
   -- the Gear tab's filters: where items come from, the zones they drop in, random suffixes, what you have
   do
     local K = GS.KIND
