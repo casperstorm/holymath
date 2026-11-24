@@ -646,7 +646,7 @@ do
   expect(O.frame.title == "Holy Math", "window uses Blizzard's portrait frame with a title")
   expect(O.controls.fight and O.controls.fight.value and O.controls["fight-"] and O.controls["fight+"],
     "fight length: its value in a box, the game's arrows either side")
-  expect(O.frame.width == 880, "the Settings tab is as wide as the Gear and Math tabs")
+  expect(O.frame.width == 880, "the Stats tab is as wide as the Consumables and Math tabs")
   local before = O.hps.text
   expect(before and before:find("^%d+ HPS$"), "result: big HPS headline")
   expect((O.hpsNote.text or ""):find("after overheal") and (O.hpsNote.text or ""):find("%d+ before"), "result: before-overheal note")
@@ -707,7 +707,7 @@ do
   O.Refresh()
   expect(HolyMathDB.PRIEST.settings.fightLength == 240 and O.controls.fight.value.text == "240 s", "the left arrow takes it back; the box shows it")
   expect(O.hps.text ~= before, "result updates after a change")
-  expect(not O.controls.ohRENEW, "no overheal sliders on the Settings tab (they are on the Math tab)")
+  expect(not O.controls.ohRENEW, "no overheal sliders on the Stats tab (they are on the Math tab)")
   O.controls.insp:SetChecked(false); O.controls.insp.scripts.OnClick(O.controls.insp)
   expect(HolyMathDB.PRIEST.settings.includeInspiration == false, "Blizzard checkbox turns Inspiration off")
   -- Counts you as: the game's dropdown, "Best for you" first and chosen; the built-ins after it, never edited
@@ -780,10 +780,10 @@ do
   local O = ns.Options
   local db = ForeverHealerDB and ForeverHealerDB.PRIEST or HolyMathDB.PRIEST
   SlashCmdList.HOLYMATH("")
-  expect(O.frame:IsShown() and O.panes.settings:IsShown(), "window opens on the Settings tab")
+  expect(O.frame:IsShown() and O.panes.settings:IsShown(), "window opens on the Stats tab")
   local function click(b) b.scripts.OnClick(b) end
   expect(not O.controls["tab:spells"] and not O.panes.spells, "no Your spells tab: it is the Math tab's first section")
-  expect((O.version and O.version.text or ""):find("^Holy Math"), "Settings tab: the version at the bottom (" .. tostring(O.version and O.version.text) .. ")")
+  expect((O.version and O.version.text or ""):find("^Holy Math"), "Stats tab: the version at the bottom (" .. tostring(O.version and O.version.text) .. ")")
   local hadAddOns = C_AddOns
   C_AddOns = { GetAddOnMetadata = function(name, field) return name == "HolyMath" and field == "Version" and "1.2.3" or nil end }
   expect(O.VersionText() == "Holy Math 1.2.3", "version: a release shows its number")
@@ -881,12 +881,12 @@ do
   end
   for _, l in ipairs(mathLines) do realprint("    math: " .. l) end
   expect(head, "Math tab works out the fight's spells (Renew, the filler)")
-  expect(hpsLine and (hpsLine .. " HPS") == plain(O.hps.text), "Math tab's HPS = the Settings tab's (" .. tostring(hpsLine) .. ")")
+  expect(hpsLine and (hpsLine .. " HPS") == plain(O.hps.text), "Math tab's HPS = the Stats tab's (" .. tostring(hpsLine) .. ")")
   expect(srcs >= 10, "Math lines know where their numbers come from (shown on hover)")
   expect(not O.mathRows[1].cells[4], "no Source column")
   expect(O.frame.width == 880, "the Math tab is 880 wide")
   click(O.controls["tab:settings"])
-  expect(O.frame.width == 880, "... and so is the Settings tab, as the Consumables tab")
+  expect(O.frame.width == 880, "... and so is the Stats tab, as the Consumables tab")
   click(O.controls["tab:math"])
   expect(O.panes.math:IsShown(), "Math tab opens from its tab too")
 
@@ -918,7 +918,7 @@ do
   eb:SetText("x2"); eb.scripts.OnEnterPressed(eb)
   expect(db.overrides["stat.critMulti"] == 2, "sheet: typing x2 makes crits heal for x2")
   expect(not eb:IsShown(), "sheet: Enter closes the box")
-  expect(O.hps.text ~= hpsBefore, "sheet: the Settings tab's HPS uses your value")
+  expect(O.hps.text ~= hpsBefore, "sheet: the Stats tab's HPS uses your value")
   expect(tipLine("|Hitem:1002:0:|h") ~= tipBefore and tipBefore ~= "", "sheet: item tooltips use your value too")
   cm = cellRow("stat.critMulti")
   expect(plain(cm.cells[3].text) == "x2" and cm.resetBtn:IsShown(), "sheet: your value, with an arrow to put it back")
@@ -972,11 +972,11 @@ do
   GameTooltip.lines = {}
   O.controls.ResetValues.scripts.OnEnter(O.controls.ResetValues)
   click(O.controls["tab:settings"])
-  expect(O.yourValues:IsShown(), "the bottom line shows on the Settings tab too")
+  expect(O.yourValues:IsShown(), "the bottom line shows on the Stats tab too")
   click(O.controls.ResetValues)
   expect(mine() == 0 and not O.yourValues:IsShown() and O.hps.text == hpsBefore, "Put all back: the game's values everywhere")
   click(O.controls.YourSpells)
-  expect(O.panes.math:IsShown() and O.mathAnchors.spells == 0, "Settings tab's 'Your spells' opens the sheet at Your spells")
+  expect(O.panes.math:IsShown() and O.mathAnchors.spells == 0, "Stats tab's 'Your spells' opens the sheet at Your spells")
   click(O.controls["tab:settings"])
   local insp = O.controls.insp
   expect(insp.enabled ~= false, "Inspiration's checkbox works: you have the talent")
@@ -1020,11 +1020,11 @@ do
   expect(leftover == 0, "sheet lines below Your spells show none of its columns")
   expect(not (O.castRows or O.notesText or O.controls.useBest), "no 'how to play' instructions left")
 
-  -- item tooltips: three options on the Settings tab, no Tooltips tab
+  -- item tooltips: three options on the Stats tab, no Tooltips tab
   click(O.controls["tab:settings"])
   expect(not O.controls["tab:tooltips"] and not O.panes.tooltips, "no Tooltips tab")
-  expect(O.controls.tipItems and O.controls.tipItemNumber and O.controls.tipItemPct, "Settings tab: show, number, % for item tooltips")
-  expect(O.controls.tipSpells, "Settings tab: spell tooltips on or off")
+  expect(O.controls.tipItems and O.controls.tipItemNumber and O.controls.tipItemPct, "Stats tab: show, number, % for item tooltips")
+  expect(O.controls.tipSpells, "Stats tab: spell tooltips on or off")
   O.controls.tipSpells:SetChecked(false); click(O.controls.tipSpells)
   expect(db.tooltips.spells == false, "unticking it turns the spell line off")
   O.controls.tipSpells:SetChecked(true); click(O.controls.tipSpells)
@@ -1165,7 +1165,7 @@ do
   -- auto-save: a change goes into the loaded profile by itself, and only into it
   O.controls.insp:SetChecked(false); O.controls.insp.scripts.OnClick(O.controls.insp)
   expect(db.profiles["1 bounce"].settings.includeInspiration == false and closed() == "1 bounce",
-    "a change on the Settings tab is saved into the loaded profile")
+    "a change on the Stats tab is saved into the loaded profile")
   expect(db.profiles["3 bounces"].settings.includeInspiration == true, "... and not into the others")
   db.settings.overheal.GH = 0.5; O.Changed(true)
   expect(db.profiles["1 bounce"].settings.overheal.GH == 0.5, "overheal set on the Math tab is saved into it too")
@@ -1250,7 +1250,7 @@ do
   StaticPopupDialogs, StaticPopup_Show, StaticPopup_Hide = nil, nil, nil
 end
 
--- Potions on the Settings tab: the list by cooldown, counts, add, remove, best mix
+-- Potions on the Stats tab: the list by cooldown, counts, add, remove, best mix
 do
   local O, M = ns.Options, ns.model
   local db = HolyMathDB.PRIEST
@@ -1448,7 +1448,7 @@ do
   O.frame:Hide()
 end
 
--- People reached by group heals: a slider on the Settings tab and /hm set group
+-- People reached by group heals: a slider on the Stats tab and /hm set group
 do
   local O, db = ns.Options, HolyMathDB.PRIEST
   expect(O.controls.group and O.controls.group.value and (db.settings.groupHits or 5) == 5, "people reached by group heals, 5 to start")
@@ -1465,7 +1465,7 @@ do
   SlashCmdList.HOLYMATH("set group 9")
   expect(db.settings.groupHits == 2, "... and only takes 1 to 5")
   O.controls.group:SetValue(4)
-  expect(db.settings.groupHits == 4, "the Settings tab sets it")
+  expect(db.settings.groupHits == 4, "the Stats tab sets it")
   db.settings.groupHits = 5; ns.MarkDirty()
 end
 
@@ -1577,7 +1577,7 @@ do
     and rowNamed("Food and drink").icons[1].entry.it.name == "Sage's Tea" and nonneg,
     "Greater Cleric's Elixir and Sage's Tea lead their rows; no buff worth less than none")
   expect(O.consNote.text:find("Level 60") and O.consNote.text:find("HPS now"), "above the rows: level, playstyle, fight (" .. O.consNote.text .. ")")
-  -- the potion in your list (Settings: Major Mana Potion by default): a gold tick
+  -- the potion in your list (Stats tab: Major Mana Potion by default): a gold tick
   local pot = rowNamed("Potion")
   local mm
   for _, b in ipairs(pot.icons) do if b.entry and b.entry.it.name == "Major Mana Potion" then mm = b end end
@@ -1733,7 +1733,7 @@ do
   expect(O.frame:IsShown() and O.tab == "consumables", "right-click: the window at the Consumables tab")
   O.ShowTab("settings")
   local c = O.controls.minimap
-  expect(c and c.checked == true, "Settings: Show the minimap button, on")
+  expect(c and c.checked == true, "Stats tab: Show the minimap button, on")
   c:SetChecked(false); c.scripts.OnClick(c)
   expect(not b.shown and HolyMathDB.minimap.hide == true, "unticked: the button hides, and stays hidden (saved)")
   c:SetChecked(true); c.scripts.OnClick(c)

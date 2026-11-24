@@ -2,7 +2,7 @@
      A small button on the minimap's edge, drawn like the game's own: click opens or
      closes the window, right-click opens it at the Consumables tab, drag moves it around
      the minimap. Where it sits and whether it shows are saved for the account
-     (HolyMathDB.minimap = { angle, hide }); the Settings tab has the switch, and so
+     (HolyMathDB.minimap = { angle, hide }); the Stats tab has the switch, and so
      does /hm minimap. Made at login (Core.lua), for priests only.
 ]]--
 

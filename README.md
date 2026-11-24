@@ -2,7 +2,7 @@
 
 The maths behind a healing priest in **World of Warcraft: Forever**, worked out on your own stats and the game's own spell data. Get it on [CurseForge](https://www.curseforge.com/wow/addons/holy-math/).
 
-![The Settings tab](media/settings.webp)
+![The Stats tab](media/settings.webp)
 
 ## What it does
 
@@ -12,7 +12,7 @@ The maths behind a healing priest in **World of Warcraft: Forever**, worked out 
 - **Consumables and enchants:** the best flask, elixir, weapon oil, food or drink, potion and rune for you, and the best enchant for each slot, ranked by what each adds to your healing.
 - **Math tab:** every number worked out step by step, with your own stats in it. Click a value to type your own.
 
-Everything updates by itself when your gear, buffs, talents or settings change. Holy Math counts you with the best way to use the spells you know, or a playstyle you pick on the Settings tab.
+Everything updates by itself when your gear, buffs, talents or settings change. Holy Math counts you with the best way to use the spells you know, or a playstyle you pick on the Stats tab.
 
 ![The Consumables tab](media/consumables.webp)
 
@@ -37,7 +37,7 @@ Click the minimap button (or type `/hm`) to open the window. Right-click the but
 | `/hm minimap` | hide or show the minimap button |
 | `/hm reset` | undo every value you typed on the Math tab |
 
-**Settings tab:** the playstyle Holy Math counts you as, your HPS, what each stat is worth, and your fight: its length, Prayer of Mending bounces, group size, Mana Tide and the potions you drink.
+**Stats tab:** the playstyle Holy Math counts you as, your HPS, what each stat is worth, and your fight: its length, Prayer of Mending bounces, group size, Mana Tide and the potions you drink.
 
 **Consumables tab:** one row for each thing you can have at once, best first. Your active buffs are already in your stats, so each item is counted in place of the one you have on. A gold tick marks what you have on (or the potion in your list), a white tick what's in your bags. Switch **Show** to **Enchants** for the best enchant per slot, counted over the enchant on your item. Right-click any icon for its Wowhead link.
 

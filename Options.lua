@@ -8,9 +8,9 @@
                    the user knowing it once tainted the Group Finder's menu
                    (ADDON_ACTION_BLOCKED on Search(), 20 Nov 2026).
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
-     Tabs: Settings (the fight, tooltips, the result), Consumables (Consumables.lua), Math (Your
+     Tabs: Stats (the fight, tooltips, the result; key "settings"), Consumables (Consumables.lua), Math (Your
      spells first). No playstyle to choose: Holy Math counts the best one for you
-     (Core.lua); the Settings tab says which.
+     (Core.lua); the Stats tab says which.
      Profiles: a dropdown at the top right, on both tabs (ProfileControls).
        typing      InputBoxTemplate (the Math tab's cells)
      Each was checked against addons that already use it on this client (BugSack,
@@ -21,7 +21,7 @@
      worked out and where it comes from. Boxed values can be typed over: your own
      value is then used everywhere until you put it back (a line at the bottom of
      every tab says so), and settings typed there (overheal per spell, fight
-     length) are the same settings the Settings tab has.
+     length) are the same settings the Stats tab has.
 
      Every setting explains itself on hover. Everything recalculates by itself
      (settings, gear, buffs, talents), so there is no Recalculate button. Spell
@@ -47,7 +47,7 @@ local WIDTH = RIGHT + COL_W + MARGIN
 -- some of its tabs): its formulas need the room.
 local MATH_WIDTH = 880
 local HEIGHT = 560
-local SETTINGS_HEIGHT = 480       -- the Settings tab: its controls, the table, the line under it, Defaults
+local SETTINGS_HEIGHT = 480       -- the Stats tab: its controls, the table, the line under it, Defaults
 local CONS_HEIGHT = 547 - 2 * 44   -- the Consumables tab: two columns of 6 rows
 local TOP, ROW, ROW_H = -66, 30, 28
 
@@ -351,12 +351,12 @@ local function Cell(parent, x, y, w, justify, font)
   return fs
 end
 
-local TABS = { { key = "settings", text = "Settings" }, { key = "consumables", text = "Consumables" },
+local TABS = { { key = "settings", text = "Stats" }, { key = "consumables", text = "Consumables" },
                { key = "math", text = "Math" } }
 
 function O.ShowTab(key)
   O.tab = key
-  if O.frame and O.frame.SetWidth then O.frame:SetWidth(MATH_WIDTH) end   -- every tab as wide (Settings as Consumables and Math)
+  if O.frame and O.frame.SetWidth then O.frame:SetWidth(MATH_WIDTH) end   -- every tab as wide (Stats as Consumables and Math)
   if O.frame and O.frame.SetHeight then
     O.frame:SetHeight(key == "consumables" and CONS_HEIGHT or key == "settings" and SETTINGS_HEIGHT or HEIGHT)
   end
@@ -445,7 +445,7 @@ end
 -- numbers in it and where each one comes from (Models/PriestMath.lua builds the
 -- rows; this lays them out). A boxed value can be typed over: a number the model
 -- uses becomes yours everywhere (db.overrides, until you put it back), a setting
--- is the same setting as on the Settings tab.
+-- is the same setting as on the Stats tab.
 local MATH_COLS = {   -- title, x, width, justify; then the revert icon
   { "Item", 0, 176, "LEFT" }, { "Formula", 176, 520, "LEFT" }, { "Value", 696, 90, "RIGHT" },
 }
@@ -646,7 +646,7 @@ local function BuildMathPane(pane)
   end
   local under = Flat(pane, "BORDER", 1, 0.82, 0, 0.35)
   if under then under:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT, MATH_TOP); under:SetSize(O.mathListW, 1) end
-  -- the table (its column titles too) in the game's dark inset, as the Settings and Consumables tabs'
+  -- the table (its column titles too) in the game's dark inset, as the Stats and Consumables tabs'
   local inset = try("Frame", pane, "InsetFrameTemplate")
   if inset then
     inset:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT - 4, MATH_TOP + 22)
@@ -973,7 +973,7 @@ function O.FillYourValues()
 end
 
 ---------------------------------------------------------------------------
--- Potions, on the Settings tab (left column): the potions and runes you drink in
+-- Potions, on the Stats tab (left column): the potions and runes you drink in
 -- a fight and how many of each, grouped by the cooldown they share:
 --   Potions
 --   Potion cooldown: 3 fit in a 300 s fight
@@ -1261,7 +1261,7 @@ local function PotionSettings(p, x, y)
   end
 end
 
--- Tooltips, on the Settings tab: the item line and what it shows, and the spell line.
+-- Tooltips, on the Stats tab: the item line and what it shows, and the spell line.
 local function TooltipSettings(p, x, y)
   local tips = function() return db().tooltips end
   local function opt(id, oy, label, help, key)
@@ -1440,7 +1440,7 @@ O.UI = { try = try, Button = Button, Tip = Tip, ShowTip = ShowTip, HideTip = Hid
          Check = Check, Flat = Flat, complain = complain, editBoxOf = editBoxOf, LEFT = LEFT, TOP = TOP }
 
 -- A panel beside the window (potions; tooltips and the minimap button): the game's
--- basic frame with a title and close button, opened by a button on the Settings tab,
+-- basic frame with a title and close button, opened by a button on the Stats tab,
 -- one at a time; it closes with the window or another tab.
 O.panels = {}
 function O.Panel(owner, key, title, w, h)
@@ -1495,7 +1495,7 @@ local function Build()
   local frame = p
   p = O.panes.settings
 
-  -- The Settings tab, built like the Consumables and Math tabs: controls on top, a grey line,
+  -- The Stats tab, built like the Consumables and Math tabs: controls on top, a grey line,
   -- one inset holding a table in two columns, the Math tab's gold section bands,
   -- striped rows and boxed values.
   --   Counts you as [ Best for you: Greater Heal filler v ]   [Your spells and overheal] [Tooltips and minimap...]

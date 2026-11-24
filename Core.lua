@@ -14,14 +14,14 @@ local function ClassDefaults(model)
   d.settings.shadowSpiritBuff = false
   -- A typical Classic raid boss lasts about 2 minutes (the sheet assumed 5).
   d.settings.fightLength = 120
-  -- Potions: a list (Settings tab); the sheet's two switches are only for its tests.
+  -- Potions: a list (Stats tab); the sheet's two switches are only for its tests.
   d.settings.majorManaPotions, d.settings.cheapManaPotions = nil, nil
   d.settings.potions = { { key = "majorMana", n = model.POTION_ALL } }
   return d
 end
 ns.ClassDefaults = ClassDefaults
 
--- What the tooltips show (Settings tab of the window): the item line at all,
+-- What the tooltips show (Stats tab of the window): the item line at all,
 -- the change in healing per second, the change in %, and the spell line.
 local TOOLTIP_DEFAULTS = { items = true, itemNumber = true, itemPercent = true, spells = true }
 function ns.TooltipDefaults()
@@ -144,7 +144,7 @@ local function Rebuild()
     t = E.Talents(input.talents, nil, db.overrides)
     st = E.ApplyStatOverrides(st, db.overrides)
   end
-  -- the playstyle Holy Math counts with: one of the built-ins you chose on the Settings
+  -- the playstyle Holy Math counts with: one of the built-ins you chose on the Stats
   -- tab, else the best for you (Renew filler while your stats can't be read)
   local best = (not st.invalid) and bestPlaystyle(st, input) or nil
   if best then E.ROTATIONS[E.BEST] = E.RotationFromPlaystyle(best) end
@@ -692,7 +692,7 @@ SlashCmdList.HOLYMATH = function(msg)
       Summary()
     else
       local names = P.List()
-      if #names == 0 then return say("no profiles yet. Save one from the bottom of the Settings tab (/hm).") end
+      if #names == 0 then return say("no profiles yet. Save one from the bottom of the Stats tab (/hm).") end
       local parts = {}
       for _, n in ipairs(names) do
         local h = P.HPS(n)

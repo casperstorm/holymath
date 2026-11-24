@@ -86,7 +86,7 @@ local function editable(row, id, unit, raw, orig)
   end
   return row
 end
--- A setting typed here is the same setting as on the Settings tab.
+-- A setting typed here is the same setting as on the Stats tab.
 local function setting(row, path, unit, raw)
   row[3] = E.MathFormat(unit, raw)
   row.edit = { setting = path, unit = unit, raw = raw }
@@ -395,7 +395,7 @@ local function fightSection(rows, S)
     manaSum = manaSum + part.mana
     local lab = MANA_LABELS[part.key]
     if part.key == "potions" and part.plan and not part.plan.sheet then
-      -- your potions, one line each (Settings tab), with the cooldown they share
+      -- your potions, one line each (Stats tab), with the cooldown they share
       potPlan = part.plan
       for _, it in ipairs(part.plan.items) do
         if it.n > 0 and it.mana > 0.5 then
@@ -537,7 +537,7 @@ local function statSection(rows, S)
   end
 end
 
--- Overheal per spell, in the order the Settings tab had them.
+-- Overheal per spell, in the order the Stats tab had them.
 E.OVERHEAL_ORDER = { "RENEW", "GH", "FLASH", "HEAL", "POH", "POM", "PWS", "PENANCE", "NOVA", "LESSER" }
 function E.OverhealHelp(name)
   return "How much of " .. name .. "'s healing you expect to land on players who are already " ..

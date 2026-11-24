@@ -1,7 +1,7 @@
 --[[ Holy Math - Consumables.lua
      The Consumables tab: what to eat, drink and use for the most healing, worked out for your
      character as it is (level, talents, stats, the playstyle Holy Math counts you as, the fight
-     on the Settings tab) by Models/ConsumableRank.lua. A row per thing you can have at once
+     on the Stats tab) by Models/ConsumableRank.lua. A row per thing you can have at once
      (one flask, one elixir, one weapon oil, one food or drink, a potion, a rune), laid out as KeystoneLoot's
      loot window:
 
@@ -12,7 +12,7 @@
        +--------------------------------------------------------------------------+
 
      The first is the best for you. A gold tick: you have it on (a potion or rune: it's in
-     your potion list on the Settings tab; an enchant: it's on your item); a white one: it's in
+     your potion list on the Stats tab; an enchant: it's on your item); a white one: it's in
      your bags. Show [Consumables v] switches to Enchants: a row per slot, each enchant over the
      one on your item there.
 ]]--
@@ -185,7 +185,7 @@ function O.TabTipLines(tt)
     else
       tt:AddDoubleLine("  Over none on its cooldown", valueText(e.d, e.pct), 1, 1, 1, 1, 1, 1)
     end
-    tt:AddLine("Used as often as its cooldown lets you; your potion list is on the Settings tab (Potions...).",
+    tt:AddLine("Used as often as its cooldown lets you; your potion list is on the Stats tab (Potions...).",
       0.6, 0.6, 0.6, true)
   elseif e.worn then
     tt:AddDoubleLine("  You have it on", valueText(e.d, e.pct, true), 1, 1, 1, 1, 1, 1)
@@ -365,7 +365,7 @@ end
 local FOOT = {
   consumables = "Each row is one thing you can have at once: one flask, one elixir, one weapon oil, one food or " ..
     "drink, and a potion and a rune on their cooldowns; the best for you first. What each adds to your healing per second, worked out for your stats, " ..
-    "the playstyle Holy Math counts you as and your fight (Settings tab); in place of the one you have on. A gold tick: " ..
+    "the playstyle Holy Math counts you as and your fight (Stats tab); in place of the one you have on. A gold tick: " ..
     "you have it on (a potion or rune: it's in your potion list); a white one: it's in your bags. Right-click an item " ..
     "for its Wowhead page.",
   enchants = "A row per slot, the best enchant for you first: what each adds to your healing per second over the " ..
@@ -530,7 +530,7 @@ function O.FillConsumables()
   if not (S and S.weights) then
     O.consNote:SetText((InCombatLockdown and InCombatLockdown() and S and S.st and S.st.invalid)
       and "Your stats can't be read in combat; this fills in when the fight ends."
-      or "No model yet (see the Settings tab).")
+      or "No model yet (see the Stats tab).")
     for _, r in ipairs(O.consRows) do r:Hide() end
     return
   end
