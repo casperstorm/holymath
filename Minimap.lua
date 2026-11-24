@@ -1,6 +1,6 @@
 --[[ Holy Math - Minimap.lua
      A small button on the minimap's edge, drawn like the game's own: click opens or
-     closes the window, right-click opens it at the Gear tab, drag moves it around
+     closes the window, right-click opens it at the Consumables tab, drag moves it around
      the minimap. Where it sits and whether it shows are saved for the account
      (HolyMathDB.minimap = { angle, hide }); the Settings tab has the switch, and so
      does /hm minimap. Made at login (Core.lua), for priests only.
@@ -33,7 +33,7 @@ local function tip(self)
   GameTooltip:SetOwner(self, "ANCHOR_LEFT")
   GameTooltip:SetText("Holy Math", 1, 0.82, 0)
   GameTooltip:AddLine("Click: open or close the window.", 1, 1, 1)
-  GameTooltip:AddLine("Right-click: the Gear tab.", 1, 1, 1)
+  GameTooltip:AddLine("Right-click: the Consumables tab.", 1, 1, 1)
   GameTooltip:AddLine("Drag: move it around the minimap.", 0.6, 0.6, 0.6)
   GameTooltip:Show()
 end
@@ -81,7 +81,7 @@ function M.Create()
 
   b:SetScript("OnClick", function(_, button)
     if GameTooltip then GameTooltip:Hide() end
-    open(button == "RightButton" and "gear" or nil)
+    open(button == "RightButton" and "consumables" or nil)
   end)
   b:SetScript("OnEnter", tip)
   b:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)

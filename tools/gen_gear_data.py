@@ -45,6 +45,8 @@ SLOT = {1: "head", 2: "neck", 3: "shoulder", 4: "back", 5: "chest", 6: "wrist", 
         10: "feet", 11: "finger", 12: "trinket"}
 STAT = {4: "healing", 3: "int", 13: "spirit", 31: "mp5", 18: "critR", 19: "hasteR"}   # proto Stat enum
 PRIEST = 5
+
+
 SIDES = {"A": 1, "H": 2}   # proto Faction: 1 Alliance, 2 Horde (0: both)
 
 
@@ -279,13 +281,19 @@ for it in d["items"]:
         continue
     so = it["scalingOptions"]["0"]
     stats = {STAT[int(k)]: v for k, v in so.get("stats", {}).items() if int(k) in STAT}
-    # an effect that is always on (no duration) with stats is the item's own stats too
-    # (Royal Seal of Eldre'Thalas for priests: +16 spirit)
+    # an effect that is always on (no duration) with stats is the item's own stats too, unless
+    # the item works in one kind of zone: then the effect is that zone's (Royal Seal of
+    # Eldre'Thalas for priests: +16 spirit in caves and underground zones only) and isn't
+    # counted, like the extra stats some items give in a kind of zone (Jewel of the Guard
+    # Captain: twice the healing in forest and grassland zones, wowsims' areaStats). Which
+    # zones a fight is in isn't known; the game's tooltip shows these.
+    areas = it.get("areaTypes") or []
     for e in it.get("itemEffects") or []:
         if e.get("effectDurationMs") == -1 and not e.get("onUse") and not e.get("proc"):
             for k, v in ((e.get("scalingOptions") or {}).get("0") or {}).get("stats", {}).items():
                 if int(k) in STAT:
-                    stats[STAT[int(k)]] = stats.get(STAT[int(k)], 0) + v
+                    if not areas:
+                        stats[STAT[int(k)]] = stats.get(STAT[int(k)], 0) + v
     variants = [("", "", stats)]
     for sid in it.get("randomSuffixOptions") or []:
         s = suffixes.get(sid)

@@ -1021,6 +1021,27 @@ local function ranksNow(rotKey, st, t, set)
   return r and r.rankChoice
 end
 
+-- A potion or rune's worth (the Consumables tab): your fight with it used as often as its
+-- cooldown lets you, against your fight with nothing on that cooldown (the rest of your
+-- potion list as it is). HPS after overheal, and as a share of the second.
+function E.PotionGain(rotKey, st, input, key)
+  local def = E.POTION_BY_KEY[key]
+  if not def then return nil end
+  local t = E.Talents(input.talents, input.settings.rules, input.settings.overrides)
+  local set = input.settings
+  local rest = {}
+  for _, e in ipairs(set.potions or {}) do
+    local d = E.POTION_BY_KEY[e.key]
+    if d and d.group ~= def.group then rest[#rest + 1] = e end
+  end
+  local with = { { key = key, n = E.POTION_ALL } }
+  for _, e in ipairs(rest) do with[#with + 1] = e end
+  local ranks = ranksNow(rotKey, st, t, withPotions(set, rest))
+  local a, b = potionHPS(rotKey, st, t, set, with, ranks), potionHPS(rotKey, st, t, set, rest, ranks)
+  if not (a and b) then return nil end
+  return a - b, (a - b) / math.max(1, b)
+end
+
 -- The counts for your list that heal the most: every way of sharing each
 -- cooldown among the items on it (none to as many as fit), tried together.
 -- Returns a list like set.potions (same order) and its HPS, or nil.
@@ -1857,6 +1878,22 @@ function E.Score(stats, w)
   return s
 end
 
+-- The playstyle with other stats: its own spell ranks for them, or the ranks it has now if
+-- those heal more. The rank search can settle on a worse mix when a little more mana lets
+-- it try bigger ranks (+20 MP5 once took Greater Heal from rank 4 to 2 and lost 11 HPS), but
+-- more of a stat never heals less than before: you could keep the ranks you have.
+local function rerun(rotKey, s2, t, set, base)
+  local new = E.Rotation(rotKey, s2, t, set)
+  if base and base.rankChoice and not set.rankChoice then
+    local keep = {}
+    for k, v in pairs(set) do keep[k] = v end
+    keep.rankChoice = base.rankChoice
+    local r = E.Rotation(rotKey, s2, t, keep)
+    if r and (not new or r.ehps > new.ehps) then new = r end
+  end
+  return new
+end
+
 -- Exact item comparison: apply the stat DIFFERENCE (new item minus what it
 -- replaces) through the whole model and rerun it. Unlike weights, this stays
 -- right across the points where a spell stops being mana-limited.
@@ -1871,8 +1908,31 @@ function E.Compare(rotKey, st, input, diff)
     local n = diff[stat]
     if n and n ~= 0 then s2 = addDelta(s2, E.StatDelta(input, stat), n) end
   end
-  local new = E.Rotation(rotKey, s2, t, set)
+  local new = rerun(rotKey, s2, t, set, base)
   return new.ehps - base.ehps, (new.ehps - base.ehps) / base.ehps, new.hps - base.hps
+end
+
+-- A consumable's worth (the Consumables tab): as E.Compare, its stats as a buff gives them (a
+-- buff's intellect and spirit count as gear's do, through Kings and the talents), and maximum
+-- mana (diff.mana: Flask of Distilled Wisdom) straight onto the mana pool. A negative diff takes
+-- one off (the one it would take the place of). base: your playstyle's result now, when already
+-- worked out (or just its HPS).
+function E.ConsumableCompare(rotKey, st, input, diff, base)
+  local t = E.Talents(input.talents, input.settings.rules, input.settings.overrides)
+  local set = input.settings
+  if type(base) == "number" then base = { ehps = base } end
+  base = base or E.Rotation(rotKey, st, t, set)
+  if not base then return nil end
+  local s2 = st
+  for _, stat in ipairs(E.WEIGHT_STATS) do
+    local n = diff[stat]
+    if n and n ~= 0 then s2 = addDelta(s2, E.StatDelta(input, stat), n) end
+  end
+  if diff.mana and diff.mana ~= 0 then
+    s2 = addDelta(s2, { manaPool = diff.mana * ((input.race and input.race.gnome) and 1.05 or 1) }, 1)
+  end
+  local new = rerun(rotKey, s2, t, set, base)
+  return new.ehps - base.ehps, (new.ehps - base.ehps) / base.ehps
 end
 
 ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 --[[ Holy Math - Models/GearSolve.lua
-     The best gear for you at your level (the Gear tab): your live character run
+     The best gear for you at your level (the old Gear tab's search, kept for tools/sim; the item tooltips use GS.Effects): your live character run
      through the fight model with your gear swapped for the items in
      Models/GearData.lua. Your level, talents, race, buffs, playstyle and every
      setting count; at level 60 it is the best in slot.
@@ -14,7 +14,7 @@
        6. The weapons both ways: the best two-hander, and the best main hand with
           the best off hand; the better way is worn, the other shown too.
        7. Each item shown: what it's worth over what you wear in its slot, on its
-          own (the Gear tab's upgrade arrows).
+          own (the Gear tab's upgrade arrows); a ring or trinket over each of the two.
      A mana proc (Vestments of the Virtuous) counts as MP5 at the fight's cast rate.
      Use and proc effects of trinkets are not valued. GS.Solve calls args.yield
      between model runs, so the Gear tab can spread it over frames.
@@ -153,7 +153,7 @@ function GS.SlotsOf(it)
   return { it.slot }
 end
 
--- The Gear tab's filters (Gear.lua): where an item comes from (it.kinds, bits), the zones
+-- The filters (the old Gear tab's, kept for tools/): where an item comes from (it.kinds, bits), the zones
 -- it drops in (it.zones, indexes into D.zoneNames), random suffixes, and what you have.
 --   f = { off = { [bit] = true } kinds left out, noZone = { ["Scholomance"] = true },
 --         noSuffix = true, owned = function(it) -> true when you have it }
@@ -655,6 +655,7 @@ function GS.Solve(a)
     local options = s.both and { { "weapon", "offhand" } } or {}
     if not s.both then for _, x in ipairs(s) do options[#options + 1] = { x } end end
     local best
+    local each = {}                   -- a ring or trinket: the gain over each of the two you wear
     for _, opt in ipairs(options) do
       local diff, heal = GS.Stats(it, ctx)
       local wearing = false
@@ -685,6 +686,11 @@ function GS.Solve(a)
         best = { d = d, worn = wearing, inv = #options > 1 and GS.INV[opt[1]] or nil }
       end
       if wearing then break end
+      if #options > 1 then each[#each + 1] = { d = d, inv = GS.INV[opt[1]] } end
+    end
+    if best and not best.worn and #each > 1 then
+      table.sort(each, function(x, y) return x.d > y.d end)
+      best.each = each
     end
     return best
   end

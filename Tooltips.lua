@@ -31,13 +31,51 @@ local function sumStats(slots)
   return out, links
 end
 
+-- An item link's key in the item data: "id", or "id:suffix" when its first bonus ID is a
+-- random suffix the data knows (the link's 13th field is how many bonus IDs follow).
+function ns.LinkKey(link)
+  local str = type(link) == "string" and link:match("item:([%-%d:]+)")
+  if not str then return nil end
+  local f = {}
+  for v in (str .. ":"):gmatch("([^:]*):") do f[#f + 1] = v end
+  local id, n, bonus = tonumber(f[1]), tonumber(f[13]), tonumber(f[14])
+  if not id then return nil end
+  if n and n > 0 and bonus then
+    local key = id .. ":" .. bonus
+    local D = ns.GearData
+    if D and D.byKey and D.byKey[key] then return key end
+  end
+  return tostring(id), id
+end
+
+-- What a linked item's use and proc effects are worth to you (stats on average, healing
+-- a second), from the item data, in your fight now: for the item tooltips everywhere.
+-- r: the playstyle's result whose casts the procs roll on (default: yours).
+function ns.GearEffectsFor(link, S, r)
+  local D, solver = ns.GearData, ns.GearSolve
+  if not (D and solver and S and S.weights and S.weights.base) then return nil end
+  local key = ns.LinkKey(link)
+  local it = key and D.byKey and (D.byKey[key] or D.byKey[key:match("^(%d+)")])
+  if not (it and it.fx) then return nil end
+  local set = S.input.settings
+  r = r or S.weights.base
+  local ctx = { fl = set.fightLength, casts = {}, oh = set.overheal and set.overheal.FLASH or 0, pull = set.pullEvery }
+  local total = (r.fiveSecondCasts or 0) + (r.innerFocus and r.innerFocus.casts or 0)
+  for _, s in ipairs(r.steps or {}) do
+    ctx.casts[s.key] = (ctx.casts[s.key] or 0) + s.casts + (s.pauseCasts or 0)
+    total = total + s.casts
+  end
+  ctx.cps = total / math.max(1, set.fightLength)
+  return solver.Effects(it, ctx)
+end
+
 local function itemID(link) return link and tonumber(link:match("item:(%d+)")) end
 
 -- Two links are the same item: the same ID, and the same random suffix ("of Healing")
--- where the item data knows it (Gear.lua's link key).
+-- where the item data knows it (the link key above).
 local function sameItem(a, b)
   if not (a and b) then return false end
-  local key = ns.Options and ns.Options.LinkKey
+  local key = ns.LinkKey
   if key then
     local ka, kb = key(a), key(b)
     if ka and kb then return ka == kb end
@@ -53,6 +91,24 @@ function ns.ItemLinkName(link)
   if not name then return "an empty slot" end
   local col = link:match("^(|c%x%x%x%x%x%x%x%x)")
   return col and (col .. name .. "|r") or name
+end
+
+-- An item's value as the item tooltips show it (the Consumables tab's too): "+16.2 HPS (+1.8%)",
+-- or one of them (the settings Show HPS and Show %), in green, red or gray. r = { d, pct }.
+-- worth: what an item you wear gives you, not a change, so in white with no sign and no %
+-- ("5.9 HPS"; the % only when the number is switched off; a loss still red with its minus).
+-- With both switched off (item tooltips then add nothing) the Consumables tab still shows both.
+function ns.TipValue(r, worth)
+  local tip = ns.db and ns.db.tooltips or {}
+  local showNumber, showPct = tip.itemNumber ~= false, tip.itemPercent ~= false
+  if not (showNumber or showPct) then showNumber, showPct = true, true end
+  local col = r.d > 0.05 and GREEN or (r.d < -0.05 and RED or GRAY)
+  local fmt = "%+.1f"
+  if worth and r.d >= 0 then col, fmt = "|cffffffff", "%.1f" end
+  local pct = string.format(fmt .. "%%", (r.pct or 0) * 100)
+  local text = showNumber and string.format(fmt .. " HPS", r.d) or pct
+  if showNumber and showPct and not worth then text = text .. " (" .. pct .. ")" end
+  return col .. text .. "|r"
 end
 
 local verdictCache, baseCache = {}, {}
@@ -109,7 +165,7 @@ local function Verdict(link)
   end
 
   -- use and proc effects (trinkets above all), on average over your fight with the
-  -- playstyle's casts: the item's, less those of what it replaces (Gear.lua, from the
+  -- playstyle's casts: the item's, less those of what it replaces (ns.GearEffectsFor, from the
   -- item data)
   local function effects(l, r)
     if not (l and ns.GearEffectsFor) then return nil, 0 end
@@ -188,10 +244,9 @@ ns.ItemVerdict = Verdict
 
 local function AddItemLine(tt, link)
   ns.Count("itemHook")
-  -- the Gear tab's own tooltip: its lines instead (with the item's random suffix), each
-  -- time the game draws it
-  if ns.enabled and tt.hmGearTip then
-    if ns.Options and ns.Options.GearTipLines and tt.hmGearItem then pcall(ns.Options.GearTipLines, tt) end
+  -- the Consumables tab's own tooltip: its lines instead, each time the game draws it
+  if ns.enabled and tt.hmTabTip then
+    if ns.Options and ns.Options.TabTipLines and tt.hmTabItem then pcall(ns.Options.TabTipLines, tt) end
     return
   end
   if not ns.enabled or type(link) ~= "string" or tt.fpLink == link then return end
@@ -214,15 +269,7 @@ local function AddItemLine(tt, link)
   -- "+16.2 HPS (+1.8%)", or one of them, in green, red or gray. worth: what an item you
   -- wear gives you, not a change, so in white with no sign and no % ("5.9 HPS"; the %
   -- only when the number is switched off; a loss still red with its minus)
-  local function value(r, worth)
-    local col = r.d > 0.05 and GREEN or (r.d < -0.05 and RED or GRAY)
-    local fmt = "%+.1f"
-    if worth and r.d >= 0 then col, fmt = "|cffffffff", "%.1f" end
-    local pct = string.format(fmt .. "%%", r.pct * 100)
-    local text = showNumber and string.format(fmt .. " HPS", r.d) or pct
-    if showNumber and showPct and not worth then text = text .. " (" .. pct .. ")" end
-    return col .. text .. "|r"
-  end
+  local function value(r, worth) return ns.TipValue(r, worth) end
   if isSame and v.worth and math.abs(v.worth.d) >= 0.05 then
     -- what the item you wear gives you, over an empty slot; indented under the header
     -- like the game's own lists (Disenchant results)

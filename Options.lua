@@ -8,7 +8,7 @@
                    the user knowing it once tainted the Group Finder's menu
                    (ADDON_ACTION_BLOCKED on Search(), 20 Nov 2026).
        button      UIPanelButtonTemplate (Defaults, bottom left, as in the game's options)
-     Tabs: Settings (the fight, tooltips, the result), Gear (Gear.lua), Math (Your
+     Tabs: Settings (the fight, tooltips, the result), Consumables (Consumables.lua), Math (Your
      spells first). No playstyle to choose: Holy Math counts the best one for you
      (Core.lua); the Settings tab says which.
      Profiles: a dropdown at the top right, on both tabs (ProfileControls).
@@ -48,7 +48,7 @@ local WIDTH = RIGHT + COL_W + MARGIN
 local MATH_WIDTH = 880
 local HEIGHT = 560
 local SETTINGS_HEIGHT = 480       -- the Settings tab: its controls, the table, the line under it, Defaults
-local GEAR_HEIGHT = 535
+local CONS_HEIGHT = 547 - 2 * 44   -- the Consumables tab: two columns of 6 rows
 local TOP, ROW, ROW_H = -66, 30, 28
 
 local function db() return ns.db end
@@ -351,15 +351,14 @@ local function Cell(parent, x, y, w, justify, font)
   return fs
 end
 
-local TABS = { { key = "settings", text = "Settings" }, { key = "gear", text = "Gear" },
+local TABS = { { key = "settings", text = "Settings" }, { key = "consumables", text = "Consumables" },
                { key = "math", text = "Math" } }
 
 function O.ShowTab(key)
   O.tab = key
-  if O.frame and O.frame.SetWidth then O.frame:SetWidth(MATH_WIDTH) end   -- every tab as wide (Settings as Gear and Math)
-  -- the Gear tab: two columns of 9 slots
+  if O.frame and O.frame.SetWidth then O.frame:SetWidth(MATH_WIDTH) end   -- every tab as wide (Settings as Consumables and Math)
   if O.frame and O.frame.SetHeight then
-    O.frame:SetHeight(key == "gear" and GEAR_HEIGHT or key == "settings" and SETTINGS_HEIGHT or HEIGHT)
+    O.frame:SetHeight(key == "consumables" and CONS_HEIGHT or key == "settings" and SETTINGS_HEIGHT or HEIGHT)
   end
   for _, f in pairs(O.panels or {}) do f:Hide() end
   for i, t in ipairs(TABS) do
@@ -647,7 +646,7 @@ local function BuildMathPane(pane)
   end
   local under = Flat(pane, "BORDER", 1, 0.82, 0, 0.35)
   if under then under:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT, MATH_TOP); under:SetSize(O.mathListW, 1) end
-  -- the table (its column titles too) in the game's dark inset, as the Settings and Gear tabs'
+  -- the table (its column titles too) in the game's dark inset, as the Settings and Consumables tabs'
   local inset = try("Frame", pane, "InsetFrameTemplate")
   if inset then
     inset:SetPoint("TOPLEFT", pane, "TOPLEFT", LEFT - 4, MATH_TOP + 22)
@@ -1492,11 +1491,11 @@ local function Build()
   local ui = HolyMathDB.ui
   if ui and ui.point then p:ClearAllPoints(); p:SetPoint(ui.point, UIParent, ui.rel or ui.point, ui.x or 0, ui.y or 0) end
 
-  O.panes = { settings = Pane(p), gear = Pane(p), math = Pane(p) }
+  O.panes = { settings = Pane(p), consumables = Pane(p), math = Pane(p) }
   local frame = p
   p = O.panes.settings
 
-  -- The Settings tab, built like the Gear and Math tabs: controls on top, a grey line,
+  -- The Settings tab, built like the Consumables and Math tabs: controls on top, a grey line,
   -- one inset holding a table in two columns, the Math tab's gold section bands,
   -- striped rows and boxed values.
   --   Counts you as [ Best for you: Greater Heal filler v ]   [Your spells and overheal] [Tooltips and minimap...]
@@ -1522,7 +1521,7 @@ local function Build()
     "the most efficient one, and the overheal you expect for it.")
   O.controls.YourSpells = ohb
 
-  -- the result in a line, as the Gear tab's "Level 52, Horde."
+  -- the result in a line, as the Consumables tab's "Level 52, ..."
   O.hps = p:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
   O.hps:SetPoint("TOPLEFT", LEFT, y - 32)
   O.hps:SetJustifyH("LEFT")
@@ -1711,7 +1710,7 @@ local function Build()
     O.potionSummary:SetText((ns.Profiles and ns.Profiles.PotionText) and ns.Profiles.PotionText(list) or "")
   end
 
-  -- under the table, as the Gear tab's: what the worth means
+  -- under the table, as the Consumables tab's: what the worth means
   O.result = Label(p, "", "GameFontDisableSmall", LEFT, TT - TH - 10, W)
 
   -- the panels beside the window: potions, and tooltips with the minimap button
@@ -1721,7 +1720,7 @@ local function Build()
   TooltipSettings(tips, 14, -30)
   Check(tips, "minimap", 14, -164, "Show the minimap button",
     "A small Holy Math button on the edge of the minimap: click opens this window, right-click opens it at " ..
-    "the Gear tab, drag moves it. /hm minimap does the same as this switch.",
+    "the Consumables tab, drag moves it. /hm minimap does the same as this switch.",
     function() return ns.Minimap and ns.Minimap.Shown() end,
     function(v) if ns.Minimap then ns.Minimap.SetShown(v) end end)
 
@@ -1742,7 +1741,7 @@ local function Build()
   O.version = ver
 
   BuildMathPane(O.panes.math)
-  if O.BuildGear then O.BuildGear(O.panes.gear) end
+  if O.BuildConsumables then O.BuildConsumables(O.panes.consumables) end
   Tabs(frame)
   YourValuesLine(frame)
   ProfileControls(frame)
@@ -1844,9 +1843,9 @@ function O.Refresh(force)
     end
   end
   if O.mathRows then O.FillMath(S) end
-  if O.FillGear and O.tab == "gear" then
-    local ok, err = pcall(O.FillGear)
-    if not ok and ns.LogError then ns.LogError("gear", err) end
+  if O.FillConsumables and O.tab == "consumables" then
+    local ok, err = pcall(O.FillConsumables)
+    if not ok and ns.LogError then ns.LogError("consumables", err) end
   end
   O.FillYourValues()
 end

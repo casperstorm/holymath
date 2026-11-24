@@ -13,10 +13,12 @@ Models\PriestData.lua
 Models\GearData.lua
 Models\Priest.lua
 Models\GearSolve.lua
+Models\ConsumableData.lua
+Models\ConsumableRank.lua
 Models\PriestMath.lua
 Game.lua
 Tooltips.lua
 Core.lua
 Options.lua
-Gear.lua
+Consumables.lua
 Minimap.lua

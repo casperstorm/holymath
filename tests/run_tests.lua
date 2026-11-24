@@ -1520,6 +1520,14 @@ do
   local mag = GS.Bonuses(D, piecesOf(181, 6))
   ok("Magister's Regalia 6 pieces: +18 healing, the mana proc, 8 MP5", mag.healing == 18 and mag.proc == 200 and mag.mp5 == 8)
   ok("the search stays small: " .. r60.runs .. " model runs at 60", r60.runs < 600)
+  do
+    local function byName(n) for _, it in ipairs(D.items) do if it.name == n then return it end end end
+    -- Royal Seal's +16 spirit is for caves and underground zones only (wowsims' area types):
+    -- not counted, like Jewel of the Guard Captain's forest and grassland healing
+    local seal, jewel = byName("Royal Seal of Eldre'Thalas"), byName("Jewel of the Guard Captain")
+    ok("zone-only stats aren't counted: Royal Seal 22 healing and no spirit, Jewel 8 healing",
+      seal.stats.healing == 22 and not seal.stats.spirit and jewel.stats.healing == 8)
+  end
   -- trinket effects, averaged over a 2-minute fight (0.6 casts a second, 4 Greater Heals)
   local function named(n) for _, it in ipairs(D.items) do if it.name == n then return it end end end
   local ctx = { fl = 120, cps = 0.6, casts = { GH = 4 }, oh = 0.25 }
@@ -1628,6 +1636,21 @@ do
   end
   ok(string.format("an arrow's number is what the swap does, set bonuses included (%d swaps, worst %.1f HPS off)", checked, worst),
      checked > 5 and worst < 1.5)
+  -- a ring or trinket: the gain over each of the two you wear, the better first (an empty
+  -- slot beats a worn trinket); the arrow's number is the better one
+  do
+    local sw = {}
+    for s2, x in pairs(r60.items) do if s2 ~= "trinket2" then sw[s2] = x end end
+    local rt = wear(sw)
+    local g, alt
+    for _, x in ipairs(rt.alts.trinket1 or {}) do
+      local gx = rt.gains[x.key]
+      if gx and not gx.worn and gx.each then g, alt = gx, x; break end
+    end
+    ok(string.format("a trinket's gain over each worn one: %s (%s)", alt and alt.name or "none",
+        g and string.format("%.1f in slot %d, %.1f in slot %d", g.each[1].d, g.each[1].inv, g.each[2].d, g.each[2].inv) or "none"),
+      g and #g.each == 2 and g.each[1].inv == 14 and g.each[1].d > g.each[2].d + 1 and g.d == g.each[1].d)
+  end
   -- the weapon rows show the weapons the list counts
   for _, case in ipairs({ { "A", true, 60, "ghFill" }, { "H", true, 60, "pwsTank" }, { "H", false, 120, "renew" } }) do
     local i3 = character(60, case[1]); i3.settings.fightLength = case[3]
@@ -1649,6 +1672,148 @@ do
   for _, x in ipairs(rs.alts.offhand or {}) do local g = rs.gains[x.key]; if g and not g.pair then pairOnly = false end end
   ok("a two-hander on: off hands get no arrow of their own", pairOnly and #(rs.alts.offhand or {}) > 0)
   near("... and no gain over what you wear (" .. string.format("%.2f", again.hps - again.now) .. ")", again.hps - again.now, 0, 1e-6)
+end
+
+print("-- Consumables tab: the data (Models/ConsumableData.lua) and the ranking (Models/ConsumableRank.lua)")
+do
+  E.SPELLS = E.copy(E.GAME_SPELLS)
+  local C = dofile("Models/ConsumableData.lua")
+  local CR = dofile("Models/ConsumableRank.lua")
+  local function ok(label, cond) near(label, cond and 1 or 0, 1) end
+  local function named(n) for _, it in ipairs(C.items) do if it.name == n then return it end end end
+  -- the game's data (checked on Wowhead 24 Nov 2026 where the cooking list someone posted disagreed)
+  local sunny, owl, whale, sages = named("Sunny Tea"), named("Elixir of the Owl"), named("Elixir of the Whale"), named("Elixir of Sages")
+  ok("Sunny Tea: +33 healing (food and drink, one row); Sage's Tea +44", sunny.row == "food" and sunny.stats.healing == 33
+    and named("Sage's Tea").stats.healing == 44)
+  ok("Lobster Stew gives spell damage, which doesn't heal: not listed", named("Lobster Stew") == nil)
+  ok("Elixir of the Owl: +25 intellect and 2% crit; the Whale and Sages: +25 spirit and 2% crit",
+    owl.row == "elixir" and owl.stats.int == 25 and owl.stats.crit == 2 and whale.stats.spirit == 25 and whale.stats.crit == 2
+    and sages.stats.spirit == 25)
+  ok("... the Whale is Sages again: kept to see you have it, not listed twice", whale.hidden ~= sages.hidden)
+  ok("holiday food (Toasted Smorc) and the Hyjal-only flasks aren't counted",
+    named("Toasted Smorc") == nil and named("Flask of Natural Aggression") == nil)
+  local juice = named("Blessed Sunfruit Juice")
+  ok("a drink's mana while you sit isn't counted", juice == nil or not juice.stats.mp5)
+  ok("Flask of Distilled Wisdom: 2000 maximum mana", named("Flask of Distilled Wisdom").stats.mana == 2000)
+  ok("Brilliant Wizard Oil: +36 healing and 1% spell crit", named("Brilliant Wizard Oil").stats.healing == 36
+    and named("Brilliant Wizard Oil").stats.crit == 1)
+  -- what you have on: a shared Well Fed buff told apart by its amount, an oil by its enchant
+  local act = CR.Active(C, { { id = sunny.aura, amount = 33 }, { id = owl.aura } }, named("Brilliant Mana Oil").aura)
+  ok("what you have on: Sunny Tea by its amount, the Owl, Brilliant Mana Oil by its enchant",
+    act.food == sunny and act.elixir == owl and act.oil and act.oil.name == "Brilliant Mana Oil")
+  local act2 = CR.Active(C, { { id = sunny.aura } })
+  ok("... and with no amount to read, the strongest drink of that buff", act2.food and act2.food.name == "Sage's Tea")
+  -- in place of the one you have on: one elixir at a time
+  local diff = CR.Diff(named("Sage's Tea"), act)
+  ok("Sage's Tea over Sunny Tea: +11 healing", diff.healing == 11)
+  local sd = CR.Diff(sages, act)
+  ok("Elixir of Sages in place of the Owl: +25 spirit, -25 intellect, the same crit", sd.spirit == 25 and sd.int == -25 and sd.crit == 0)
+  ok("one row each: flask, elixir, food or drink, weapon oil (no scrolls, Zanza or stout)",
+    table.concat(C.rows, ",") == "flask,elixir,food,oil" and named("Spirit of Zanza") == nil
+    and named("Kreeg's Stout Beatdown") == nil and named("Scroll of Spirit IV") == nil)
+  -- the ranking on a level-60 Holy priest
+  local inp = E.copy(E.DEFAULTS)
+  inp.settings.rules = E.RULES; inp.settings.known = nil; inp.settings.fightLength = 120; inp.settings.shadowSpiritBuff = false
+  inp.settings.potions = { { key = "majorMana", n = E.POTION_ALL } }
+  inp.consumables = {}
+  inp.race = { human = false, troll = true, dwarf = false, gnome = false }; inp.level = 60
+  inp.talents = { twinDisciplines = 5, mentalStrength = 5, mentalAgility = 3, innerFocus = 1, meditation = 3,
+    improvedRenew = 3, holySpecialization = 5, divineFury = 5, inspiration = 3, improvedHealing = 3, holyBinding = 1,
+    bindingHeal = 1, litanyOfLight = 2, spiritualGuidance = 5, spiritualHealing = 3, prayerOfMending = 1,
+    improvedPWS = 0, soulWarding = 0, penance = 0, renewedHope = 0, divineAegis = 0 }
+  inp.gear = { healing = 575, int = 116, crit = 0, haste = 0, mp5 = 13, spirit = 169, spelldamage = 0 }
+  local S = { st = E.Derive(inp), input = inp, rotation = "renew" }
+  local r = CR.Rank({ E = E, D = C, S = S })
+  local rows, bad = {}, {}
+  for _, row in ipairs(r.rows) do
+    rows[row.row] = row.items
+    for i = 2, #row.items do if row.items[i].d > row.items[i - 1].d + 1e-9 then bad[#bad + 1] = row.row end end
+  end
+  ok("level 60: six rows, each best first (" .. table.concat(bad, ", ") .. ")", #r.rows == 6 and #bad == 0)
+  ok(string.format("flask: Distilled Wisdom first, worth %.1f HPS", rows.flask[1].d),
+    rows.flask[1].it.name == "Flask of Distilled Wisdom" and rows.flask[1].d > 5)
+  ok("Elixir of the Owl, Sage's Tea and Brilliant Mana Oil lead their rows (" .. rows.elixir[1].it.name .. ")",
+    rows.elixir[1].it.name == "Elixir of the Owl" and rows.food[1].it.name == "Sage's Tea"
+    and rows.oil[1].it.name == "Brilliant Mana Oil")
+  ok(string.format("potions: Major Mana Potion worth %.1f HPS, and in your list", (function()
+      for _, e in ipairs(rows.potion) do if e.it.name == "Major Mana Potion" then return e.d end end return 0 end)()),
+    (function() for _, e in ipairs(rows.potion) do if e.it.name == "Major Mana Potion" then return e.d > 5 and e.worn end end end)())
+  -- what you have on is in your stats already: it counts as what it gives you, and others in its place
+  local st2 = E.Derive((function() local i2 = E.copy(inp); i2.gear = E.copy(inp.gear); i2.gear.healing = i2.gear.healing + 40; return i2 end)())
+  local r2 = CR.Rank({ E = E, D = C, S = { st = st2, input = inp, rotation = "renew" },
+    auras = { { id = named("Greater Cleric's Elixir").aura } } })
+  local first
+  local cleric0, cleric
+  for _, e in ipairs(rows.elixir) do if e.it.name == "Greater Cleric's Elixir" then cleric0 = e end end
+  for _, row in ipairs(r2.rows) do if row.row == "elixir" then for _, e in ipairs(row.items) do
+    if e.it.name == "Greater Cleric's Elixir" then cleric = e end end end end
+  ok(string.format("with Greater Cleric's Elixir on: ticked, worth %.1f HPS (as without it on: %.1f)", cleric.d, cleric0.d),
+    cleric.worn and math.abs(cleric.d - cleric0.d) < 0.5)
+  -- a low level: nothing you can't use yet
+  local inp51 = E.copy(inp); inp51.level = 51
+  local r51 = CR.Rank({ E = E, D = C, S = { st = E.Derive(inp51), input = inp51, rotation = "renew" } })
+  local tooHigh = {}
+  for _, row in ipairs(r51.rows) do for _, e in ipairs(row.items) do if e.it.lvl > 51 then tooHigh[#tooHigh + 1] = e.it.name end end end
+  ok("level 51: nothing above your level (" .. table.concat(tooHigh, ", ") .. ")", #tooHigh == 0)
+
+  -- more of a stat never heals less: the rank search could settle on a worse mix when a little more
+  -- mana let it try bigger ranks (a level-60 Holy priest with mana to spare, 24 Nov 2026: +20 MP5
+  -- took Greater Heal from rank 4 to 2, -11 HPS), so the ranks you have now are tried too
+  local rich = E.copy(inp)
+  rich.gear = { healing = 900, int = 300, crit = 3, haste = 0, mp5 = 40, spirit = 300, spelldamage = 0 }
+  local rst = E.Derive(rich)
+  local worst, at = 0, 0
+  for _, rot in ipairs({ "renew", "ghFill" }) do
+    for m = 2, 60, 2 do
+      local d1 = E.Compare(rot, rst, rich, { mp5 = m })
+      local d2 = E.ConsumableCompare(rot, rst, rich, { int = m })
+      if math.min(d1, d2) < worst then worst, at = math.min(d1, d2), m end
+    end
+  end
+  ok(string.format("more MP5 or intellect never shows as less healing (worst %.2f HPS at +%d)", worst, at), worst > -1e-6)
+
+  -- enchants: the game's data, out now, with a source or a plain trainer one
+  local function ench(n, row) for _, e in ipairs(C.enchants) do if e.name == n and (not row or e.row == row) then return e end end end
+  ok("Mighty Healing Power (+100 healing) on two-handers only; Insight and Revelation on any weapon",
+    ench("Enchant 2H Weapon - Mighty Healing Power", "twohand") and not ench("Enchant 2H Weapon - Mighty Healing Power", "weapon")
+    and ench("Enchant Weapon - Insight", "weapon").proc == "insight" and ench("Enchant Weapon - Insight", "twohand")
+    and ench("Enchant Weapon - Revelation", "weapon").proc == "revelation")
+  ok("not out yet or with no source: +55 healing weapon (phase 2), Law of Nature, gloves +35 healing, Grand Sorcerer",
+    not ench("Enchant Weapon - Healing Power") and not ench("Enchant Shield - Law of Nature")
+    and not ench("Enchant Gloves - Healing Power") and not ench("Enchant Weapon - Grand Sorcerer"))
+  ok("the Libram arcanums go on head and legs, told apart by what they give",
+    ench("Lesser Arcane Amalgamation (+8 spirit)", "head") and ench("Lesser Arcane Amalgamation (+8 spirit)", "legs")
+    and ench("Arcanum of Focus", "head").stats.healing == 8)
+  -- valued on the sheet's own character (doublezug's sheet, Consumables/Enchants tab, 24 Nov 2026)
+  local sin = E.copy(E.DEFAULTS)
+  sin.settings.rules = E.SHEET_RULES
+  sin.settings.overheal.PWS = 0.05
+  sin.gear = { healing = 663, int = 270, crit = 1, haste = 0, mp5 = 12, spirit = 352, spelldamage = 340.23495 }
+  local er = CR.RankEnchants({ E = E, D = C, S = { st = E.Derive(sin), input = sin, rotation = "renew" } })
+  local erows = {}
+  for _, row in ipairs(er.rows) do erows[row.row] = row.items end
+  local function val(row, n) for _, e in ipairs(erows[row] or {}) do if e.it.name == n then return e.d end end end
+  near("2H Mighty Healing Power, as the sheet (+100 healing x its weight)", val("twohand", "Enchant 2H Weapon - Mighty Healing Power"), 49.20, 0.01)
+  near("Bracer - Healing Power, as the sheet", val("wrist", "Enchant Bracer - Healing Power"), 11.81, 0.01)
+  near("Necklace - Healing Power, as the sheet", val("neck", "Enchant Necklace - Healing Power"), 5.41, 0.01)
+  -- Insight: up 10 / (45 + a proc's wait) of the fight, doubling your spirit then (the sheet's 96 HPS
+  -- counts the doubled spirit as gear spirit, which Kings, Human and the Shadow Priest buff multiply again)
+  local ins = val("weapon", "Enchant Weapon - Insight")
+  ok(string.format("Insight: the best weapon enchant (%.1f HPS), above Revelation and Mighty Spirit", ins),
+    erows.weapon[1].it.proc == "insight" and ins > val("weapon", "Enchant Weapon - Mighty Spirit") and ins > 40 and ins < 70)
+  local _, share = CR.ProcStats(E, { st = E.Derive(sin), input = sin }, "insight", E.Rotation("renew", E.Derive(sin), E.Talents(sin.talents, sin.settings.rules), sin.settings))
+  ok(string.format("... up about a fifth of the fight (%.1f%%; the sheet: 20%%)", share * 100), share > 0.17 and share < 0.23)
+  -- what's on your item: in your stats already, so others count in its place
+  local er2 = CR.RankEnchants({ E = E, D = C, S = { st = E.Derive(sin), input = sin, rotation = "renew" }, ids = { [9] = 1884 } })
+  local w2
+  for _, row in ipairs(er2.rows) do if row.row == "wrist" then w2 = row.items end end
+  local heal2, spi2
+  for _, e in ipairs(w2) do
+    if e.it.name == "Enchant Bracer - Healing Power" then heal2 = e end
+    if e.it.name == "Enchant Bracer - Superior Spirit" then spi2 = e end
+  end
+  ok(string.format("Superior Spirit on your bracers: ticked (%.1f), Healing Power counted over it (%.1f)", spi2.d, heal2.d),
+    spi2.worn and math.abs(heal2.d - (val("wrist", "Enchant Bracer - Healing Power") - spi2.d)) < 0.6)
 end
 
 print(string.format("\n%d passed, %d failed", passes, fails))
