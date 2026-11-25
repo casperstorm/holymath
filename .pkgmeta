@@ -18,4 +18,8 @@ ignore:
   - .gitignore
   - .pkgmeta
 
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
 enable-nolib-creation: no

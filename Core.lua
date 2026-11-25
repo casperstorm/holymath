@@ -328,6 +328,10 @@ local LABELS = {
   includeInspiration = { "Count Inspiration", "onoff" }, imperfectPlay = { "Downtime used", "pct0" },
   litanyAlternation = { "Litany of Light, on its own", "pct0" },
 }
+-- the class's own settings (Models/PaladinMath.lua E.SETTING_LABELS)
+local function label(k)
+  return LABELS[k] or (E.SETTING_LABELS and E.SETTING_LABELS[k])
+end
 local function show(v, unit)
   if unit == "onoff" or type(v) == "boolean" then return v and "on" or "off" end
   if unit and E.MathFormat and type(v) == "number" then return E.MathFormat(unit, v) end
@@ -352,7 +356,7 @@ function P.Diff(name)
   local function line(label, a, b, unit) out[#out + 1] = string.format("%s: %s (now %s)", label, show(a, unit), show(b, unit)) end
   local keys = {}
   for k in pairs(p.settings or {}) do keys[#keys + 1] = k end
-  table.sort(keys, function(a, b) return (LABELS[a] and LABELS[a][1] or a) < (LABELS[b] and LABELS[b][1] or b) end)
+  table.sort(keys, function(a, b) return (label(a) and label(a)[1] or a) < (label(b) and label(b)[1] or b) end)
   for _, k in ipairs(keys) do
     local a, b = p.settings[k], cur[k]
     if k == "overheal" and type(a) == "table" and type(b) == "table" then
@@ -366,7 +370,7 @@ function P.Diff(name)
     elseif k == "potions" and not deepEqual(a, b) then
       out[#out + 1] = string.format("Potions: %s (now %s)", P.PotionText(a), P.PotionText(b))
     elseif not deepEqual(a, b) and type(a) ~= "table" then
-      local l = LABELS[k]
+      local l = label(k)
       line(l and l[1] or k, a, b, l and l[2])
     end
   end
@@ -651,12 +655,22 @@ local function Set(args)
   elseif what == "pots" then   -- on: Major Mana Potions as often as they fit; off: no potions
     db.settings.potions = (a == "on") and { { key = "majorMana", n = E.POTION_ALL } } or {}
   elseif what == "inspiration" then db.settings.includeInspiration = (a == "on")
+  elseif what == "oath" and tonumber(a) and db.settings.oathShare ~= nil then
+    local v = tonumber(a)
+    db.settings.oathShare = math.max(0, math.min(1, v > 1 and v / 100 or v))
+  elseif what == "vigil" and tonumber(a) and tonumber(a) >= 1 and tonumber(a) <= 5 and db.settings.vigilHits ~= nil then
+    db.settings.vigilHits = math.floor(tonumber(a))
   else
     local ohs = {}
     for k in pairs(E.OVERHEAL_ALIASES) do ohs[#ohs + 1] = k end
     table.sort(ohs)
-    say("set fight <seconds> | oh <%s> <percent> | pomhits <n> | group <1-5> | tides <n> | pots on|off | inspiration on|off",
-      table.concat(ohs, "|"))
+    if db.settings.oathShare ~= nil then
+      say("set fight <seconds> | oh <%s> <percent> | oath <percent on your Oath's target> | vigil <1-5> | tides <n> | pots on|off",
+        table.concat(ohs, "|"))
+    else
+      say("set fight <seconds> | oh <%s> <percent> | pomhits <n> | group <1-5> | tides <n> | pots on|off | inspiration on|off",
+        table.concat(ohs, "|"))
+    end
     return
   end
   ns.MarkDirty()
@@ -669,7 +683,7 @@ SlashCmdList.HOLYMATH = function(msg)
   msg = (msg or ""):gsub("^%s+", ""):gsub("%s+$", "")
   local cmd, rest = msg:match("^(%S*)%s*(.*)$")
   cmd = (cmd or ""):lower()
-  if not ns.enabled then return say("made for priests - it stays off on other classes.") end
+  if not ns.enabled then return say("made for priests and paladins - it stays off on other classes.") end
   if cmd == "" or cmd == "options" or cmd == "config" then ns.Options.Toggle()
   elseif cmd == "minimap" then
     local on = not ns.Minimap.Shown()

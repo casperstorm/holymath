@@ -1816,5 +1816,114 @@ do
     spi2.worn and math.abs(heal2.d - (val("wrist", "Enchant Bracer - Healing Power") - spi2.d)) < 0.6)
 end
 
+print("-- Holy Paladin (Models/Paladin.lua): DoubleZug's \"Forever Paladin 1.0\" sheet under its rules, then wowsims'")
+do
+  local function ok(label, cond) near(label, cond and 1 or 0, 1) end
+  local P = dofile("Models/Paladin.lua")
+  local pin = P.copy(P.DEFAULTS)
+  pin.settings.rules = P.SHEET_RULES
+  local pt = P.Talents(pin.talents, pin.settings.rules)
+  local pset = pin.settings
+  -- the sheet's Profile: 623 healing (its rounding: 623.17 fits every Spells row), 24.66% crit, 103 MP5,
+  -- 7989.5 mana, 269.93 regen from spirit, 80.98 of it while casting (Reverence)
+  local pst = { level = 60, healing = 623.17, crit = 0.24655, haste = 0, critMulti = 1.5, mp5 = 103, manaPool = 7989.5,
+                oocRegen = 269.93, combatRegen = 80.98, int = 399.3, spirit = 359 }
+  local function prow(key, rank, heal, crit, cost)
+    local sp = P.Spell(key, rank, pst, pt, pset)
+    local tag = "paladin sheet " .. key .. " r" .. rank
+    if heal then near(tag .. " healing", sp.heal, heal, 2e-4) end
+    if crit then near(tag .. " with crits", sp.expected, crit, 2e-3) end
+    if cost then near(tag .. " real cost", sp.cost, cost, 3e-3) end
+  end
+  -- Spells tab: healing, crit (the expected heal), real cost (after Benediction and Illumination)
+  prow("FLASH", 6, 692.509, 821, 123)
+  prow("FLASH", 5, 600.669, 712, 101)
+  prow("FLASH", 4, 483.930, 573, 79)
+  prow("HL", 9, 2529.251, 2997)        -- its real cost (550) has a cut the sheet doesn't explain
+  prow("SHOCK", 4, 657.560, 927, 204)  -- Boundless Light's crit: the sheet's Holy Shock goes on someone without the Oath
+  prow("VIGIL", 3, 813.488, 964, 833)  -- Illumination when any of its 5 heals crits (the sheet; not wowsims)
+  near("paladin sheet mana for the fight (Sim, less the Seal and Judgement)", P.ManaBudget(pst, pt, pset), 25588 - 270, 1e-3)
+  -- Sim, "No Holy Light" (the sheet's best, 449 EHPS with Divine Favor on a Holy Light): the same casts
+  local nh = P.Rotation("sheetNoHL", pst, pt, pset)
+  near("paladin sheet No Holy Light: Light's Vigils", nh.steps[1].casts, 15, 1e-6)
+  near("paladin sheet No Holy Light: Flash of Lights", nh.steps[2].casts, 79.62, 1e-3)
+  ok(string.format("paladin sheet No Holy Light: within 3%% of the sheet's 449 EHPS (%.1f)", nh.ehps), math.abs(nh.ehps / 449 - 1) < 0.03)
+
+  -- wowsims' rules
+  local gin = P.copy(P.DEFAULTS)
+  local gt = P.Talents(gin.talents)
+  local gset = gin.settings
+  local fol = P.Spell("FLASH", 6, pst, gt, gset)
+  -- Flash of Light rank 6 at 60: 303 + 2.6 x 2 = 308.2 (game data), Oath +115 (1.91667 x 60), Healing Light x1.12
+  near("paladin Flash of Light r6 on someone else", fol.healOff, (308.2 + 0.429 * 623.17) * 1.12, 1e-6)
+  -- Oath of Light (the sheet's rule): 115 x the rank's coefficient, not raised by Healing Light
+  near("paladin Flash of Light r6 on the Oath's target", fol.healOn, (308.2 + 0.429 * 623.17) * 1.12 + 1.916667 * 60 * 0.429, 1e-3)
+  near("paladin Holy Power 5/5: a crit heals 175% (seen in game: 1287 against about 722)", P.CritMultiplier(pst, gt), 1.75, 1e-9)
+  near("paladin Holy Power as wowsims has it: 225%", P.CritMultiplier(pst, gt, { holyPower = "wholeCrit" }), 2.25, 1e-9)
+  near("paladin Holy Power under the sheet: 175%", P.CritMultiplier(pst, pt, P.SHEET_RULES), 1.75, 1e-9)
+  local vig = P.Spell("VIGIL", 3, pst, gt, gset)
+  -- Illumination on Light's Vigil (the talent's text; confirmed in game): once when any of its 5 heals crits
+  near("paladin Light's Vigil: Illumination's mana back", vig.cost,
+    1340 - (1 - (1 - pst.crit) ^ 5) * gt.illumination * gt.illuminationRefund * 1340, 1e-6)
+  -- Oath of Light lasts an hour (the game's tooltip): a 300 s fight pays 300/3600 of one cast
+  near("paladin Oath of Light: a 300 s fight's share of one cast", P.OathCasts(300, gt, gset), 300 / 3600, 1e-9)
+  local hl1 = P.Spell("HL", 1, pst, gt, gset)
+  near("paladin Holy Light r1: Oath of Light x its coefficient (the sheet; not yet checked in game)", hl1.parts.oath, 6.66667 * 60 * hl1.coeff, 1e-2)
+  local fl = P.copy(gset); fl.rules = P.copy(P.RULES); fl.rules.oath = "flat"
+  near("paladin Holy Light r1, wowsims' rule: the full bonus", P.Spell("HL", 1, pst, gt, fl).parts.oath, 400, 1e-2)
+  -- downranking as for every class: Flash of Light r4 (max level 47) at 60 is 1 level past 59: 95%
+  near("paladin Flash of Light r4 downranked at 60", P.Spell("FLASH", 4, pst, gt, gset).parts.power, 0.95, 1e-9)
+  -- the fight: every playstyle works out; Holy Light on Infusion procs uses no more procs than there are
+  for _, k in ipairs({ "flashFill", "holyFill", "vigilFlash", "infusion" }) do
+    local r = P.Rotation(k, pst, gt, gset)
+    ok(string.format("paladin %s: %.0f EHPS", k, r and r.ehps or -1), r and r.ehps > 100)
+  end
+  -- Infusion of Light: a fight casts as many Holy Lights on procs as its Flash of Lights' and Holy
+  -- Shocks' crits give it (a 5-minute fight runs out of mana: more Holy Lights, fewer procs)
+  local function infFight(fl)
+    local s2 = P.copy(gset); s2.fightLength = fl
+    P.ROTATIONS.__t = P.RotationFromPlaystyle({ name = "t", steps = { { spell = "SHOCK", how = "cd" },
+      { spell = "HL", how = "proc" }, { spell = "FLASH", how = "fill" } } })
+    local r = P.Rotation("__t", pst, gt, s2)
+    P.ROTATIONS.__t = nil
+    local hl = 0
+    for _, st in ipairs(r.steps) do if st.key == "HL" then hl = st.casts end end
+    return hl, r.procs, r.steps[2].limit
+  end
+  for _, fl in ipairs({ 120, 300, 600 }) do
+    local hl, procs, limit = infFight(fl)
+    ok(string.format("paladin Infusion, %d s: Holy Lights %.1f, procs %.1f (%s)", fl, hl, procs, tostring(limit)),
+      hl <= procs + 0.05 and (limit ~= "procs" or math.abs(hl - procs) < 0.05) and hl > 1)
+  end
+  -- more of any stat never heals less
+  local w = P.Weights("flashFill", pst, gin)
+  ok(string.format("paladin weights all >= 0 (healing %.3f, int %.3f, crit %.2f, mp5 %.3f, spirit %.3f)", w.healing, w.int, w.crit, w.mp5, w.spirit),
+    w.healing > 0 and w.int >= 0 and w.crit > 0 and w.mp5 >= 0 and w.spirit >= 0)
+  ok(string.format("paladin: 1%% crit is worth more than 10 healing (%.1f)", w.crit / w.healing), w.crit / w.healing > 10)
+  -- the best playstyle for you, and a low level (Holy Light only)
+  local use = {}
+  for _, k in ipairs(P.BUILD_SPELLS) do use[k] = true end
+  local b = P.BuildPlaystyle(use, pst, gin)
+  ok("paladin best playstyle: " .. (b and P.BuildName(b.def) or "none"), b and b.result.ehps > 0)
+  local low = P.copy(P.DEFAULTS); low.level = 12
+  local lst = P.Derive(low); lst.level = 12
+  local lb = P.BuildPlaystyle(use, lst, low)
+  ok("paladin level 12: Holy Light filler (" .. (lb and P.BuildName(lb.def) or "none") .. ")", lb and lb.def.steps[#lb.def.steps].spell == "HL")
+  -- the Math tab adds up to the fight
+  local S = { st = pst, t = gt, input = gin, info = { how = {}, client = {} } }
+  S.weights = P.Weights("infusion", pst, gin)
+  S.spells = P.SpellTable(pst, gt, gset)
+  assert(loadfile("Models/PaladinMath.lua"))(nil, { Models = { PALADIN = P } })
+  local _, chk = P.MathPage(S)
+  ok(string.format("paladin Math tab: the fight's lines add up (%.1f vs %.1f EHPS, worst line off by %.3f)",
+    chk.fight and chk.fight.ehps or -1, S.weights.base.ehps, chk.fight and chk.fight.worst or -1),
+    chk.fight and math.abs(chk.fight.ehps - S.weights.base.ehps) < 0.01 and chk.fight.worst < 0.01)
+  -- the Consumables tab's numbers for a paladin
+  local C = dofile("Models/ConsumableData.lua")
+  local CR = dofile("Models/ConsumableRank.lua")
+  local cr = CR.Rank({ E = P, D = C, S = { st = pst, input = gin, rotation = "flashFill" } })
+  ok("paladin Consumables: every row ranked", cr and #cr.rows >= 6)
+end
+
 print(string.format("\n%d passed, %d failed", passes, fails))
 os.exit(fails == 0 and 0 or 1)

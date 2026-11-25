@@ -177,7 +177,8 @@ function O.TabTipLines(tt)
         "gives on average over your fight.", 0.6, 0.6, 0.6, true)
     elseif it.proc == "revelation" then
       tt:AddLine("Revelation: your next spell crits, 8% a cast (a rate measured in play, not from the game's files); " ..
-        "wasted on a Renew. Counted as the crit it gives your direct heals on average.", 0.6, 0.6, 0.6, true)
+        "wasted on a heal over time" .. ((ns.model and ns.model.SPELLS and ns.model.SPELLS.RENEW) and " (Renew)" or "") ..
+        ". Counted as the crit it gives your direct heals on average.", 0.6, 0.6, 0.6, true)
     end
   elseif it.potion then
     if e.worn then

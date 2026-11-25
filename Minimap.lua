@@ -10,7 +10,7 @@ local ADDON, ns = ...
 local M = {}
 ns.Minimap = M
 
-local ICON = "Interface\\Icons\\Spell_Holy_Renew"
+local ICON = "Interface\\Icons\\INV_Misc_Note_05"
 
 local function settings()
   HolyMathDB = HolyMathDB or {}

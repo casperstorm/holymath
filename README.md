@@ -1,6 +1,6 @@
 # Holy Math
 
-The maths behind a healing priest in **World of Warcraft: Forever**, worked out on your own stats and the game's own spell data. Get it on [CurseForge](https://www.curseforge.com/wow/addons/holy-math/).
+The maths behind a healing **priest** or **Holy Paladin** in **World of Warcraft: Forever**, worked out on your own stats and the game's own spell data. Log in on either and Holy Math works out that class's spells, talents and gear. Get it on [CurseForge](https://www.curseforge.com/wow/addons/holy-math/).
 
 ![The Stats tab](media/settings.webp)
 
@@ -20,7 +20,7 @@ Everything updates by itself when your gear, buffs, talents or settings change. 
 
 ## Install
 
-Download it from [CurseForge](https://www.curseforge.com/wow/addons/holy-math/), or copy the `HolyMath` folder into `World of Warcraft/_forever_/Interface/AddOns/` and restart the game. It only turns on for priests.
+Download it from [CurseForge](https://www.curseforge.com/wow/addons/holy-math/), or copy the `HolyMath` folder into `World of Warcraft/_forever_/Interface/AddOns/` and restart the game. It turns on for priests and paladins.
 
 ## Use
 
@@ -37,7 +37,9 @@ Click the minimap button (or type `/hm`) to open the window. Right-click the but
 | `/hm minimap` | hide or show the minimap button |
 | `/hm reset` | undo every value you typed on the Math tab |
 
-**Stats tab:** the playstyle Holy Math counts you as, your HPS, what each stat is worth, and your fight: its length, Prayer of Mending bounces, group size, Mana Tide and the potions you drink.
+**Stats tab:** the playstyle Holy Math counts you as, your HPS, what each stat is worth, and your fight: its length, Mana Tide and the potions you drink. A priest also sets Prayer of Mending bounces and group size; a paladin, the share of heals on their Oath of Light target and how many people Light's Vigil reaches.
+
+**Paladins** are new. The numbers follow wowsims' paladin code and reproduce DoubleZug's paladin sheet, and a level 42 Holy Paladin's spells, talents and tooltips matched in game. Where the sheet and wowsims differ, Holy Math takes the sheet. Players checked two of those: Holy Power makes a crit heal 175% (wowsims: 225%), and Illumination gives mana back once per Light's Vigil. Oath of Light's bonus is scaled by each rank's coefficient, as DoubleZug's sheet has it (wowsims gives every rank the full bonus); that one isn't checked in game yet: Holy Light rank 1 on the Oath's target against someone else settles it.
 
 **Consumables tab:** one row for each thing you can have at once, best first. Your active buffs are already in your stats, so each item is counted in place of the one you have on. A gold tick marks what you have on (or the potion in your list), a white tick what's in your bags. Switch **Show** to **Enchants** for the best enchant per slot, counted over the enchant on your item. Right-click any icon for its Wowhead link.
 
@@ -47,8 +49,8 @@ Click the minimap button (or type `/hm`) to open the window. Right-click the but
 
 - **Your stats and spells** are read from the game, so a patch that changes a spell is picked up without an update.
 - **Spell, item, consumable and enchant data** is the game's own, as extracted by [wowsims/forever](https://github.com/wowsims/forever).
-- **The fight model** started as a port of [doublezug's healer-priest spreadsheet](https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634). Where the game shows something different, the game wins.
-- **Checked in game:** spell costs, heals, coefficients, downranking, talents, intellect to crit and spirit regen.
+- **The fight model** started as a port of [doublezug's healer-priest spreadsheet](https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634); the paladin model follows wowsims' paladin code and [doublezug's paladin spreadsheet](https://docs.google.com/spreadsheets/d/1T92Cz_SWl8l2vLxPktBGeNRRRQ5G-b-LfTVnzBEn0mA/edit?gid=1807392634#gid=1807392634). Where the game shows something different, the game wins.
+- **Checked in game:** for priests, spell costs, heals, coefficients, downranking, talents, intellect to crit and spirit regen; for paladins, spell costs, heals, talents and spirit regen.
 
 ## Development
 
@@ -62,6 +64,7 @@ The data files are generated from a wowsims checkout:
 ```bash
 git clone --depth 1 https://github.com/wowsims/forever /tmp/wowsims-forever
 python3 -I tools/gen_priest_data.py /tmp/wowsims-forever > Models/PriestData.lua
+python3 -I tools/gen_paladin_data.py /tmp/wowsims-forever > Models/PaladinData.lua
 python3 -I tools/gen_gear_data.py /tmp/wowsims-forever > Models/GearData.lua
 python3 -I tools/gen_consumable_data.py /tmp/wowsims-forever > Models/ConsumableData.lua
 ```
@@ -71,9 +74,9 @@ python3 -I tools/gen_consumable_data.py /tmp/wowsims-forever > Models/Consumable
 ## Credits
 
 - Game data: [wowsims](https://github.com/wowsims/forever), MIT licence.
-- The original healing model: [the healer-priest spreadsheet](https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634) by **doublezug**.
+- The original healing model: [the healer-priest spreadsheet](https://docs.google.com/spreadsheets/d/19SaCaDQJzhMFL-nIW4ryzFwI53FmsnDvaxRfLbvM-CE/edit?gid=1807392634#gid=1807392634) and [the paladin spreadsheet](https://docs.google.com/spreadsheets/d/1T92Cz_SWl8l2vLxPktBGeNRRRQ5G-b-LfTVnzBEn0mA/edit?gid=1807392634#gid=1807392634) by **doublezug**.
 - The Consumables tab's layout is inspired by [KeystoneLoot](https://www.curseforge.com/wow/addons/keystoneloot).
 
 ## Licence
 
-[GNU General Public License v3.0](LICENSE). The data in `Models/PriestData.lua`, `Models/GearData.lua` and `Models/ConsumableData.lua` comes from wowsims under the MIT licence; its notice is kept in those files.
+[GNU General Public License v3.0](LICENSE). The data in `Models/PriestData.lua`, `Models/PaladinData.lua`, `Models/GearData.lua` and `Models/ConsumableData.lua` comes from wowsims under the MIT licence; its notice is kept in those files.

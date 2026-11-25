@@ -35,6 +35,7 @@ local function newFrame(name)
   function f:IsShown() return self.shown == true end
   function f:CreateFontString() return newFontString() end
   function f:UnregisterEvent(e) self.events[e] = nil end
+  function f:UnregisterAllEvents() self.events = {} end
   function f:IsMouseOver() return self.mouseOver == true end
   function f:GetPoint() return "CENTER", nil, "CENTER", 0, 0 end
   local function sized(self, w) self.width = w end
@@ -236,8 +237,17 @@ TooltipUtil = { GetDisplayedItem = function(tt) return "x", tt.fakeLink end }
 SlashCmdList = {}
 
 -- load the addon -------------------------------------------------------------
+-- the files as the game loads them: HolyMath.toc's list, in order
+function addonFiles()
+  local list = {}
+  for line in io.lines("HolyMath.toc") do
+    local f = line:match("^([%w\\/_]+%.lua)%s*$")
+    if f then list[#list + 1] = (f:gsub("\\", "/")) end
+  end
+  return list
+end
 local ns = {}
-for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/ConsumableData.lua", "Models/ConsumableRank.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Consumables.lua", "Minimap.lua" }) do
+for _, f in ipairs(addonFiles()) do
   assert(loadfile(f))("HolyMath", ns)
 end
 local core = frames[#frames]                      -- Core's event frame
@@ -1417,7 +1427,7 @@ do
   local function login(saved)
     HolyMathDB = { PRIEST = saved }
     local ns5 = {}
-    for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/ConsumableData.lua", "Models/ConsumableRank.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Consumables.lua", "Minimap.lua" }) do
+    for _, f in ipairs(addonFiles()) do
       assert(loadfile(f))("HolyMath", ns5)
     end
     local core5 = frames[#frames]
@@ -1495,7 +1505,7 @@ do
   for _, t in ipairs({ "PortraitFrameTemplate", "MinimalSliderWithSteppersTemplate", "UICheckButtonTemplate",
                        "WowStyle1DropdownTemplate", "UIPanelButtonTemplate", "UIPanelCloseButton" }) do missingTemplates[t] = true end
   local ns3 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/ConsumableData.lua", "Models/ConsumableRank.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Consumables.lua", "Minimap.lua" }) do
+  for _, f in ipairs(addonFiles()) do
     assert(loadfile(f))("HolyMath", ns3)
   end
   local core3 = frames[#frames]
@@ -1522,7 +1532,7 @@ do
   local function login(db)
     HolyMathDB = { PRIEST = db }
     local ns4 = {}
-    for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/ConsumableData.lua", "Models/ConsumableRank.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Consumables.lua", "Minimap.lua" }) do
+    for _, f in ipairs(addonFiles()) do
       assert(loadfile(f))("HolyMath", ns4)
     end
     local core4 = frames[#frames]
@@ -1723,7 +1733,7 @@ end
 do
   local O = ns.Options
   local b = ns.Minimap and ns.Minimap.button
-  expect(b and b.shown and b.icon.texture:find("Renew"), "a minimap button at login, with Holy Math's icon")
+  expect(b and b.shown and b.icon.texture:find("Note_05"), "a minimap button at login, with Holy Math's icon")
   if O.frame and O.frame:IsShown() then O.frame:Hide() end
   b.scripts.OnClick(b, "LeftButton")
   expect(O.frame:IsShown(), "click: the window opens")
@@ -1743,11 +1753,142 @@ do
   O.frame:Hide()
 end
 
+-- a Holy Paladin: the paladin model, its own fight settings, and every tab without errors
+do
+  UnitClass = function() return "Paladin", "PALADIN" end
+  for i = #talentList, 1, -1 do talentList[i] = nil end
+  for name, r in pairs({ ["Divine Intellect"] = 5, ["Healing Light"] = 3, ["Reverence"] = 2, ["Illumination"] = 5,
+                         ["Divine Favor"] = 1, ["Infusion of Light"] = 2, ["Holy Shock"] = 1, ["Oath of Light"] = 1,
+                         ["Holy Power"] = 5, ["Light's Vigil"] = 1, ["Boundless Light"] = 2 }) do
+    talentList[#talentList + 1] = { name = name, rank = r }
+  end
+  for i = #spellIds, 1, -1 do spellIds[i] = nil end
+  for k in pairs(idInfo) do idInfo[k] = nil end
+  for si, b in ipairs({ { "Flash of Light", 6 }, { "Holy Light", 9 }, { "Holy Shock", 4 }, { "Light's Vigil", 3 } }) do
+    for r = 1, b[2] do local id = si * 100 + r; spellIds[#spellIds + 1] = id; idInfo[id] = { b[1], "Rank " .. r } end
+  end
+  local keep = HolyMathDB
+  HolyMathDB = {}
+  local nsP = {}
+  for _, f in ipairs(addonFiles()) do assert(loadfile(f))("HolyMath", nsP) end
+  local coreP = frames[#frames]
+  coreP.scripts.OnEvent(coreP, "PLAYER_LOGIN")
+  expect(nsP.enabled and nsP.model == nsP.Models.PALADIN, "paladin: Holy Math turns on, with the paladin model")
+  local S = nsP.State(true)
+  expect(S and S.weights and S.weights.base.ehps > 0, "paladin: healing per second worked out (" ..
+    tostring(S and S.weights and math.floor(S.weights.base.ehps)) .. ")")
+  expect(S.rotation == nsP.model.BEST and S.best and #S.best.steps >= 1, "paladin: counted with the best playstyle (" ..
+    tostring(S.best and nsP.model.BuildName(S.best)) .. ")")
+  expect(S.t.oath and S.t.vigil and S.t.shock and S.t.favor, "paladin: talents read (Oath of Light, Light's Vigil, Holy Shock, Divine Favor)")
+  expect(nsP.GearData and nsP.GearData.items and #nsP.GearData.items > 4000, "paladin: the gear data keeps a paladin's items")
+  local plate = false
+  for _, it in ipairs(nsP.GearData.items) do if it.cls == 2 then plate = true; break end end
+  expect(plate, "... plate and shields among them")
+  SlashCmdList.HOLYMATH("")
+  local O = nsP.Options
+  expect(O.frame:IsShown() and O.controls.oath and O.controls.vigil and O.controls.tides and not O.controls.pom
+    and not O.controls.insp, "paladin: the Stats tab has the paladin's fight rows")
+  local db = HolyMathDB.PALADIN
+  local was = db.settings.oathShare
+  O.controls["oath-"].scripts.OnClick(O.controls["oath-"])
+  expect(math.abs(db.settings.oathShare - (was - 0.1)) < 1e-9, "paladin: the Oath stepper takes 10% off")
+  O.controls.vigil:SetValue(3)
+  expect(db.settings.vigilHits == 3, "paladin: Light's Vigil's reach is set there")
+  SlashCmdList.HOLYMATH("set oath 50")
+  expect(math.abs(db.settings.oathShare - 0.5) < 1e-9, "paladin: /hm set oath 50")
+  SlashCmdList.HOLYMATH("set vigil 5")
+  expect(db.settings.vigilHits == 5, "paladin: /hm set vigil 5")
+  O.ShowTab("math")
+  local heads = {}
+  for _, row in ipairs(O.mathRows or {}) do if row.data and row.data.head then heads[#heads + 1] = row.data.head end end
+  local hs = table.concat(heads, " | ")
+  expect(hs:find("Your spells") and hs:find("The fight") and hs:find("Flash of Light"), "paladin: the Math tab works it out (" .. hs:sub(1, 120) .. ")")
+  O.ShowTab("consumables")
+  O.consKey = nil; O.FillConsumables()
+  expect(O.consResult and O.consRows[1].def.name == "Flask", "paladin: the Consumables tab fills")
+  HolyMathDB.consumables.view = "enchants"; O.consKey = nil; O.FillConsumables()
+  expect(O.consResult and O.consResult.view == "enchants", "paladin: ... and its enchants")
+  HolyMathDB.consumables.view = "consumables"
+  O.ShowTab("settings")
+  printed = {}
+  SlashCmdList.HOLYMATH("show")
+  SlashCmdList.HOLYMATH("check")
+  SlashCmdList.HOLYMATH("dump")
+  local out = table.concat(printed, "\n")
+  expect(out:find("healing per second") and out:find("where the numbers come from") and out:find("saved"),
+    "paladin: /hm show, check and dump")
+  -- tooltips: an item, and a spell (Flash of Light rank 6)
+  GameTooltip.lines = {}
+  GameTooltip.fakeLink = "|Hitem:1002:0:|h"
+  postCalls[0](GameTooltip)
+  expect(table.concat(GameTooltip.lines, " "):find("HPS"), "paladin: an item tooltip says what it heals")
+  GameTooltip.lines = {}
+  GameTooltip.hmSpell = nil
+  postCalls[1](GameTooltip, { id = 106 })
+  expect(table.concat(GameTooltip.lines, " "):find("Heal per mana"), "paladin: a spell tooltip")
+  local errs = {}
+  for k in pairs(nsP.errors or {}) do errs[#errs + 1] = k end
+  for _, k in ipairs(errs) do realprint("  error " .. k .. ": " .. tostring(nsP.errors[k].last)) end
+  expect(#errs == 0, "paladin: no errors (" .. table.concat(errs, ", ") .. ")")
+  O.frame:Hide()
+  HolyMathDB = keep
+end
+
+-- a level 42 paladin (a friend's, the first one checked in game): a 33-point Holy build,
+-- and one with no Holy talents; every tab and /hm dump without errors
+for _, build in ipairs({
+  { name = "Holy", talents = { ["Spiritual Focus"] = 5, ["Divine Strength"] = 2, ["Healing Light"] = 3, ["Reverence"] = 2,
+      ["Divine Favor"] = 1, ["Illumination"] = 5, ["Infusion of Light"] = 2, ["Oath of Light"] = 1, ["Holy Shock"] = 1,
+      ["Boundless Light"] = 2, ["Holy Power"] = 5, ["Light's Vigil"] = 1, ["Divine Intellect"] = 3 },
+    spells = { { "Flash of Light", 4 }, { "Holy Light", 6 }, { "Holy Shock", 2 }, { "Light's Vigil", 1 } } },
+  { name = "no Holy", talents = { ["Divine Intellect"] = 5 },
+    spells = { { "Flash of Light", 4 }, { "Holy Light", 6 } } },
+}) do
+  local realLevel = UnitLevel
+  UnitLevel = function() return 42 end
+  UnitClass = function() return "Paladin", "PALADIN" end
+  for i = #talentList, 1, -1 do talentList[i] = nil end
+  for name, r in pairs(build.talents) do talentList[#talentList + 1] = { name = name, rank = r } end
+  for i = #spellIds, 1, -1 do spellIds[i] = nil end
+  for k in pairs(idInfo) do idInfo[k] = nil end
+  for si, b in ipairs(build.spells) do
+    for r = 1, b[2] do local id = si * 100 + r; spellIds[#spellIds + 1] = id; idInfo[id] = { b[1], "Rank " .. r } end
+  end
+  local keep = HolyMathDB
+  HolyMathDB = {}
+  local nsP = {}
+  for _, f in ipairs(addonFiles()) do assert(loadfile(f))("HolyMath", nsP) end
+  local coreP = frames[#frames]
+  coreP.scripts.OnEvent(coreP, "PLAYER_LOGIN")
+  local S = nsP.State(true)
+  local tag = "paladin 42 (" .. build.name .. ")"
+  expect(S and S.weights and S.weights.base.ehps > 0, tag .. ": healing per second worked out (" ..
+    tostring(S and S.weights and math.floor(S.weights.base.ehps)) .. ", " .. tostring(S and S.best and nsP.model.BuildName(S.best)) .. ")")
+  expect((S.t.vigil and true or false) == (build.talents["Light's Vigil"] ~= nil), tag .. ": Light's Vigil only with the talent")
+  SlashCmdList.HOLYMATH("")
+  local O = nsP.Options
+  O.ShowTab("math")
+  expect(O.mathRows and #O.mathRows > 10, tag .. ": the Math tab")
+  O.ShowTab("consumables"); O.consKey = nil; O.FillConsumables()
+  expect(O.consResult ~= nil, tag .. ": the Consumables tab")
+  O.ShowTab("settings")
+  printed = {}
+  SlashCmdList.HOLYMATH("show"); SlashCmdList.HOLYMATH("check"); SlashCmdList.HOLYMATH("dump")
+  expect(HolyMathDB.dump and HolyMathDB.dump.level == 42 and next(HolyMathDB.dump.sectionErrors) == nil,
+    tag .. ": /hm dump, every section")
+  local errs = {}
+  for k in pairs(nsP.errors or {}) do errs[#errs + 1] = k .. ": " .. tostring(nsP.errors[k].last) end
+  expect(#errs == 0, tag .. ": no errors (" .. table.concat(errs, ", ") .. ")")
+  O.frame:Hide()
+  HolyMathDB = keep
+  UnitLevel = realLevel
+end
+
 -- a class with no model yet (warrior): loads without errors and stays quiet
 do
   UnitClass = function() return "Warrior", "WARRIOR" end
   local ns2 = {}
-  for _, f in ipairs({ "Models/PriestData.lua", "Models/GearData.lua", "Models/Priest.lua", "Models/GearSolve.lua", "Models/ConsumableData.lua", "Models/ConsumableRank.lua", "Models/PriestMath.lua", "Game.lua", "Tooltips.lua", "Core.lua", "Options.lua", "Consumables.lua", "Minimap.lua" }) do assert(loadfile(f))("HolyMath", ns2) end
+  for _, f in ipairs(addonFiles()) do assert(loadfile(f))("HolyMath", ns2) end
   local core2 = frames[#frames]
   core2.scripts.OnEvent(core2, "PLAYER_LOGIN")
   expect(not ns2.enabled, "warrior: addon stays off")

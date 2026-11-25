@@ -26,7 +26,20 @@ import sys
 
 root = sys.argv[1]
 d = json.load(open(os.path.join(root, "assets/database/db.json")))
-PRIEST = 5
+PRIEST, PALADIN = 5, 2
+# the classes Holy Math has a model for: a row's "cls" is a mask of those that can use it
+CLASS_BITS = {PRIEST: 1, PALADIN: 2}
+
+
+def class_mask(allow):
+    if not allow:
+        return 3
+    m = 0
+    for c in allow:
+        m |= CLASS_BITS.get(c, 0)
+    return m
+
+
 
 # proto Stat: 3 intellect, 4 healing power, 13 spirit, 30 mana, 31 MP5; PseudoStat 15: spell crit %
 STAT = {3: "int", 4: "healing", 13: "spirit", 30: "mana", 31: "mp5"}
@@ -84,8 +97,8 @@ items = []
 for c in d["consumables"]:
     if c.get("holiday"):
         continue
-    allow = c.get("classAllowlist")
-    if allow and PRIEST not in allow:
+    cls = class_mask(c.get("classAllowlist"))
+    if not cls:
         continue
     t = c.get("type", 0)
     buffs = [e.get("buffId") for e in c.get("itemEffects") or [] if e.get("buffId")]
@@ -123,14 +136,15 @@ for c in d["consumables"]:
     if row == "oil":                                  # an oil shows as its enchant on the weapon
         aura = (c.get("temporaryEnchant") or {}).get("effectId") or 0
     items.append(dict(id=c["id"], name=c["name"], lvl=c.get("lvl") or 1, row=row, stats=st, aura=aura or 0,
-                      amount=amount, prof=c.get("requiredProfession") or 0))
+                      amount=amount, prof=c.get("requiredProfession") or 0, cls=cls))
 
 # --- drop what something in its row beats in every stat at the same or a lower level ---
 KEYS = ("healing", "int", "spirit", "mp5", "crit", "mana")
 
 
 def beats(a, b):
-    if a is b or a["row"] != b["row"] or a["lvl"] > b["lvl"] or a["prof"] not in (0, b["prof"]):
+    if a is b or a["row"] != b["row"] or a["lvl"] > b["lvl"] or a["prof"] not in (0, b["prof"]) \
+            or (a["cls"] & b["cls"]) != b["cls"]:
         return False
     if any(a["stats"].get(k, 0) < b["stats"].get(k, 0) for k in KEYS):
         return False
@@ -162,8 +176,8 @@ enchants = []
 for e in d["enchants"]:
     if (e.get("phase") or 1) > 1:
         continue
-    allow = e.get("classAllowlist")
-    if allow and PRIEST not in allow:
+    cls = class_mask(e.get("classAllowlist"))
+    if not cls:
         continue
     st = stats_of(e.get("stats"))
     ps = e.get("pseudoStats") or []
@@ -189,7 +203,7 @@ for e in d["enchants"]:
                 rows.append(ENCHANT_ROW[x])
     for r in rows:
         enchants.append(dict(id=e["effectId"], item=e.get("itemId") or 0, spell=e.get("spellId") or 0, name=e["name"],
-                             row=r, stats=dict(st), proc=proc))
+                             row=r, stats=dict(st), proc=proc, cls=cls))
 # the same effect under two names in one row (Enchant Bracer - Spirit and Enchant Boots - Spirit are
 # one effect, 851): once; names alike for different effects (the three Lesser Arcane Amalgamations) say
 # what they give
@@ -212,7 +226,7 @@ for lst in names.values():
 # what another enchant of its row beats in every stat (no proc) is hidden, as for consumables
 for b in enchants:
     b["hidden"] = (not b["proc"]) and any(
-        a is not b and a["row"] == b["row"] and not a["proc"] and all(a["stats"].get(k, 0) >= b["stats"].get(k, 0) for k in KEYS)
+        a is not b and a["row"] == b["row"] and not a["proc"] and (a["cls"] & b["cls"]) == b["cls"] and all(a["stats"].get(k, 0) >= b["stats"].get(k, 0) for k in KEYS)
         and (any(a["stats"].get(k, 0) > b["stats"].get(k, 0) for k in KEYS) or a["id"] < b["id"])
         for a in enchants)
 enchants.sort(key=lambda x: (ENCHANT_ROWS.index(x["row"]), x["id"]))
@@ -231,7 +245,7 @@ out = []
 w = out.append
 w("--[[ Holy Math - Models/ConsumableData.lua  (GENERATED - do not edit by hand)")
 w("     Made by tools/gen_consumable_data.py from wowsims/forever, commit " + commit + ".")
-w("     The flasks, elixirs, scrolls, food, drinks, weapon oils and other buffs a healing priest gets")
+w("     The flasks, elixirs, scrolls, food, drinks, weapon oils and other buffs a healing priest or paladin gets")
 w("     something from in WoW: Forever, each in the row of what doesn't stack with it. What another item")
 w("     of its row beats in every stat at the same or a lower level is hidden (kept to see you have it).")
 w("     Potions and runes")
@@ -247,36 +261,45 @@ w("  rows = { %s }," % ", ".join(lua(r) for r in ROW_ORDER))
 w("  -- id, name, required level, row, then healing, intellect, spirit, MP5, spell crit %, maximum mana, the")
 w("  -- buff's spell id (an oil: its weapon enchant's id) for seeing which one you have, and for food and")
 w("  -- drink the buff's amount (many")
-w("  -- share one Well Fed buff), the profession it needs (wowsims' number, 0 for none), and 1 when hidden")
+w("  -- share one Well Fed buff), the profession it needs (wowsims' number, 0 for none), 1 when hidden, and")
+w("  -- who can use it (1 priests, 2 paladins, 3 both)")
 w("  items = {")
 for it in keep:
     s = it["stats"]
-    w("    {%d,%s,%d,%s,%g,%g,%g,%g,%g,%g,%d,%d,%d,%d}," % (
+    w("    {%d,%s,%d,%s,%g,%g,%g,%g,%g,%g,%d,%d,%d,%d,%d}," % (
         it["id"], lua(it["name"]), it["lvl"], lua(it["row"]), s.get("healing", 0), s.get("int", 0),
-        s.get("spirit", 0), s.get("mp5", 0), s.get("crit", 0), s.get("mana", 0), it["aura"], it["amount"], it["prof"], 1 if it["hidden"] else 0))
+        s.get("spirit", 0), s.get("mp5", 0), s.get("crit", 0), s.get("mana", 0), it["aura"], it["amount"], it["prof"],
+        1 if it["hidden"] else 0, it["cls"]))
 w("  },")
 w("  -- enchants: the slot rows, in order, then each: enchant (effect) id, the item that teaches or puts it on")
 w("  -- (0: none), its spell, name, row, healing, intellect, spirit, MP5, spell crit %, maximum mana, its proc")
-w("  -- (\"insight\", \"revelation\" or \"\"), and 1 when another of its row beats it in every stat")
+w("  -- (\"insight\", \"revelation\" or \"\"), 1 when another of its row beats it in every stat, and who can use it")
 w("  enchantRows = { %s }," % ", ".join(lua(r) for r in ENCHANT_ROWS))
 w("  enchants = {")
 for x in enchants:
     st = x["stats"]
-    w("    {%d,%d,%d,%s,%s,%g,%g,%g,%g,%g,%g,%s,%d}," % (x["id"], x["item"], x["spell"], lua(x["name"]), lua(x["row"]),
+    w("    {%d,%d,%d,%s,%s,%g,%g,%g,%g,%g,%g,%s,%d,%d}," % (x["id"], x["item"], x["spell"], lua(x["name"]), lua(x["row"]),
       st.get("healing", 0), st.get("int", 0), st.get("spirit", 0), st.get("mp5", 0), st.get("crit", 0), st.get("mana", 0),
-      lua(x["proc"]), 1 if x["hidden"] else 0))
+      lua(x["proc"]), 1 if x["hidden"] else 0, x["cls"]))
 w("  },")
 w("}")
-w("-- Holy Math is for priests only: another class leaves the rows unread")
+w("-- Holy Math has models for priests and paladins: another class leaves the rows unread; each keeps its own")
 w("local class = UnitClass and select(2, UnitClass(\"player\"))")
-w("if ns and class and class ~= \"PRIEST\" then D.items, D.enchants = {}, {}; return D end")
+w("local bit = ({ PRIEST = 1, PALADIN = 2 })[class or \"\"]")
+w("if ns and class and not bit then D.items, D.enchants = {}, {}; return D end")
+w("local function mine(m) return not (ns and bit) or m % (bit * 2) >= bit end")
+w("for _, list in ipairs({ \"items\", \"enchants\" }) do")
+w("  local kept, col = {}, (list == \"items\") and 15 or 14")
+w("  for _, r in ipairs(D[list]) do if mine(r[col]) then kept[#kept + 1] = r end end")
+w("  D[list] = kept")
+w("end")
 w("for i, r in ipairs(D.items) do")
 w("  local st = {}")
 w("  for j, k in ipairs({ \"healing\", \"int\", \"spirit\", \"mp5\", \"crit\", \"mana\" }) do")
 w("    if r[4 + j] ~= 0 then st[k] = r[4 + j] end")
 w("  end")
 w("  D.items[i] = { id = r[1], name = r[2], lvl = r[3], row = r[4], stats = st, aura = r[11], amount = r[12], prof = r[13],")
-w("    hidden = r[14] == 1 }")
+w("    hidden = r[14] == 1, cls = r[15] }")
 w("end")
 w("D.byRow = {}")
 w("for _, it in ipairs(D.items) do")
@@ -289,7 +312,7 @@ w("  for j, k in ipairs({ \"healing\", \"int\", \"spirit\", \"mp5\", \"crit\", \
 w("    if r[5 + j] ~= 0 then st[k] = r[5 + j] end")
 w("  end")
 w("  D.enchants[i] = { id = r[1], item = r[2], spell = r[3], name = r[4], row = r[5], stats = st,")
-w("    proc = r[12] ~= \"\" and r[12] or nil, hidden = r[13] == 1, enchant = true }")
+w("    proc = r[12] ~= \"\" and r[12] or nil, hidden = r[13] == 1, enchant = true, cls = r[14] }")
 w("end")
 w("D.enchantByRow = {}")
 w("for _, e in ipairs(D.enchants) do")

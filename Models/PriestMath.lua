@@ -69,6 +69,29 @@ function E.MathParse(unit, text)
   return v / (u.scale or 1) + (u.offset or 0)
 end
 
+-- The Stats tab's "Your fight" rows (Options.lua draws them): steppers and switches.
+E.FIGHT_ROWS = {
+  { "pom", "Prayer of Mending bounces",
+    "How many people Prayer of Mending heals before it runs out (it can jump up to 5 times).",
+    "pomHits", 1, 5, 1, tostring },
+  { "group", "People reached by group heals",
+    "How many people your Prayer of Healing and Holy Nova reach per cast. 5 is a full party (Prayer of Healing " ..
+    "heals your party; Holy Nova, whoever is close to you). Set fewer for a smaller or spread-out group.\n\n" ..
+    "Overheal (Math tab) is then for those of them already at full health.",
+    "groupHits", 1, 5, 1, tostring, default = 5 },
+  { "tides", "Mana Tide totems",
+    "Shaman Mana Tide Totems that reach you in a fight. Each restores about 1,160 mana, " ..
+    "once every 5 minutes. Set 0 if your group has no shaman.",
+    "manaTidesInGroup", 0, 3, 1, tostring },
+  { "insp", "Count Inspiration (tank armor after crits)", function()
+      local O = ns.Options
+      return "Inspiration (a Holy talent) raises the tank's armor for a while after your heals crit. " ..
+        "When this is on, the damage that prevents is counted as healing." ..
+        (O and O.hasInspiration == false and "\n\n|cffff5050You don't have the talent, so this does nothing.|r" or "")
+    end, "includeInspiration", check = true, talent = "inspiration" },
+}
+E.FIGHT_SUMMARY = "the fight, Prayer of Mending bounces, Mana Tide, potions, Inspiration"
+
 local function clientRow(S, key, rank)
   for _, r in ipairs(S.info and S.info.client or {}) do
     if r.key == key and r.rank == rank then return r end

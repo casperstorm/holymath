@@ -5,7 +5,7 @@ wowsims (https://github.com/wowsims/forever, MIT licence) carries the game's own
 item data extracted from the Forever client: stats, slot, required level, phase,
 sources, sets. This script reads it AS TEXT (JSON) and runs nothing from wowsims.
 
-It keeps every item a priest can wear that is out now in WoW: Forever (phase 1)
+It keeps every item a priest or paladin can wear that is out now in WoW: Forever (phase 1)
 and has a healing stat, at any level, for each faction, then drops the ones
 five other items beat in every stat at the same or a lower level (items at least
 as easy to get: both sides', no profession, not PvP-only), as a row on the Gear
@@ -44,7 +44,10 @@ REP = {4: "Neutral", 5: "Friendly", 6: "Honored", 7: "Revered", 8: "Exalted"}
 SLOT = {1: "head", 2: "neck", 3: "shoulder", 4: "back", 5: "chest", 6: "wrist", 7: "hands", 8: "waist", 9: "legs",
         10: "feet", 11: "finger", 12: "trinket"}
 STAT = {4: "healing", 3: "int", 13: "spirit", 31: "mp5", 18: "critR", 19: "hasteR"}   # proto Stat enum
-PRIEST = 5
+PRIEST, PALADIN = 5, 2
+# the classes Holy Math has a model for: an item's "cls" is a mask of those that can wear it
+CLASS_BITS = {PRIEST: 1, PALADIN: 2}
+BOTH, PRIEST_ONLY, PALADIN_ONLY = 3, 1, 2
 
 
 SIDES = {"A": 1, "H": 2}   # proto Faction: 1 Alliance, 2 Horde (0: both)
@@ -233,25 +236,40 @@ def item_effects(it):
 
 
 def slot_of(it):
+    """(slot, who can wear it): 1 priests, 2 paladins, 3 both; (None, 0) for neither."""
     t = it.get("type")
     if t in SLOT:
-        if t in (1, 3, 5, 6, 7, 8, 9, 10) and it.get("armorType", 1) != 1:
-            return None
+        if t in (1, 3, 5, 6, 7, 8, 9, 10):            # armor: priests cloth, paladins up to plate
+            a = it.get("armorType", 1)
+            return (SLOT[t], BOTH) if a in (0, 1) else ((SLOT[t], PALADIN_ONLY) if a in (2, 3, 4) else (None, 0))
         if t == 4 and it.get("armorType", 1) not in (0, 1):
-            return None
-        return SLOT[t]
+            return None, 0
+        return SLOT[t], BOTH
     if t == 13:
+        # proto WeaponType: 1 axe, 2 dagger, 4 mace, 5 held in the off-hand, 6 polearm, 7 shield, 8 staff,
+        # 9 sword; HandType: 1 main hand, 2 one hand, 3 off hand, 4 two-hand
         wt, ht = it.get("weaponType"), it.get("handType")
-        if wt == 8 and ht == 4:
-            return "twohand"
-        if wt in (2, 4) and ht in (1, 2):
-            return "mainhand"
+        if ht == 4:
+            if wt == 8:
+                return "twohand", PRIEST_ONLY
+            if wt in (1, 4, 6, 9):
+                return "twohand", PALADIN_ONLY
+            return None, 0
         if wt == 5:
-            return "offhand"
-        return None
+            return "offhand", BOTH
+        if wt == 7:
+            return "offhand", PALADIN_ONLY
+        if ht in (1, 2):
+            if wt == 4:
+                return "mainhand", BOTH
+            if wt == 2:
+                return "mainhand", PRIEST_ONLY
+            if wt in (1, 9):
+                return "mainhand", PALADIN_ONLY
+        return None, 0
     if t == 14 and it.get("rangedWeaponType") == 5:
-        return "wand"
-    return None
+        return "wand", PRIEST_ONLY
+    return None, 0
 
 
 def lua(s):
@@ -273,11 +291,14 @@ items = []
 for it in d["items"]:
     if not (1 <= (it.get("phase") or 0) <= PHASE) or it.get("reqLvl", 0) > 60:
         continue
+    slot, cls = slot_of(it)
     allow = it.get("classAllowlist")
-    if allow and PRIEST not in allow:
-        continue
-    slot = slot_of(it)
-    if not slot:
+    if allow:
+        m = 0
+        for c in allow:
+            m |= CLASS_BITS.get(c, 0)
+        cls &= m
+    if not slot or not cls:
         continue
     so = it["scalingOptions"]["0"]
     stats = {STAT[int(k)]: v for k, v in so.get("stats", {}).items() if int(k) in STAT}
@@ -350,7 +371,7 @@ for it in d["items"]:
                           limit=it.get("limitCategory", 0) or 0, use=uncounted,
                           prof=prof_of(it),
                           fx=fx, set=it.get("setId", 0) or 0, setName=it.get("setName", ""), sides=per_side, stats=v,
-                          cats=cats))
+                          cats=cats, cls=cls))
 
 # Set bonuses that matter for healing (wowsims/forever's set rows, sim/common/forever/items_sets.go
 # and sim/priest/item_sets.go). proc: 5% a cast for this much mana.
@@ -371,6 +392,8 @@ SETS = {
     183: {3: ({"healing": 18}, "+18 healing"), 6: ({"mp5": 8}, "8 MP5")},  # Dreadmist Raiment (9346, 18378)
     473: {3: ({"crit": 1}, "+1% spell crit")}, 485: {3: ({"crit": 1}, "+1% spell crit")},  # Highlander's/Defiler's (18384)
     1972: {3: ({"spirit": 10}, "+10 spirit"), 6: ({"healing": 22}, "+22 healing")},  # Stormcloth Regalia (1258496, 1258494)
+    # paladins (sim/paladin/item_sets.go); its 5 pieces' Holy Shock cooldown isn't counted
+    2107: {2: ({"spirit": 10}, "+10 spirit"), 4: ({"healing": 26}, "+26 healing")},  # Justice Armor
 }
 
 # --- drop what something else beats ---------------------------------------------
@@ -398,7 +421,7 @@ def easier(a, b):
 
 
 def beats(a, b):
-    if a is b or a["lvl"] > b["lvl"] or not easier(a, b):
+    if a is b or a["lvl"] > b["lvl"] or not easier(a, b) or (a["cls"] & b["cls"]) != b["cls"]:
         return False
     if a["fx"] or any(a["stats"].get(k, 0) < b["stats"].get(k, 0) for k in STATS):
         return False
@@ -439,7 +462,7 @@ out = []
 w = out.append
 w("--[[ Holy Math - Models/GearData.lua  (GENERATED - do not edit by hand)")
 w("     Made by tools/gen_gear_data.py from wowsims/forever, commit " + commit + ".")
-w("     Every item a priest can wear that is out now in WoW: Forever (phase %d) and has a healing stat," % PHASE)
+w("     Every item a priest or paladin can wear that is out now in WoW: Forever (phase %d) and has a healing stat," % PHASE)
 w("     at any level, less those five other items beat in every stat at the same or a lower level.")
 w("     The game's own item data as wowsims extracted it from the Forever client.")
 w("     wowsims licence (MIT): Copyright (c) 2022 wowsims team. THE SOFTWARE IS PROVIDED \"AS IS\".")
@@ -487,15 +510,16 @@ for it in keep:
         kinds |= KIND_BIT["dungeon" if c[0] == "zone" else c[0]]
     zs = sorted(ZONE_INDEX[c[1]] for c in it["cats"] if c[0] == "zone")
     zonesLua = ("{" + ",".join(str(z) for z in zs) + "}") if zs else "0"
-    rows.append(("{%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d," + zonesLua + fxs.replace("%", "%%") + "}") % (
+    rows.append(("{%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d," + zonesLua + fxs.replace("%", "%%") + "}") % (
         it["id"], lua(it["name"]), it["sid"], SLOT_CODE.index(it["slot"]) + 1, it["lvl"], it["q"],
         1 if it["unique"] else 0, 1 if it["use"] else 0, it["limit"], it["set"], PROF_CODE.index(it["prof"]),
         side, pvp, st.get("healing", 0), st.get("int", 0), st.get("spirit", 0), st.get("mp5", 0),
-        st.get("critR", 0), st.get("hasteR", 0), kinds))
+        st.get("critR", 0), st.get("hasteR", 0), kinds, it["cls"]))
 w("  -- id, name (with its random suffix), suffix id, slot, level, quality, unique, use/proc, equip limit,")
 w("  -- set, profession, who can get it (1 Alliance, 2 Horde, 3 both), PvP only (1 Alliance, 2 Horde, 3 both),")
 w("  -- healing, intellect, spirit, MP5, crit rating, haste rating, where it comes from (bits: 1 a drop, 2 a quest,")
-w("  -- 4 crafted, 8 a vendor, 16 reputation, 32 PvP, 64 a world drop or no source), the zones it drops in (indexes")
+w("  -- 4 crafted, 8 a vendor, 16 reputation, 32 PvP, 64 a world drop or no source), who can wear it (1 priests,")
+w("  -- 2 paladins, 3 both), the zones it drops in (indexes")
 w("  -- into zoneNames, or 0), and its effects a healer gets something from:")
 w("  --   use=1, d (lasts, s), cd (cooldown, s); or p (chance a heal procs it), on (only that spell), icd, d;")
 w("  --   with stats it gives (healing, int, spirit, mp5, crit in %), mana (a use), heal (a use), cost (mana off each cast)")
@@ -504,14 +528,16 @@ for i in range(0, len(rows), 2):
     w("    " + ", ".join(rows[i:i + 2]) + ",")
 w("  },")
 w("}")
-w("-- Holy Math is for priests only: another class leaves the rows unread (and lets them go)")
+w("-- Holy Math has models for priests and paladins: another class leaves the rows unread (and lets them go);")
+w("-- each keeps the items it can wear")
 w("local class = UnitClass and select(2, UnitClass(\"player\"))")
-w("if ns and class and class ~= \"PRIEST\" then D.rows = nil; return D end")
+w("local bit = ({ PRIEST = 1, PALADIN = 2 })[class or \"\"]")
+w("if ns and class and not bit then D.rows = nil; return D end")
 w("local SLOTS = { %s }" % ", ".join(lua(x) for x in SLOT_CODE))
 w("local PROFS = { %s }" % ", ".join(lua(x) for x in PROF_CODE))
 w("-- the rows as tables, once at load")
 w("D.items = {}")
-w("for i, r in ipairs(D.rows) do")
+w("for _, r in ipairs(D.rows) do if not (ns and bit) or r[21] % (bit * 2) >= bit then")
 w("  local stats = {}")
 w("  for j, k in ipairs({ \"healing\", \"int\", \"spirit\", \"mp5\", \"critR\", \"hasteR\" }) do")
 w("    if r[13 + j] ~= 0 then stats[k] = r[13 + j] end")
@@ -520,11 +546,11 @@ w("  local it = { id = r[1], name = r[2], key = r[3] ~= 0 and (r[1] .. \":\" .. 
 w("    suffix = r[3] ~= 0 and (r[2]:match(\" (of [%a' ]+)$\") or \"\") or \"\", slot = SLOTS[r[4]], lvl = r[5], q = r[6],")
 w("    unique = r[7] == 1, use = r[8] == 1, limit = r[9], set = r[10], setName = D.setNames[r[10]] or \"\",")
 w("    prof = PROFS[r[11] + 1], pvp = { A = r[13] % 2 == 1, H = r[13] >= 2 }, stats = stats, kinds = r[20],")
-w("    zones = r[21] ~= 0 and r[21] or nil, fx = r[22] }")
+w("    zones = r[22] ~= 0 and r[22] or nil, fx = r[23], cls = r[21] }")
 w("  if r[12] % 2 == 1 then it.A = true end")
 w("  if r[12] >= 2 then it.H = true end")
-w("  D.items[i] = it")
-w("end")
+w("  D.items[#D.items + 1] = it")
+w("end end")
 w("D.rows = nil")
 w("D.byKey = {}")
 w("for _, it in ipairs(D.items) do D.byKey[it.key] = it end")

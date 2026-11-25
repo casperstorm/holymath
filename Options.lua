@@ -319,7 +319,7 @@ local function Window()
   p:SetToplevel(true)
   if blizzard then
     p:SetTitle("Holy Math")
-    if p.SetPortraitToAsset then pcall(p.SetPortraitToAsset, p, "Interface\\Icons\\Spell_Holy_Renew") end
+    if p.SetPortraitToAsset then pcall(p.SetPortraitToAsset, p, "Interface\\Icons\\INV_Misc_Note_05") end
     -- The template's close button asks the game's panel manager to hide the window,
     -- and that goes through secure code that is blocked in combat. Our window is a
     -- plain frame: hide it directly, so it closes in combat too.
@@ -1361,12 +1361,12 @@ function O.DeleteProfile(name)
   StaticPopup_Show("HOLYMATH_PROFILE_DELETE", name, nil, name)
 end
 
-local PROFILE_HELP = "Keep several sets of settings under names and switch between them here: the fight, " ..
-  "Prayer of Mending bounces, Mana Tide, potions, Inspiration, and the overheal you set per spell " ..
+local function profileHelp() return "Keep several sets of settings under names and switch between them here: " ..
+  (E.FIGHT_SUMMARY or "the fight") .. ", and the overheal you set per spell " ..
   "on the Math tab. The loaded profile saves itself: whatever you change goes into it.\n\nThe list shows what each profile heals per second with your gear now, so you can " ..
   "compare them without switching; hover one to see how it differs from your settings.\n\n" ..
   "Values you typed over the game's on the Math tab (your stats, talents) are not part of a profile. " ..
-  "/hm profile <name> loads one from a macro."
+  "/hm profile <name> loads one from a macro." end
 
 local function profileTip(tooltip, name)
   local P = ns.Profiles
@@ -1416,7 +1416,7 @@ local function ProfileControls(frame)
   end)
   -- the closed field: the loaded profile's name, without its HPS
   if dd.SetSelectionTranslator then dd:SetSelectionTranslator(function() return P.Loaded() or "None" end) end
-  Tip(dd, "Profiles", PROFILE_HELP)
+  Tip(dd, "Profiles", profileHelp)
   O.controls.profile = dd
   -- (the menu itself is built again, with the HPS, each time it opens)
   O.rows[#O.rows + 1] = function()
@@ -1606,7 +1606,8 @@ local function Build()
   shit:SetSize(CW, SH + 5 * RH)
   shit:EnableMouse(true)
   Tip(shit, "Where your healing comes from", "Each spell's share of what you heal over the fight, after " ..
-    "overheal, in the playstyle Holy Math counts you as. Inspiration is the damage the tank's extra armor saves.")
+    "overheal, in the playstyle Holy Math counts you as." ..
+    ((E.SPELLS and E.SPELLS.RENEW) and " Inspiration is the damage the tank's extra armor saves." or ""))
 
   -- right: your fight; each value in a box with the game's arrows either side
   local FH = 26
@@ -1671,31 +1672,22 @@ local function Build()
     "(MP5, spirit, intellect) is worth more; in short fights healing power counts most.",
     function() return db().settings.fightLength end, function(v) db().settings.fightLength = v end,
     30, 900, 30, function(v) return v .. " s" end)
-  stepper("pom", "Prayer of Mending bounces",
-    "How many people Prayer of Mending heals before it runs out (it can jump up to 5 times).",
-    function() return db().settings.pomHits end, function(v) db().settings.pomHits = v end,
-    1, 5, 1, tostring)
-  stepper("group", "People reached by group heals",
-    "How many people your Prayer of Healing and Holy Nova reach per cast. 5 is a full party (Prayer of Healing " ..
-    "heals your party; Holy Nova, whoever is close to you). Set fewer for a smaller or spread-out group.\n\n" ..
-    "Overheal (Math tab) is then for those of them already at full health.",
-    function() return db().settings.groupHits or 5 end, function(v) db().settings.groupHits = v end,
-    1, 5, 1, tostring)
-  stepper("tides", "Mana Tide totems",
-    "Shaman Mana Tide Totems that reach you in a fight. Each restores about 1,160 mana, " ..
-    "once every 5 minutes. Set 0 if your group has no shaman.",
-    function() return db().settings.manaTidesInGroup end, function(v) db().settings.manaTidesInGroup = v end,
-    0, 3, 1, tostring)
-  n = n + 1
-  grid(2, ry, FH, n)
-  Check(p, "insp", CX[2] + 6, ry, "Count Inspiration (tank armor after crits)",
-    function()
-      return "Inspiration (a Holy talent) raises the tank's armor for a while after your heals crit. " ..
-        "When this is on, the damage that prevents is counted as healing." ..
-        (O.hasInspiration == false and "\n\n|cffff5050You don't have the talent, so this does nothing.|r" or "")
-    end,
-    function() return db().settings.includeInspiration end, function(v) db().settings.includeInspiration = v end)
-  ry = ry - FH
+  -- the class's own rows (Models/PriestMath.lua, Models/PaladinMath.lua: E.FIGHT_ROWS):
+  -- { id, label, help, setting, lo, hi, step, format, default = } or { id, label, help, setting, check = true }
+  for _, r in ipairs(E.FIGHT_ROWS or {}) do
+    local key = r[4]
+    if r.check then
+      n = n + 1
+      grid(2, ry, FH, n)
+      Check(p, r[1], CX[2] + 6, ry, r[2], r[3],
+        function() return db().settings[key] end, function(v) db().settings[key] = v end)
+      ry = ry - FH
+    else
+      local lo = r[5]
+      stepper(r[1], r[2], r[3], function() return db().settings[key] or r.default or lo end,
+        function(v) db().settings[key] = math.floor(v * 1e6 + 0.5) / 1e6 end, lo, r[6], r[7], r[8])
+    end
+  end
   -- the potions: which, and a panel beside the window to change them
   n = n + 1
   grid(2, ry, FH + 2, n)
@@ -1766,6 +1758,7 @@ function O.FillSplit(base, S)
   end
   for _, st in ipairs(base.steps or {}) do add(st.key, st.eff) end
   if base.innerFocus then add("POH", base.innerFocus.eff) end
+  if base.favor then add(base.favor.key, base.favor.eff) end
   local fl = S and S.input and S.input.settings.fightLength or 0
   add("INSPIRATION", (base.inspiration or 0) * fl)
   table.sort(order, function(a, b) return by[a] > by[b] end)
@@ -1795,13 +1788,18 @@ function O.Refresh(force)
   local S = ns.State(force)
   local w = S and S.weights
   -- Inspiration's checkbox is greyed out without the talent (then the setting does nothing)
-  local insp = O.controls.insp
-  if insp then
-    O.hasInspiration = S and S.t and (S.t.inspiration or 0) > 0 or false
-    if insp.SetEnabled then insp:SetEnabled(O.hasInspiration)
-    elseif insp.Enable then if O.hasInspiration then insp:Enable() else insp:Disable() end end
-    if insp.Text and insp.Text.SetFontObject then
-      insp.Text:SetFontObject(O.hasInspiration and GameFontHighlightSmall or GameFontDisableSmall)
+  for _, r in ipairs(E.FIGHT_ROWS or {}) do
+    local ctl = r.check and r.talent and O.controls[r[1]]
+    if ctl then
+      local has = S and S.t and (S.t[r.talent] or 0) > 0 or false
+      O.hasTalent = O.hasTalent or {}
+      O.hasTalent[r.talent] = has
+      if r.talent == "inspiration" then O.hasInspiration = has end
+      if ctl.SetEnabled then ctl:SetEnabled(has)
+      elseif ctl.Enable then if has then ctl:Enable() else ctl:Disable() end end
+      if ctl.Text and ctl.Text.SetFontObject then
+        ctl.Text:SetFontObject(has and GameFontHighlightSmall or GameFontDisableSmall)
+      end
     end
   end
   for _, c in ipairs(O.weightCells) do c.name:SetText(""); c.value:SetText(""); c.note:SetText("") end
@@ -1823,6 +1821,7 @@ function O.Refresh(force)
     local NOTE = { MP5 = "mana back every 5 seconds", Intellect = "a bigger mana pool, and crit",
       -- (short enough for one line in the note column)
       Spirit = "mana regen, and Spiritual Guidance", Crit = "per 1% on gear", Haste = "per 1% on gear" }
+    for k, v in pairs(E.STAT_NOTES or {}) do NOTE[k] = v end
     local groups = {
       { { "MP5", w.mp5 / h }, { "Intellect", w.int / h }, { "Spirit", w.spirit / h } },
       { { "Crit", w.crit / h }, { "Haste", w.haste / h } },

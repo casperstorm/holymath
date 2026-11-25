@@ -12,77 +12,22 @@ Usage (run from the HolyMath folder):
     python3 -I tools/gen_priest_data.py /some/where/forever > Models/PriestData.lua
 """
 import os
-import re
-import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # our own tools folder (python -I leaves it out)
+from wowsims_spells import Spells, rank_entry, fmt, LICENCE  # noqa: E402
+
 root = sys.argv[1]
-SPELLS_GO = os.path.join(root, "sim/core/spelldata/spells_auto_gen.go")
-LADDERS_GO = os.path.join(root, "sim/priest/spell_data_auto_gen.go")
-MANA_GO = os.path.join(root, "sim/core/mana.go")
-BASE_STATS_GO = os.path.join(root, "sim/core/base_stats_auto_gen.go")
-
-src = open(SPELLS_GO).read()
-ladders = open(LADDERS_GO).read()
-mana = open(MANA_GO).read()
-base_stats = open(BASE_STATS_GO).read()
-
-# --- every spell row, one chunk per row -------------------------------------
-rows = {}
-body = src[src.index("var generatedSpells"):src.index("var generatedCurves")]
-for chunk in re.split(r"\n\t\{ID: ", body)[1:]:
-    m = re.match(r'(\d+), Name: "([^"]*)"', chunk)
-    if not m:
-        continue
-    head = chunk.split("\n")[0]
-
-    def num(key, text=head):
-        mm = re.search(r"\b" + key + r": ([-\d.e]+)", text)
-        return float(mm.group(1)) if mm else 0.0
-
-    effects = []
-    for e in re.finditer(r"\{ID: \d+, SpellID: \d+, (?:Index: \d+, )?Type: dbcenums\.(\w+)"
-                         r"(?:, Aura: dbcenums\.(\w+))?([^\n]*)", chunk):
-        b = e.group(3)
-        effects.append(dict(type=e.group(1), aura=e.group(2), bp=num("BasePoints", b), ppl=num("PPL", b),
-                            coef=num("SPCoef", b), period=num("PeriodMs", b), misc=num("Misc", b),
-                            bl=num("BaseLevel", b), ml=num("MaxLevel", b)))
-    cost = re.search(r"Powers: \[\]Power\{\{Cost: (\d+)", chunk)
-    refs = re.search(r"RefIDs: \[\]int32\{([\d, ]+)\}", head)
-    rows[int(m.group(1))] = dict(
-        name=m.group(2), lvl=num("SpellLevel"), max=num("MaxLevel"), cast=num("CastTimeMs"),
-        dur=num("DurationMs"), cd=num("CategoryCooldownMs"), cost=int(cost.group(1)) if cost else None, effects=effects,
-        refs=[int(x) for x in refs.group(1).split(",")] if refs else [])
-
-# --- talent per-rank curves ---------------------------------------------------
-curves = {}
-cbody = src[src.index("var generatedCurves"):]
-for m in re.finditer(r"^\t(\d+):\s+\{(.*)\},\s*$", cbody, re.M):
-    curves[int(m.group(1))] = [[float(x) for x in row.split(",")] for row in re.findall(r"\{([-\d., ]+)\}", m.group(2))]
+W = Spells(root, "sim/priest/spell_data_auto_gen.go")
+rows, curves = W.rows, W.curves
 
 
 def ladder(name):
-    m = re.search(r"^\t" + name + r":\s+spelldata\.(Ranked|Talent)\(([\d, ]+)\)", ladders, re.M)
-    if not m:
-        raise SystemExit("not found in priest ladders: " + name)
-    return [int(x) for x in m.group(2).split(",")]
+    return W.ladder(name)
 
 
 def effect(row, kinds):
-    for e in row["effects"]:
-        if e["type"] in kinds or e["aura"] in kinds:
-            return e
-    raise SystemExit("no %s effect on %s" % (kinds, row["name"]))
-
-
-def rank_entry(cast_row, heal_eff, scale=1.0, cast_ms=None):
-    """One rank: totals for one cast on one target (scale = ticks or bolts)."""
-    # Downranking counts from the rank's max level; a row with none (0) is treated as learned level + 5,
-    # the spacing every other healing rank has.
-    ml = heal_eff["ml"] or cast_row["max"] or 0
-    return dict(id=None, cost=cast_row["cost"], lvl=int(cast_row["lvl"]), bl=int(heal_eff["bl"] or cast_row["lvl"]),
-                ml=int(ml), bp=heal_eff["bp"] * scale, ppl=heal_eff["ppl"] * scale,
-                coeff=heal_eff["coef"] * scale, cast=int(cast_row["cast"] if cast_ms is None else cast_ms))
+    return W.effect(row, kinds)
 
 
 spells = {}
@@ -187,25 +132,14 @@ talents["soulWardingCd"] = [abs(misc_effect("SoulWarding", 11)["bp"]) / 1000]
 da = ladder("DivineAegis")[0]
 talents["divineAegisCap"] = [rows[da]["effects"][1]["bp"]] * len(curves[da][0])
 
-regen = re.search(r"spiritRegenBase, character\.spiritRegenPerSpirit = ([\d.]+), ([\d.]+)/([\d.]+)", mana)
-regen_base, regen_per = float(regen.group(1)), float(regen.group(2)) / float(regen.group(3))
+regen_base, regen_per = W.regen()
 
 # Spell crit per point of intellect at level 60 (PlayerExpectedStat), in percent
-crit_block = base_stats[base_stats.index("var CritPerIntMaxLevel"):]
-crit_per_int = float(re.search(r"Class_ClassPriest:\s*([\d.]+)", crit_block).group(1))
+crit_per_int = W.crit_per_int_60("Priest")
 
-try:
-    commit = subprocess.run(["git", "-C", root, "log", "-1", "--format=%H %cs"], capture_output=True, text=True).stdout.strip()
-except Exception:
-    commit = "unknown"
+commit = W.commit()
 
 # --- write Lua -----------------------------------------------------------------
-def fmt(v):
-    if isinstance(v, float):
-        return ("%.6f" % v).rstrip("0").rstrip(".") if v != int(v) else str(int(v))
-    return str(v)
-
-
 NAMES = dict(RENEW="Renew", GH="Greater Heal", FLASH="Flash Heal", HEAL="Heal", LESSER="Lesser Heal",
              POH="Prayer of Healing", PWS="Power Word: Shield", POM="Prayer of Mending", NOVA="Holy Nova",
              PENANCE="Penance")
@@ -219,15 +153,7 @@ out.append("     ppl = what it gains per level up to ml (its max level), coeff =
 out.append("     cost = mana, lvl = level it is learned, cast = cast time in ms (0 = instant).")
 out.append("     Renew: all 5 ticks. Penance: all 3 bolts. Prayer of Healing / Holy Nova: per target.")
 out.append("")
-out.append("     wowsims licence (MIT):")
-out.append("     Copyright (c) 2022 wowsims team")
-out.append("     Permission is hereby granted, free of charge, to any person obtaining a copy of this software and")
-out.append("     associated documentation files (the \"Software\"), to deal in the Software without restriction,")
-out.append("     including without limitation the rights to use, copy, modify, merge, publish, distribute,")
-out.append("     sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is")
-out.append("     furnished to do so, subject to the following conditions: The above copyright notice and this")
-out.append("     permission notice shall be included in all copies or substantial portions of the Software.")
-out.append("     THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND.")
+out.extend(LICENCE)
 out.append("]]--")
 out.append("")
 out.append("local _, ns = ...")
